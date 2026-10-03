@@ -1,0 +1,155 @@
+import express from 'express';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
+import {
+  getDbConfig,
+  setDbConfig,
+  getDbStatus,
+  testConnection,
+  insertMovements,
+  getMovements,
+  clearMovements,
+} from './src/server/db.js';
+import { generateSampleWarehouseData } from './src/server/sampleData.js';
+
+dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const app = express();
+const PORT = Number(process.env.PORT) || 3000;
+
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// Initial seed if empty
+(async () => {
+  const status = await getDbStatus();
+  if (status.totalRows === 0) {
+    console.log('Seeding initial sample warehouse dataset...');
+    const samples = generateSampleWarehouseData(14, 380);
+    await insertMovements(samples);
+  }
+})();
+
+// DB Settings Endpoints
+app.get('/api/db/config', (req, res) => {
+  res.json(getDbConfig());
+});
+
+app.get('/api/db/status', async (req, res) => {
+  const status = await getDbStatus();
+  res.json(status);
+});
+
+app.post('/api/db/test', async (req, res) => {
+  const { host, port, user, password, database, ssl } = req.body;
+  const status = await setDbConfig({
+    host,
+    port: Number(port) || 3306,
+    user,
+    password,
+    database,
+    ssl: Boolean(ssl),
+  });
+  res.json(status);
+});
+
+app.post('/api/db/save', async (req, res) => {
+  const { host, port, user, password, database, ssl } = req.body;
+  const status = await setDbConfig({
+    host,
+    port: Number(port) || 3306,
+    user,
+    password,
+    database,
+    ssl: Boolean(ssl),
+  });
+  res.json({ success: true, status });
+});
+
+// Movements Endpoints
+app.get('/api/movements', async (req, res) => {
+  try {
+    const { dateFrom, dateTo, bracket, box, query, limit, offset } = req.query;
+    const result = await getMovements({
+      dateFrom: dateFrom as string,
+      dateTo: dateTo as string,
+      bracket: bracket as string,
+      box: box as string,
+      query: query as string,
+      limit: limit ? Number(limit) : 5000,
+      offset: offset ? Number(offset) : 0,
+    });
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Chyba při načítání dat' });
+  }
+});
+
+app.post('/api/movements/import', async (req, res) => {
+  try {
+    const { records } = req.body;
+    if (!Array.isArray(records) || records.length === 0) {
+      return res.status(400).json({ error: 'Nebyly poskytnuty žádné záznamy k importu.' });
+    }
+
+    const result = await insertMovements(records);
+    res.json({
+      success: true,
+      importedCount: result.count,
+      destination: result.destination,
+      message: `Úspěšně importováno ${result.count} záznamů (${result.destination === 'mariadb' ? 'MariaDB databáze' : 'lokální paměť'}).`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Chyba při ukládání záznamů' });
+  }
+});
+
+app.post('/api/movements/seed-sample', async (req, res) => {
+  try {
+    const count = Number(req.body.count) || 400;
+    const days = Number(req.body.days) || 14;
+    const records = generateSampleWarehouseData(days, count);
+    const result = await insertMovements(records);
+    res.json({
+      success: true,
+      importedCount: result.count,
+      message: `Vygenerováno a vloženo ${result.count} ukázkových záznamů za ${days} dní.`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Chyba při generování vzorových dat' });
+  }
+});
+
+app.delete('/api/movements', async (req, res) => {
+  try {
+    await clearMovements();
+    res.json({ success: true, message: 'Všechna data o pohybech byla promazána.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Chyba při mazání dat' });
+  }
+});
+
+// Vite or Static file serving
+const isProduction = process.env.NODE_ENV === 'production';
+
+if (!isProduction) {
+  const { createServer } = await import('vite');
+  const vite = await createServer({
+    server: { middlewareMode: true },
+    appType: 'spa',
+  });
+  app.use(vite.middlewares);
+} else {
+  app.use(express.static(path.resolve(__dirname, 'dist')));
+  app.get('*', (req, res) => {
+    res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+  });
+}
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Warehouse Pick & Pack Analytics server running on http://0.0.0.0:${PORT}`);
+});

@@ -1,0 +1,6 @@
+{
+  "name": "Warehouse Pick & Pack Analytics",
+  "description": "Statistiky trvání pickování a balení na jeden produkt rozlišené pro 1, 2, 3, 4 a 5+ kusové zásilky s napojením na MariaDB a grafy v čase.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
