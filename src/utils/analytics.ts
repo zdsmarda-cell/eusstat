@@ -11,6 +11,7 @@ import {
   DayOfWeekStat,
   DailyPerformanceReport
 } from '../types.js';
+import { parseDateTime } from './fileParser.js';
 
 function median(values: number[]): number {
   if (values.length === 0) return 0;
@@ -210,14 +211,83 @@ const DOW_DEFINITIONS = [
   { index: 6, dayNameCs: 'Neděle', dayNameEn: 'Sunday', dayShortCs: 'Ne', dayShortEn: 'Sun' },
 ];
 
+/**
+ * Extracts wall-clock calendar date (YYYY-MM-DD) and Day of Week (0 = Po, ..., 6 = Ne)
+ * using parseDateTime with full Czech typography and day name prefix support.
+ */
+export function getRecordDateInfo(dateStr: string): { dateStr: string; dayOfWeekIndex: number; formattedDayLabel: string } {
+  if (!dateStr) return { dateStr: '1970-01-01', dayOfWeekIndex: 3, formattedDayLabel: 'Čt 1.1.' };
+
+  const dayNames = ['Po', 'Út', 'St', 'Čt', 'Pá', 'So', 'Ne'];
+  const pad = (n: number) => String(n).padStart(2, '0');
+
+  // Check for explicit day name prefix in the string directly if any
+  const lower = dateStr.toLowerCase().trim();
+  let explicitDow: number | null = null;
+  if (/^pond[eě]l[ií]|^po\b/i.test(lower)) explicitDow = 0;
+  else if (/^[uú]ter[yý]|^[uú]t\b/i.test(lower)) explicitDow = 1;
+  else if (/^st[rř]eda|^st\b/i.test(lower)) explicitDow = 2;
+  else if (/^[cč]tvrtek|^[cč]t\b/i.test(lower)) explicitDow = 3;
+  else if (/^p[aá]tek|^p[aá]\b/i.test(lower)) explicitDow = 4;
+  else if (/^sobota|^so\b/i.test(lower)) explicitDow = 5;
+  else if (/^ned[eě]le|^ne\b/i.test(lower)) explicitDow = 6;
+
+  const parsed = parseDateTime(dateStr);
+  if (parsed && !isNaN(parsed.getTime())) {
+    const year = parsed.getFullYear();
+    const month = parsed.getMonth();
+    const day = parsed.getDate();
+    const dowIndex = explicitDow !== null ? explicitDow : (parsed.getDay() + 6) % 7;
+    return {
+      dateStr: `${year}-${pad(month + 1)}-${pad(day)}`,
+      dayOfWeekIndex: dowIndex,
+      formattedDayLabel: `${dayNames[dowIndex]} ${day}.${month + 1}.`,
+    };
+  }
+
+  // Fallback ISO regex
+  const m = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) {
+    const year = parseInt(m[1], 10);
+    const month = parseInt(m[2], 10) - 1;
+    const day = parseInt(m[3], 10);
+    const d = new Date(year, month, day, 12, 0, 0);
+    const dowIndex = explicitDow !== null ? explicitDow : (d.getDay() + 6) % 7;
+    return {
+      dateStr: `${m[1]}-${m[2]}-${m[3]}`,
+      dayOfWeekIndex: dowIndex,
+      formattedDayLabel: `${dayNames[dowIndex]} ${day}.${month + 1}.`,
+    };
+  }
+
+  // Fallback Czech D. M. YYYY regex with optional spaces
+  const dm = dateStr.match(/^(\d{1,2})\s*[./-]\s*(\d{1,2})\s*[./-]\s*(\d{2,4})/);
+  if (dm) {
+    const day = parseInt(dm[1], 10);
+    const month = parseInt(dm[2], 10) - 1;
+    let year = parseInt(dm[3], 10);
+    if (year < 100) year += year < 50 ? 2000 : 1900;
+    const d = new Date(year, month, day, 12, 0, 0);
+    const dowIndex = explicitDow !== null ? explicitDow : (d.getDay() + 6) % 7;
+    return {
+      dateStr: `${year}-${pad(month + 1)}-${pad(day)}`,
+      dayOfWeekIndex: dowIndex,
+      formattedDayLabel: `${dayNames[dowIndex]} ${day}.${month + 1}.`,
+    };
+  }
+
+  return {
+    dateStr: dateStr.substring(0, 10),
+    dayOfWeekIndex: explicitDow !== null ? explicitDow : 0,
+    formattedDayLabel: explicitDow !== null ? `${dayNames[explicitDow]} ?` : 'Po ?',
+  };
+}
+
 export function computeDayOfWeekStatistics(records: MovementRecord[]): DayOfWeekStat[] {
   return DOW_DEFINITIONS.map(def => {
-    // In JS getDay(): 0 is Sunday, 1 is Monday ... 6 is Saturday
-    // Monday-based index: (getDay() + 6) % 7
     const dowRecords = records.filter(r => {
-      const d = new Date(r.zacatek_pickovani);
-      const dow = (d.getDay() + 6) % 7;
-      return dow === def.index;
+      const info = getRecordDateInfo(r.zacatek_pickovani);
+      return info.dayOfWeekIndex === def.index;
     });
 
     const totalOrders = dowRecords.length;
@@ -258,7 +328,7 @@ export function computeDailyStatistics(records: MovementRecord[]): DailyStat[] {
   const groups = new Map<string, MovementRecord[]>();
 
   for (const r of records) {
-    const dateStr = r.zacatek_pickovani.substring(0, 10);
+    const { dateStr } = getRecordDateInfo(r.zacatek_pickovani);
     if (!groups.has(dateStr)) {
       groups.set(dateStr, []);
     }
@@ -269,6 +339,7 @@ export function computeDailyStatistics(records: MovementRecord[]): DailyStat[] {
 
   return sortedDates.map(date => {
     const list = groups.get(date)!;
+    const { dayOfWeekIndex, formattedDayLabel: dayLabel } = getRecordDateInfo(date);
     const totalShipments = list.length;
     const totalItems = list.reduce((acc, r) => acc + (r.pocet_produktu || 1), 0);
 
@@ -282,12 +353,6 @@ export function computeDailyStatistics(records: MovementRecord[]): DailyStat[] {
     const avgPickPerOrderSec = totalShipments > 0 ? Number((sumPick / totalShipments).toFixed(1)) : 0;
     const avgPackPerOrderSec = totalShipments > 0 ? Number((sumPack / totalShipments).toFixed(1)) : 0;
     const avgTotalPerOrderSec = Number((avgPickPerOrderSec + avgPackPerOrderSec).toFixed(1));
-
-    // Date label in Czech and Day of Week
-    const d = new Date(date + 'T12:00:00');
-    const dayOfWeekIndex = (d.getDay() + 6) % 7;
-    const dayNames = ['Po', 'Út', 'St', 'Čt', 'Pá', 'So', 'Ne'];
-    const dayLabel = `${dayNames[dayOfWeekIndex]} ${d.getDate()}.${d.getMonth() + 1}.`;
 
     const pareto = computeProductPareto(list);
 
