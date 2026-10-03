@@ -1,7 +1,9 @@
 import React from 'react';
-import { Database, UploadCloud, RefreshCw, Sparkles, Download, Layers, ShieldCheck, AlertCircle } from 'lucide-react';
+import { Database, UploadCloud, RefreshCw, Sparkles, Download, Layers, ShieldCheck, AlertCircle, Globe, LogOut, User } from 'lucide-react';
 import { DbStatus } from '../types.js';
 import { downloadSampleCsv, downloadSampleExcel } from '../utils/fileParser.js';
+import { useLanguage } from '../context/LanguageContext.js';
+import { useAuth } from '../context/AuthContext.js';
 
 interface HeaderProps {
   dbStatus: DbStatus;
@@ -20,6 +22,9 @@ export const Header: React.FC<HeaderProps> = ({
   isLoading,
   totalRecordsCount,
 }) => {
+  const { lang, setLang, t } = useLanguage();
+  const { username, logout } = useAuth();
+
   return (
     <header className="border-b border-slate-800 bg-slate-900/95 backdrop-blur-md sticky top-0 z-30">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -34,20 +39,20 @@ export const Header: React.FC<HeaderProps> = ({
             <div>
               <div className="flex items-center space-x-2">
                 <h1 className="text-base font-bold text-white tracking-tight">
-                  Skladová Analytika
+                  {t.header.appName}
                 </h1>
                 <span className="text-[11px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
                   Pick & Pack
                 </span>
               </div>
               <p className="text-xs text-slate-400 hidden sm:block">
-                Efektivita pickování a balení na 1 produkt (1, 2, 3, 4, 5+ ks zásilky)
+                {t.header.tagline}
               </p>
             </div>
           </div>
 
           {/* Center / Right controls */}
-          <div className="flex items-center space-x-2.5">
+          <div className="flex items-center space-x-2 sm:space-x-2.5">
             {/* MariaDB Status pill */}
             <button
               onClick={onOpenDbSettings}
@@ -72,10 +77,10 @@ export const Header: React.FC<HeaderProps> = ({
                     }`}
                   />
                 </span>
-                <span className="font-semibold">
+                <span className="font-semibold hidden sm:inline">
                   {dbStatus.connected
-                    ? `MariaDB: ${dbStatus.database || 'připojeno'}`
-                    : 'Lokální režim'}
+                    ? `MariaDB: ${dbStatus.database || t.header.connectedMariaDb}`
+                    : t.header.localMode}
                 </span>
                 {dbStatus.latencyMs !== undefined && (
                   <span className="text-[10px] text-emerald-500/80 font-mono">
@@ -85,15 +90,41 @@ export const Header: React.FC<HeaderProps> = ({
               </div>
             </button>
 
+            {/* Language Switcher */}
+            <div className="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs">
+              <button
+                onClick={() => setLang('cs')}
+                className={`px-2 py-1 rounded-lg font-bold transition-all ${
+                  lang === 'cs'
+                    ? 'bg-indigo-600 text-white shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+                title="Přepnout do češtiny"
+              >
+                CZ
+              </button>
+              <button
+                onClick={() => setLang('en')}
+                className={`px-2 py-1 rounded-lg font-bold transition-all ${
+                  lang === 'en'
+                    ? 'bg-indigo-600 text-white shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+                title="Switch to English"
+              >
+                EN
+              </button>
+            </div>
+
             {/* Template download dropdown/btn */}
-            <div className="hidden lg:flex items-center space-x-1">
+            <div className="hidden xl:flex items-center space-x-1">
               <button
                 onClick={downloadSampleCsv}
                 className="px-2.5 py-1.5 text-xs text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-800 rounded-lg border border-slate-700/60 transition-colors flex items-center space-x-1.5"
-                title="Stáhnout vzorový CSV soubor s požadovanou strukturou"
+                title="Stáhnout vzorový CSV soubor"
               >
                 <Download className="w-3.5 h-3.5 text-slate-400" />
-                <span>Vzor CSV</span>
+                <span>CSV</span>
               </button>
               <button
                 onClick={downloadSampleExcel}
@@ -101,7 +132,7 @@ export const Header: React.FC<HeaderProps> = ({
                 title="Stáhnout vzorový Excel soubor"
               >
                 <Download className="w-3.5 h-3.5 text-slate-400" />
-                <span>Vzor Excel</span>
+                <span>Excel</span>
               </button>
             </div>
 
@@ -109,21 +140,36 @@ export const Header: React.FC<HeaderProps> = ({
             <button
               onClick={onLoadSampleData}
               disabled={isLoading}
-              className="hidden md:flex items-center space-x-1.5 px-3 py-1.5 text-xs font-medium text-indigo-300 bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/30 rounded-lg transition-all"
-              title="Načíst 400+ ukázkových pohybů pro testování grafů a statistik"
+              className="hidden lg:flex items-center space-x-1.5 px-3 py-1.5 text-xs font-medium text-indigo-300 bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/30 rounded-lg transition-all"
+              title="Vygenerovat ukázková skladová data"
             >
               <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-              <span>Generovat data</span>
+              <span>{t.header.sampleDataBtn}</span>
             </button>
 
             {/* Import Button */}
             <button
               onClick={onOpenImport}
-              className="flex items-center space-x-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white shadow-md shadow-blue-500/20 transition-all hover:scale-[1.02] active:scale-[0.98]"
+              className="flex items-center space-x-1.5 sm:space-x-2 px-3 sm:px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white shadow-md shadow-blue-500/20 transition-all hover:scale-[1.02] active:scale-[0.98]"
             >
               <UploadCloud className="w-4 h-4" />
-              <span>Importovat pohyby</span>
+              <span className="hidden sm:inline">{t.header.importBtn}</span>
             </button>
+
+            {/* User badge & Logout */}
+            <div className="flex items-center pl-1 sm:pl-2 border-l border-slate-800 space-x-2">
+              <span className="hidden md:flex items-center space-x-1.5 px-2 py-1 bg-slate-800/80 border border-slate-700/60 rounded-lg text-[11px] text-slate-300 font-mono">
+                <User className="w-3 h-3 text-indigo-400" />
+                <span>{username || 'eusfhb'}</span>
+              </span>
+              <button
+                onClick={logout}
+                className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg border border-transparent hover:border-rose-500/30 transition-all"
+                title={t.auth.logout}
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         </div>
       </div>

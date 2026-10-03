@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { Table, Download, ArrowUpDown, ChevronLeft, ChevronRight, Hash, Box, Package, Clock, BarChart } from 'lucide-react';
 import { MovementRecord } from '../types.js';
 import { formatTimeValue, getBracketBadgeColor } from '../utils/analytics.js';
+import { useLanguage } from '../context/LanguageContext.js';
 import * as XLSX from 'xlsx';
 
 interface MovementsTableProps {
@@ -20,6 +21,7 @@ type SortField =
   | 'total_per_item_s';
 
 export const MovementsTable: React.FC<MovementsTableProps> = ({ records, unit }) => {
+  const { lang, t } = useLanguage();
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const [sortField, setSortField] = useState<SortField>('zacatek_pickovani');
@@ -140,11 +142,11 @@ export const MovementsTable: React.FC<MovementsTableProps> = ({ records, unit })
               <Table className="w-5 h-5" />
             </span>
             <h2 className="text-lg font-bold text-white tracking-tight">
-              Detailní data pohybů
+              {t.table.title}
             </h2>
           </div>
           <p className="text-xs text-slate-400 mt-1">
-            Jednotlivé záznamy o pickování a balení vč. přesných časových známek a přepočtu na 1 produkt.
+            {lang === 'cs' ? 'Jednotlivé záznamy o pickování a balení vč. přesných časových známek a přepočtu na 1 produkt.' : 'Individual pick and pack movement logs with timestamps and per-unit metrics.'}
           </p>
         </div>
 
@@ -153,18 +155,18 @@ export const MovementsTable: React.FC<MovementsTableProps> = ({ records, unit })
           <button
             onClick={exportTableToExcel}
             className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold border border-slate-700 transition-colors flex items-center space-x-1.5"
-            title="Exportovat aktuálně vyfiltrovaná data do Excelu"
+            title={t.table.exportExcel}
           >
             <Download className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Export Excel</span>
+            <span>Excel</span>
           </button>
           <button
             onClick={exportTableToCsv}
             className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold border border-slate-700 transition-colors flex items-center space-x-1.5"
-            title="Exportovat aktuálně vyfiltrovaná data do CSV"
+            title={t.table.exportCsv}
           >
             <Download className="w-3.5 h-3.5 text-blue-400" />
-            <span>Export CSV</span>
+            <span>CSV</span>
           </button>
         </div>
       </div>
@@ -179,73 +181,73 @@ export const MovementsTable: React.FC<MovementsTableProps> = ({ records, unit })
                 className="py-3 px-3.5 font-semibold cursor-pointer hover:text-white"
               >
                 <div className="flex items-center space-x-1">
-                  <span>Datum & Čas</span>
+                  <span>{lang === 'cs' ? 'Datum & Čas' : 'Date & Time'}</span>
                   <ArrowUpDown className="w-3 h-3 text-slate-500" />
                 </div>
               </th>
-              <th className="py-3 px-3 font-semibold">Sběrný box</th>
+              <th className="py-3 px-3 font-semibold">{t.table.colBox}</th>
               <th
                 onClick={() => handleSort('obsah_objednavek')}
                 className="py-3 px-3 font-semibold cursor-pointer hover:text-white"
               >
                 <div className="flex items-center space-x-1">
-                  <span>Objednávka</span>
+                  <span>{t.table.colOrder}</span>
                   <ArrowUpDown className="w-3 h-3 text-slate-500" />
                 </div>
               </th>
-              <th className="py-3 px-3 font-semibold">EAN produktu</th>
+              <th className="py-3 px-3 font-semibold">{t.table.colEan}</th>
               <th
                 onClick={() => handleSort('pocet_produktu')}
                 className="py-3 px-3 font-semibold text-center cursor-pointer hover:text-white"
               >
                 <div className="flex items-center justify-center space-x-1">
-                  <span>Počet ks</span>
+                  <span>{t.table.colPieces}</span>
                   <ArrowUpDown className="w-3 h-3 text-slate-500" />
                 </div>
               </th>
-              <th className="py-3 px-3 font-semibold text-center">Kategorie</th>
+              <th className="py-3 px-3 font-semibold text-center">{t.table.colCategory}</th>
               <th
                 onClick={() => handleSort('pick_duration_s')}
-                className="py-3 px-3 font-semibold text-right text-indigo-300 cursor-pointer hover:text-white"
+                className="py-3 px-2.5 font-semibold text-right text-indigo-300 border-l border-slate-800 cursor-pointer hover:text-white"
               >
                 <div className="flex items-center justify-end space-x-1">
-                  <span>Pick celkem</span>
-                  <ArrowUpDown className="w-3 h-3 text-slate-500" />
-                </div>
-              </th>
-              <th
-                onClick={() => handleSort('pick_per_item_s')}
-                className="py-3 px-3 font-semibold text-right text-indigo-300 bg-indigo-950/20 cursor-pointer hover:text-white"
-              >
-                <div className="flex items-center justify-end space-x-1">
-                  <span>Pick / 1 ks</span>
+                  <span>{t.brackets.tableOrderPick}</span>
                   <ArrowUpDown className="w-3 h-3 text-slate-500" />
                 </div>
               </th>
               <th
                 onClick={() => handleSort('pack_duration_s')}
-                className="py-3 px-3 font-semibold text-right text-emerald-300 cursor-pointer hover:text-white"
+                className="py-3 px-2.5 font-semibold text-right text-emerald-300 cursor-pointer hover:text-white"
               >
                 <div className="flex items-center justify-end space-x-1">
-                  <span>Balení celkem</span>
+                  <span>{t.brackets.tableOrderPack}</span>
+                  <ArrowUpDown className="w-3 h-3 text-slate-500" />
+                </div>
+              </th>
+              <th
+                onClick={() => handleSort('pick_per_item_s')}
+                className="py-3 px-2.5 font-semibold text-right text-indigo-200 bg-indigo-950/20 border-l border-slate-800 cursor-pointer hover:text-white"
+              >
+                <div className="flex items-center justify-end space-x-1">
+                  <span>{t.table.colPickPerItem}</span>
                   <ArrowUpDown className="w-3 h-3 text-slate-500" />
                 </div>
               </th>
               <th
                 onClick={() => handleSort('pack_per_item_s')}
-                className="py-3 px-3 font-semibold text-right text-emerald-300 bg-emerald-950/20 cursor-pointer hover:text-white"
+                className="py-3 px-2.5 font-semibold text-right text-emerald-200 bg-emerald-950/20 cursor-pointer hover:text-white"
               >
                 <div className="flex items-center justify-end space-x-1">
-                  <span>Balení / 1 ks</span>
+                  <span>{t.table.colPackPerItem}</span>
                   <ArrowUpDown className="w-3 h-3 text-slate-500" />
                 </div>
               </th>
               <th
                 onClick={() => handleSort('total_per_item_s')}
-                className="py-3 px-3.5 font-semibold text-right text-purple-300 cursor-pointer hover:text-white"
+                className="py-3 px-3 font-semibold text-right text-purple-200 font-bold bg-purple-950/20 cursor-pointer hover:text-white"
               >
                 <div className="flex items-center justify-end space-x-1">
-                  <span>Celkem / 1 ks</span>
+                  <span>{t.table.colTotalPerItem}</span>
                   <ArrowUpDown className="w-3 h-3 text-slate-500" />
                 </div>
               </th>
@@ -255,7 +257,7 @@ export const MovementsTable: React.FC<MovementsTableProps> = ({ records, unit })
             {paginatedRecords.length === 0 ? (
               <tr>
                 <td colSpan={11} className="py-8 text-center text-slate-500 text-xs font-sans">
-                  Žádné odpovídající záznamy pro zadaný filtr.
+                  {t.table.noData}
                 </td>
               </tr>
             ) : (
@@ -299,22 +301,27 @@ export const MovementsTable: React.FC<MovementsTableProps> = ({ records, unit })
                     </td>
                     <td className="py-2.5 px-3 text-center">
                       <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${colors.bg} ${colors.text} ${colors.border}`}>
-                        {r.bracket === '5+' ? '5+ ks' : `${r.bracket} ks`}
+                        {r.bracket === '6+' ? '6+ ks' : `${r.bracket} ks`}
                       </span>
                     </td>
-                    <td className="py-2.5 px-3 text-right text-indigo-300">
+                    {/* Order Total Level */}
+                    <td className="py-2.5 px-2.5 text-right text-indigo-300 border-l border-slate-800">
                       {formatTimeValue(r.pick_duration_s, unit)}
                     </td>
-                    <td className="py-2.5 px-3 text-right font-bold text-indigo-200 bg-indigo-950/20">
-                      {formatTimeValue(r.pick_per_item_s, unit)}
-                    </td>
-                    <td className="py-2.5 px-3 text-right text-emerald-300">
+                    <td className="py-2.5 px-2.5 text-right text-emerald-300">
                       {formatTimeValue(r.pack_duration_s, unit)}
                     </td>
-                    <td className="py-2.5 px-3 text-right font-bold text-emerald-200 bg-emerald-950/20">
+                    <td className="py-2.5 px-2.5 text-right font-bold text-purple-300">
+                      {formatTimeValue(r.pick_duration_s + r.pack_duration_s, unit)}
+                    </td>
+                    {/* Per Unit Level */}
+                    <td className="py-2.5 px-2.5 text-right font-bold text-indigo-200 bg-indigo-950/20 border-l border-slate-800">
+                      {formatTimeValue(r.pick_per_item_s, unit)}
+                    </td>
+                    <td className="py-2.5 px-2.5 text-right font-bold text-emerald-200 bg-emerald-950/20">
                       {formatTimeValue(r.pack_per_item_s, unit)}
                     </td>
-                    <td className="py-2.5 px-3.5 text-right font-bold text-purple-300">
+                    <td className="py-2.5 px-3 text-right font-bold text-purple-200 bg-purple-950/20">
                       {formatTimeValue(r.total_per_item_s, unit)}
                     </td>
                   </tr>

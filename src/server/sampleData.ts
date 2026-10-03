@@ -33,42 +33,98 @@ export function generateSampleWarehouseData(daysBack: number = 14, totalRecords:
     date.setHours(hour, minute, second, 0);
 
     // Distribution of brackets:
-    // 38% 1-item, 25% 2-items, 15% 3-items, 10% 4-items, 12% 5+ items
+    // 34% 1-item, 24% 2-items, 15% 3-items, 11% 4-items, 8% 5-items, 8% 6+ items
     const roll = Math.random();
     let itemCount: number;
-    let bracket: '1' | '2' | '3' | '4' | '5+';
+    let bracket: '1' | '2' | '3' | '4' | '5' | '6+';
 
-    if (roll < 0.38) {
+    if (roll < 0.34) {
       itemCount = 1;
       bracket = '1';
-    } else if (roll < 0.63) {
+    } else if (roll < 0.58) {
       itemCount = 2;
       bracket = '2';
-    } else if (roll < 0.78) {
+    } else if (roll < 0.73) {
       itemCount = 3;
       bracket = '3';
-    } else if (roll < 0.88) {
+    } else if (roll < 0.84) {
       itemCount = 4;
       bracket = '4';
+    } else if (roll < 0.92) {
+      itemCount = 5;
+      bracket = '5';
     } else {
-      itemCount = 5 + Math.floor(Math.random() * 6); // 5 to 10 items
-      bracket = '5+';
+      itemCount = 6 + Math.floor(Math.random() * 6); // 6 to 11 items
+      bracket = '6+';
     }
 
-    // Realistic warehouse timings matching Boxes and Box scans
-    // Picking:
-    // Base walking travel to aisle: 20 - 40s
-    // Scan & pick per unit: 12 - 24s
-    const basePickWalkSec = 18 + Math.random() * 20;
-    const pickTimePerUnitSec = 12 + Math.random() * 10;
-    const rawPickDuration = basePickWalkSec + (itemCount * pickTimePerUnitSec);
-    const pickDurationSec = Math.max(8, Math.round(rawPickDuration * (Math.random() < 0.05 ? 1.3 : 1.0)));
+    // Box grouping: group every ~6 orders into a single physical collection box
+    const ordersPerBox = 6;
+    const boxIndex = Math.floor(i / ordersPerBox);
+    const currentBoxId = boxIdSequence + boxIndex;
+    const randomBoxCode = boxCodes[boxIndex % boxCodes.length];
 
-    // Packing:
-    // Box fold/setup + scan per unit:
-    // In actual data: sec_per_scan is ~8.5 - 12s, plus order preparation ~15-25s
-    const secPerScan = Number((7.5 + Math.random() * 4).toFixed(2));
-    const basePackSetupSec = 18 + Math.random() * 14;
+    // 1 in 3 boxes is High Overlap (concentrated identical/similar SKUs)
+    // 1 in 3 is Medium Overlap
+    // 1 in 3 is Low Overlap / High Diversity (many unique products in the same tote)
+    const boxTier = boxIndex % 3; // 0 = high, 1 = medium, 2 = low
+    const isHighMultipickBox = (boxTier === 0);
+    const isMediumMultipickBox = (boxTier === 1);
+    const isLowMultipickBox = (boxTier === 2);
+
+    // EAN assignment based on box consolidation
+    let randomEan: string;
+    if (isHighMultipickBox) {
+      // High overlap: almost all orders in this box share 1 or 2 specific EANs
+      const coreEan = sampleEans[boxIndex % sampleEans.length];
+      randomEan = Math.random() < 0.85 ? coreEan : sampleEans[(boxIndex + 1) % sampleEans.length];
+    } else if (isMediumMultipickBox) {
+      // Medium overlap: 2-3 shared EANs
+      const coreEan = sampleEans[(boxIndex * 2) % sampleEans.length];
+      randomEan = Math.random() < 0.5 ? coreEan : sampleEans[(boxIndex * 2 + 1) % sampleEans.length];
+    } else {
+      // Low overlap (High diversity): each order has an entirely different EAN
+      randomEan = sampleEans[(i * 3 + (i % 7)) % sampleEans.length];
+    }
+
+    // Realistic warehouse timings:
+    // 1. Picking:
+    // High overlap amortizes travel time and picker stays at the same bin location.
+    // Low overlap requires traveling to a different aisle/bin for each item.
+    let basePickWalkSec: number;
+    let pickTimePerUnitSec: number;
+    if (isHighMultipickBox) {
+      basePickWalkSec = 7 + Math.random() * 6; // 7-13s
+      pickTimePerUnitSec = 6 + Math.random() * 4; // 6-10s
+    } else if (isMediumMultipickBox) {
+      basePickWalkSec = 14 + Math.random() * 8; // 14-22s
+      pickTimePerUnitSec = 9 + Math.random() * 5; // 9-14s
+    } else {
+      basePickWalkSec = 24 + Math.random() * 14; // 24-38s
+      pickTimePerUnitSec = 13 + Math.random() * 7; // 13-20s
+    }
+
+    const rawPickDuration = basePickWalkSec + (itemCount * pickTimePerUnitSec);
+    const pickDurationSec = Math.max(8, Math.round(rawPickDuration * (Math.random() < 0.04 ? 1.2 : 1.0)));
+
+    // 2. Packing:
+    // High overlap: items in tote are uniform/standardized, no rummaging or confusion -> fast packing.
+    // Low overlap: tote is chaotic with unique items, packer must search, check codes, sort -> slow packing.
+    let basePackSetupSec: number;
+    let secPerScan: number;
+
+    if (isHighMultipickBox) {
+      basePackSetupSec = 8 + Math.random() * 5; // 8-13s fast handling
+      secPerScan = 5 + Math.random() * 2.5; // 5-7.5s scan
+    } else if (isMediumMultipickBox) {
+      basePackSetupSec = 14 + Math.random() * 7; // 14-21s
+      secPerScan = 7 + Math.random() * 3; // 7-10s
+    } else {
+      // High diversity: searching through mixed tote adds significant search time per order
+      basePackSetupSec = 22 + Math.random() * 12; // 22-34s search & sort
+      secPerScan = 9 + Math.random() * 4; // 9-13s
+    }
+
     const rawPackDuration = basePackSetupSec + (itemCount * secPerScan);
     const packDurationSec = Math.max(6, Math.round(rawPackDuration));
 
@@ -84,9 +140,6 @@ export function generateSampleWarehouseData(daysBack: number = 14, totalRecords:
     const packPerItem = Number((packDurationSec / itemCount).toFixed(2));
     const totalPerItem = Number(((pickDurationSec + packDurationSec) / itemCount).toFixed(2));
 
-    const randomEan = sampleEans[Math.floor(Math.random() * sampleEans.length)];
-    const randomBoxCode = boxCodes[Math.floor(Math.random() * boxCodes.length)];
-    const currentBoxId = boxIdSequence + Math.floor(i / 6); // several orders per box
     const orderId = String(orderSequence++);
     const randomPacker = packers[Math.floor(Math.random() * packers.length)];
 
@@ -111,6 +164,9 @@ export function generateSampleWarehouseData(daysBack: number = 14, totalRecords:
       packer: randomPacker,
       sec_per_scan: secPerScan,
       wait_pick_to_pack_min: waitPickToPackMin,
+      box_unique_eans: isHighMultipickBox ? 3 : isMediumMultipickBox ? 6 : 14,
+      box_total_units: isHighMultipickBox ? 48 : isMediumMultipickBox ? 36 : 24,
+      box_shared_skus_count: isHighMultipickBox ? 5 : isMediumMultipickBox ? 2 : 0,
       created_at: pickStartTime.toISOString(),
     });
   }

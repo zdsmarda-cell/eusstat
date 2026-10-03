@@ -88,7 +88,8 @@ export function determineBracket(itemCount: number): ItemBracket {
   if (itemCount === 2) return '2';
   if (itemCount === 3) return '3';
   if (itemCount === 4) return '4';
-  return '5+';
+  if (itemCount === 5) return '5';
+  return '6+';
 }
 
 /**
@@ -250,6 +251,40 @@ export function linkBoxesAndScans(boxesRows: any[], scansRows: any[], sheetNames
       scans.sort((a, b) => a.time.getTime() - b.time.getTime());
     }
 
+    // Precalculate SKU overlaps per box_id
+    const boxSynergyInfo = new Map<string, { uniqueEansCount: number; totalUnits: number; sharedSkusCount: number }>();
+    for (const group of orderGroups.values()) {
+      if (!boxSynergyInfo.has(group.box_id)) {
+        boxSynergyInfo.set(group.box_id, { uniqueEansCount: 0, totalUnits: 0, sharedSkusCount: 0 });
+      }
+    }
+    // Track unique EANs and multi-order shared EANs
+    const boxEanToOrders = new Map<string, Map<string, Set<string>>>();
+    for (const group of orderGroups.values()) {
+      if (!boxEanToOrders.has(group.box_id)) {
+        boxEanToOrders.set(group.box_id, new Map());
+      }
+      const eMap = boxEanToOrders.get(group.box_id)!;
+      for (const s of group.scans) {
+        if (!eMap.has(s.ean)) {
+          eMap.set(s.ean, new Set());
+        }
+        eMap.get(s.ean)!.add(group.order_id);
+      }
+    }
+    for (const [bId, eMap] of boxEanToOrders.entries()) {
+      let shared = 0;
+      for (const orderSet of eMap.values()) {
+        if (orderSet.size > 1) shared++;
+      }
+      const bUnits = (boxesMap.get(bId)?.units) || 0;
+      boxSynergyInfo.set(bId, {
+        uniqueEansCount: eMap.size,
+        totalUnits: bUnits,
+        sharedSkusCount: shared,
+      });
+    }
+
     for (const group of orderGroups.values()) {
       const box = boxesMap.get(group.box_id) || {
         box_id: group.box_id,
@@ -318,6 +353,9 @@ export function linkBoxesAndScans(boxesRows: any[], scansRows: any[], sheetNames
         packer: group.packer || box.packer,
         sec_per_scan: box.sec_per_scan,
         wait_pick_to_pack_min: box.wait_pick_to_pack_min,
+        box_unique_eans: boxSynergyInfo.get(box.box_id)?.uniqueEansCount,
+        box_total_units: box.units,
+        box_shared_skus_count: boxSynergyInfo.get(box.box_id)?.sharedSkusCount,
         created_at: firstScanTime.toISOString(),
       });
     }

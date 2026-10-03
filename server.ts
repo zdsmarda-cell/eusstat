@@ -34,6 +34,22 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
   }
 })();
 
+// Authentication Endpoint (Hardcoded credentials requirement: eusfhb / Master353)
+app.post('/api/auth/login', (req, res) => {
+  const { username, password } = req.body;
+  if (username === 'eusfhb' && password === 'Master353') {
+    return res.json({
+      success: true,
+      user: { username: 'eusfhb' },
+      token: 'authenticated_eusfhb_353',
+    });
+  }
+  return res.status(401).json({
+    success: false,
+    error: 'Neplatné přihlašovací údaje / Invalid credentials',
+  });
+});
+
 // DB Settings Endpoints
 app.get('/api/db/config', (req, res) => {
   res.json(getDbConfig());
@@ -112,6 +128,7 @@ app.post('/api/movements/seed-sample', async (req, res) => {
   try {
     const count = Number(req.body.count) || 400;
     const days = Number(req.body.days) || 14;
+    await clearMovements();
     const records = generateSampleWarehouseData(days, count);
     const result = await insertMovements(records);
     res.json({
@@ -131,6 +148,17 @@ app.delete('/api/movements', async (req, res) => {
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Chyba při mazání dat' });
   }
+});
+
+// Guard: API routes must NEVER fall through to Vite HTML middleware
+app.use('/api', (req, res) => {
+  res.status(404).json({ error: `API endpoint '${req.method} ${req.originalUrl}' nenalezen.` });
+});
+
+// Global API error handler
+app.use('/api', (err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error('API Error:', err);
+  res.status(err.status || 500).json({ error: err?.message || 'Interní chyba serveru' });
 });
 
 // Vite or Static file serving

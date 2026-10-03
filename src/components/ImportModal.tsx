@@ -2,11 +2,15 @@ import React, { useState, useRef } from 'react';
 import { X, UploadCloud, FileSpreadsheet, CheckCircle2, AlertTriangle, Download, ArrowRight, Loader2, Clipboard, FileText } from 'lucide-react';
 import { parseFileContent, parseClipboardText, ParseResult, downloadSampleCsv, downloadSampleExcel } from '../utils/fileParser.js';
 import { MovementRecord, DbStatus } from '../types.js';
+import { useLanguage } from '../context/LanguageContext.js';
 
 interface ImportModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onImportComplete: (records: MovementRecord[]) => Promise<void>;
+  onImportComplete: (
+    records: MovementRecord[],
+    onProgress?: (saved: number, total: number) => void
+  ) => Promise<void>;
   dbStatus: DbStatus;
 }
 
@@ -16,12 +20,14 @@ export const ImportModal: React.FC<ImportModalProps> = ({
   onImportComplete,
   dbStatus,
 }) => {
+  const { lang, t } = useLanguage();
   const [activeTab, setActiveTab] = useState<'file' | 'clipboard'>('file');
   const [file, setFile] = useState<File | null>(null);
   const [clipboardText, setClipboardText] = useState('');
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
   const [isParsing, setIsParsing] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState<{ saved: number; total: number } | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -72,14 +78,18 @@ export const ImportModal: React.FC<ImportModalProps> = ({
     if (!parseResult || parseResult.records.length === 0) return;
     setIsImporting(true);
     setImportError(null);
+    setImportProgress({ saved: 0, total: parseResult.records.length });
 
     try {
-      await onImportComplete(parseResult.records);
+      await onImportComplete(parseResult.records, (saved, total) => {
+        setImportProgress({ saved, total });
+      });
       onClose();
     } catch (err: any) {
       setImportError(err.message || 'Nepodařilo se importovat záznamy do databáze.');
     } finally {
       setIsImporting(false);
+      setImportProgress(null);
     }
   };
 
@@ -94,16 +104,16 @@ export const ImportModal: React.FC<ImportModalProps> = ({
             </div>
             <div>
               <h3 className="text-base font-bold text-white">
-                Import pohybů skladu
+                {t.modals.importTitle}
               </h3>
               <p className="text-xs text-slate-400">
-                Nahrajte soubor .xlsx / .csv, nebo jednoduše vložte zkopírované řádky z Excelu (Ctrl+C / Ctrl+V)
+                {t.modals.importSubtitle}
               </p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition-colors"
+            className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
@@ -113,25 +123,25 @@ export const ImportModal: React.FC<ImportModalProps> = ({
         <div className="mt-4 flex items-center space-x-2 border-b border-slate-800/80 pb-3">
           <button
             onClick={() => setActiveTab('file')}
-            className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition-all ${
+            className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition-all cursor-pointer ${
               activeTab === 'file'
                 ? 'bg-indigo-600 text-white shadow-sm'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
             }`}
           >
             <FileSpreadsheet className="w-3.5 h-3.5" />
-            <span>Nahrát soubor (.xlsx / .csv)</span>
+            <span>{t.modals.fileTab}</span>
           </button>
           <button
             onClick={() => setActiveTab('clipboard')}
-            className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition-all ${
+            className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition-all cursor-pointer ${
               activeTab === 'clipboard'
                 ? 'bg-indigo-600 text-white shadow-sm'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
             }`}
           >
             <Clipboard className="w-3.5 h-3.5" />
-            <span>Vložit zkopírované buňky (Ctrl+V)</span>
+            <span>{t.modals.pasteTab}</span>
           </button>
         </div>
 
@@ -139,7 +149,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
         <div className="mt-4 space-y-4">
           {/* Destination Badge */}
           <div className="flex items-center justify-between p-3 rounded-2xl bg-slate-950/60 border border-slate-800 text-xs">
-            <span className="text-slate-400">Cílové úložiště pro import:</span>
+            <span className="text-slate-400">{lang === 'cs' ? 'Cílové úložiště pro import:' : 'Import target storage:'}</span>
             <div className="flex items-center space-x-2">
               <span
                 className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${
@@ -148,7 +158,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
                     : 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
                 }`}
               >
-                {dbStatus.connected ? `MariaDB (${dbStatus.database})` : 'Lokální paměť'}
+                {dbStatus.connected ? `MariaDB (${dbStatus.database})` : (lang === 'cs' ? 'Lokální paměť' : 'Local Memory')}
               </span>
             </div>
           </div>
@@ -235,6 +245,29 @@ export const ImportModal: React.FC<ImportModalProps> = ({
             <div className="flex items-center justify-center space-x-2 py-4 text-xs text-indigo-400">
               <Loader2 className="w-4 h-4 animate-spin" />
               <span>Načítám a analyzuji data...</span>
+            </div>
+          )}
+
+          {/* Live Import Progress */}
+          {isImporting && importProgress && (
+            <div className="p-4 bg-slate-950 border border-indigo-500/40 rounded-2xl space-y-2 animate-in fade-in">
+              <div className="flex items-center justify-between text-xs font-semibold">
+                <span className="text-indigo-300 flex items-center gap-1.5">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
+                  <span>Ukládám do databáze v dávkách...</span>
+                </span>
+                <span className="text-white font-mono">
+                  {importProgress.saved} / {importProgress.total} ({Math.round((importProgress.saved / Math.max(1, importProgress.total)) * 100)} %)
+                </span>
+              </div>
+              <div className="h-2.5 w-full bg-slate-800 rounded-full overflow-hidden p-0.5">
+                <div
+                  className="h-full bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500 rounded-full transition-all duration-300"
+                  style={{
+                    width: `${Math.max(4, Math.round((importProgress.saved / Math.max(1, importProgress.total)) * 100))}%`,
+                  }}
+                />
+              </div>
             </div>
           )}
 

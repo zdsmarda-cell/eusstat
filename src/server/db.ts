@@ -195,6 +195,12 @@ export async function getDbStatus(): Promise<DbStatus> {
   }
 }
 
+function safeDate(val: any): Date {
+  if (!val) return new Date();
+  const d = new Date(val);
+  return isNaN(d.getTime()) ? new Date() : d;
+}
+
 export async function insertMovements(records: MovementRecord[]): Promise<{ count: number; destination: 'mariadb' | 'memory' }> {
   if (records.length === 0) return { count: 0, destination: 'memory' };
 
@@ -219,15 +225,15 @@ export async function insertMovements(records: MovementRecord[]): Promise<{ coun
         r.pocet_produktu,
         r.ean_produktu,
         r.pocet_ks || 1,
-        new Date(r.zacatek_pickovani),
-        new Date(r.konec_pickovani),
-        new Date(r.zacatek_baleni),
-        new Date(r.konec_baleni),
-        r.pick_duration_s,
-        r.pack_duration_s,
-        r.pick_per_item_s,
-        r.pack_per_item_s,
-        r.bracket,
+        safeDate(r.zacatek_pickovani),
+        safeDate(r.konec_pickovani),
+        safeDate(r.zacatek_baleni),
+        safeDate(r.konec_baleni),
+        r.pick_duration_s || 0,
+        r.pack_duration_s || 0,
+        r.pick_per_item_s || 0,
+        r.pack_per_item_s || 0,
+        r.bracket || '1',
         r.packer || null,
         r.sec_per_scan !== undefined ? r.sec_per_scan : null,
         r.wait_pick_to_pack_min !== undefined ? r.wait_pick_to_pack_min : null,

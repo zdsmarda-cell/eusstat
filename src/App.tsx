@@ -4,14 +4,21 @@ import { Header } from './components/Header.js';
 import { FilterBar } from './components/FilterBar.js';
 import { KpiCards } from './components/KpiCards.js';
 import { BracketComparisonSection } from './components/BracketComparisonSection.js';
+import { BoxSynergyAnalysis } from './components/BoxSynergyAnalysis.js';
 import { DailyTrendChart } from './components/DailyTrendChart.js';
 import { MovementsTable } from './components/MovementsTable.js';
+import { MultipickSimulationSection } from './components/MultipickSimulationSection.js';
 import { ImportModal } from './components/ImportModal.js';
 import { DbSettingsModal } from './components/DbSettingsModal.js';
-import { computeBracketStatistics, computeDailyStatistics } from './utils/analytics.js';
+import { LoginForm } from './components/LoginForm.js';
+import { AuthProvider, useAuth } from './context/AuthContext.js';
+import { LanguageProvider, useLanguage } from './context/LanguageContext.js';
+import { computeBracketStatistics, computeDailyStatistics, computeBoxSynergyAndHypothesis } from './utils/analytics.js';
 import { AlertCircle, CheckCircle2, Loader2, Sparkles, Database } from 'lucide-react';
 
-export default function App() {
+function Dashboard() {
+  const { lang, t } = useLanguage();
+
   const [records, setRecords] = useState<MovementRecord[]>([]);
   const [dbStatus, setDbStatus] = useState<DbStatus>({
     connected: false,
@@ -49,18 +56,36 @@ export default function App() {
         fetch('/api/movements?limit=10000'),
       ]);
 
-      const statusData = await statusRes.json();
-      const movementsData = await movementsRes.json();
+      let statusData: DbStatus = { connected: false, type: 'memory' };
+      let movementsData: { records: MovementRecord[] } = { records: [] };
+
+      if (statusRes.ok) {
+        const text = await statusRes.text();
+        try {
+          statusData = JSON.parse(text);
+        } catch {
+          // ignore
+        }
+      }
+
+      if (movementsRes.ok) {
+        const text = await movementsRes.text();
+        try {
+          movementsData = JSON.parse(text);
+        } catch {
+          // ignore
+        }
+      }
 
       setDbStatus(statusData);
       setRecords(movementsData.records || []);
     } catch (err: any) {
       console.error('Chyba při stahování dat:', err);
-      showToast('Nepodařilo se navázat spojení se serverem.', 'error');
+      showToast(lang === 'cs' ? 'Nepodařilo se navázat spojení se serverem.' : 'Failed to connect to server.', 'error');
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [lang]);
 
   useEffect(() => {
     fetchData();
@@ -77,27 +102,53 @@ export default function App() {
       });
       const data = await res.json();
       await fetchData();
-      showToast(data.message || 'Ukázková data skladu byla úspěšně vygenerována.', 'success');
+      showToast(data.message || (lang === 'cs' ? 'Ukázková data skladu byla úspěšně vygenerována.' : 'Warehouse sample data generated successfully.'), 'success');
     } catch (err: any) {
-      showToast('Chyba při generování vzorových dat.', 'error');
+      showToast(lang === 'cs' ? 'Chyba při generování vzorových dat.' : 'Error generating sample data.', 'error');
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Import handler
-  const handleImportComplete = async (newRecords: MovementRecord[]) => {
-    const res = await fetch('/api/movements/import', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ records: newRecords }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.error || 'Chyba při importu do databáze');
+  // Import handler with safe batching / chunking to prevent proxy payload/timeout errors
+  const handleImportComplete = async (
+    newRecords: MovementRecord[],
+    onProgress?: (saved: number, total: number) => void
+  ) => {
+    const BATCH_SIZE = 350;
+    const total = newRecords.length;
+    let saved = 0;
+
+    for (let i = 0; i < total; i += BATCH_SIZE) {
+      const batch = newRecords.slice(i, i + BATCH_SIZE);
+      const res = await fetch('/api/movements/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ records: batch }),
+      });
+
+      const responseText = await res.text();
+      let data: any;
+      try {
+        data = JSON.parse(responseText);
+      } catch {
+        throw new Error(
+          `Server returned invalid response (${res.status}): ${responseText.slice(0, 100)}`
+        );
+      }
+
+      if (!res.ok) {
+        throw new Error(data?.error || `Error saving records (${res.status})`);
+      }
+
+      saved += batch.length;
+      if (onProgress) {
+        onProgress(Math.min(saved, total), total);
+      }
     }
+
     await fetchData();
-    showToast(data.message || `Úspěšně importováno ${newRecords.length} záznamů!`, 'success');
+    showToast(lang === 'cs' ? `Úspěšně importováno ${total} záznamů!` : `Successfully imported ${total} records!`, 'success');
   };
 
   // Filter calculations
@@ -172,6 +223,10 @@ export default function App() {
     return computeDailyStatistics(filteredRecords);
   }, [filteredRecords]);
 
+  const synergyData = useMemo(() => {
+    return computeBoxSynergyAndHypothesis(filteredRecords);
+  }, [filteredRecords]);
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col antialiased selection:bg-indigo-500 selection:text-white">
       {/* Toast Notification */}
@@ -216,9 +271,13 @@ export default function App() {
                 <Database className="w-4 h-4" />
               </span>
               <div>
-                <span className="font-bold text-amber-300">Aplikace běží v lokálním režimu.</span>
+                <span className="font-bold text-amber-300">
+                  {lang === 'cs' ? 'Aplikace běží v lokálním režimu.' : 'Application is running in local memory mode.'}
+                </span>
                 <span className="text-slate-400 ml-1.5">
-                  Pro synchronizaci s vaší externí MariaDB klikněte na nastavení.
+                  {lang === 'cs'
+                    ? 'Pro synchronizaci s vaší externí MariaDB klikněte na nastavení.'
+                    : 'Click settings to configure connection to your external MariaDB.'}
                 </span>
               </div>
             </div>
@@ -226,7 +285,7 @@ export default function App() {
               onClick={() => setIsDbSettingsModalOpen(true)}
               className="px-3 py-1.5 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 rounded-xl font-semibold transition-colors self-start sm:self-auto"
             >
-              Nastavit MariaDB
+              {t.header.dbSettingsBtn}
             </button>
           </div>
         )}
@@ -243,29 +302,35 @@ export default function App() {
         {isLoading ? (
           <div className="flex flex-col items-center justify-center py-20 space-y-3">
             <Loader2 className="w-8 h-8 text-indigo-500 animate-spin" />
-            <p className="text-xs text-slate-400 font-medium">Načítám skladová data a počítám statistiky...</p>
+            <p className="text-xs text-slate-400 font-medium">
+              {lang === 'cs' ? 'Načítám skladová data a počítám statistiky...' : 'Loading warehouse data & computing analytics...'}
+            </p>
           </div>
         ) : records.length === 0 ? (
           <div className="bg-slate-900/60 border border-slate-800 rounded-3xl p-12 text-center max-w-xl mx-auto space-y-4">
             <div className="w-14 h-14 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center mx-auto">
               <Sparkles className="w-7 h-7" />
             </div>
-            <h3 className="text-lg font-bold text-white">V databázi zatím nejsou žádné pohyby</h3>
+            <h3 className="text-lg font-bold text-white">
+              {lang === 'cs' ? 'V databázi zatím nejsou žádné pohyby' : 'No movement records in database'}
+            </h3>
             <p className="text-xs text-slate-400 leading-relaxed">
-              Můžete nahrát váš soubor se záznamy o pickování a balení (CSV, Excel) nebo jedním kliknutím vygenerovat vzorový dataset pro vyzkoušení všech funkcí a grafů.
+              {lang === 'cs'
+                ? 'Můžete nahrát váš soubor se záznamy o pickování a balení (CSV, Excel) nebo jedním kliknutím vygenerovat vzorový dataset pro vyzkoušení všech funkcí a grafů.'
+                : 'Upload your picking & packing movement records (CSV, Excel) or generate a 14-day sample dataset with one click.'}
             </p>
             <div className="flex items-center justify-center gap-3 pt-2">
               <button
                 onClick={handleLoadSampleData}
                 className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-lg shadow-indigo-500/20 transition-all"
               >
-                Načíst vzorová data (14 dní)
+                {lang === 'cs' ? 'Načíst vzorová data (14 dní)' : 'Generate Sample Data (14 days)'}
               </button>
               <button
                 onClick={() => setIsImportModalOpen(true)}
                 className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-xl border border-slate-700 transition-all"
               >
-                Importovat soubor
+                {t.header.importBtn}
               </button>
             </div>
           </div>
@@ -274,21 +339,27 @@ export default function App() {
             {/* KPI Cards */}
             <KpiCards bracketStats={bracketStats} unit={filter.unit} />
 
-            {/* Core Section: Bracket Comparison (1, 2, 3, 4, 5+ ks) */}
+            {/* Core Section: Bracket Comparison (1, 2, 3, 4, 5, 6+ ks) */}
             <BracketComparisonSection bracketStats={bracketStats} unit={filter.unit} />
 
-            {/* Daily Trend Chart (Vývoj přes jednotlivé dny) */}
-            <DailyTrendChart dailyStats={dailyStats} unit={filter.unit} />
+            {/* Multipicking & Product Matches Analysis in Boxes */}
+            <BoxSynergyAnalysis synergyData={synergyData} unit={filter.unit} />
+
+            {/* Daily Performance Table & Pareto Analysis (Vývoj přes dny a dny v týdnu) */}
+            <DailyTrendChart dailyStats={dailyStats} records={filteredRecords} unit={filter.unit} />
 
             {/* Detailed Movements Table */}
             <MovementsTable records={filteredRecords} unit={filter.unit} />
+
+            {/* Zhodnocení: Simulace optimalizace a přeskupení do 2h slotů (Multipicking) */}
+            <MultipickSimulationSection records={filteredRecords} unit={filter.unit} />
           </>
         )}
       </main>
 
       {/* Footer */}
       <footer className="border-t border-slate-900 bg-slate-950 py-6 text-center text-xs text-slate-500">
-        <p>Warehouse Pick & Pack Performance Analytics • Optimalizováno pro MariaDB a fulfillment expedici</p>
+        <p>Warehouse Pick & Pack Performance Analytics • {lang === 'cs' ? 'Optimalizováno pro MariaDB a fulfillment expedici' : 'Optimized for MariaDB and high-throughput fulfillment'}</p>
       </footer>
 
       {/* Modals */}
@@ -305,5 +376,23 @@ export default function App() {
         onConnectionUpdated={fetchData}
       />
     </div>
+  );
+}
+
+function AppGate() {
+  const { isAuthenticated } = useAuth();
+  if (!isAuthenticated) {
+    return <LoginForm />;
+  }
+  return <Dashboard />;
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <LanguageProvider>
+        <AppGate />
+      </LanguageProvider>
+    </AuthProvider>
   );
 }

@@ -1,26 +1,4 @@
-export interface MovementRecord {
-  id?: string | number;
-  box_id?: string | number;
-  sberny_box: string; // box_code e.g. L1Z2-TR-0252
-  obsah_objednavek: string; // order_id e.g. 8385399
-  pocet_produktu: number; // total units in order
-  ean_produktu: string; // ean or sample ean
-  pocet_ks: number; // units of this ean
-  zacatek_pickovani: string; // ISO string
-  konec_pickovani: string;   // ISO string
-  zacatek_baleni: string;      // ISO string
-  konec_baleni: string;        // ISO string
-  pick_duration_s: number;
-  pack_duration_s: number;
-  pick_per_item_s: number;
-  pack_per_item_s: number;
-  total_per_item_s: number;
-  bracket: '1' | '2' | '3' | '4' | '5+';
-  packer?: string;
-  sec_per_scan?: number;
-  wait_pick_to_pack_min?: number;
-  created_at?: string;
-}
+export type ItemBracket = '1' | '2' | '3' | '4' | '5' | '6+';
 
 export interface MariaDbConfig {
   host: string;
@@ -43,13 +21,105 @@ export interface DbStatus {
   lastError?: string;
 }
 
-export type ItemBracket = '1' | '2' | '3' | '4' | '5+';
+export interface MovementRecord {
+  id?: string | number;
+  box_id?: string | number;
+  sberny_box: string; // box_code e.g. L1Z2-TR-0252
+  obsah_objednavek: string; // order_id e.g. 8385399
+  pocet_produktu: number; // total units in order
+  ean_produktu: string; // ean or sample ean
+  pocet_ks: number; // units of this ean
+  zacatek_pickovani: string; // ISO string
+  konec_pickovani: string;   // ISO string
+  zacatek_baleni: string;      // ISO string
+  konec_baleni: string;        // ISO string
+  pick_duration_s: number;
+  pack_duration_s: number;
+  pick_per_item_s: number;
+  pack_per_item_s: number;
+  total_per_item_s: number;
+  bracket: ItemBracket;
+  packer?: string;
+  sec_per_scan?: number;
+  wait_pick_to_pack_min?: number;
+  box_unique_eans?: number; // count of unique EANs in the parent box
+  box_total_units?: number; // total units in the parent box
+  box_shared_skus_count?: number; // count of SKUs that appear in >1 order in this box
+  created_at?: string;
+}
+
+export interface BoxSynergyStat {
+  box_id: string;
+  box_code: string;
+  packer?: string;
+  total_orders: number;
+  total_units: number;
+  unique_eans: number;
+  units_per_ean_ratio: number; // e.g. 84 units / 9 EANs = 9.3 units/SKU
+  shared_skus_count: number; // SKUs appearing in multiple orders
+  overlap_percentage: number; // % of units from shared SKUs
+  category: 'high_overlap' | 'medium_overlap' | 'low_overlap'; // high multipick vs diverse
+  avg_pick_per_unit_s: number;
+  avg_pack_per_unit_s: number;
+  single_item_orders_count: number;
+  multi_item_orders_count: number;
+  single_item_avg_pack_per_unit_s: number;
+  multi_item_avg_pack_per_unit_s: number;
+}
+
+export interface SynergyCategoryStat {
+  bracket: ItemBracket | 'all';
+  label: string;
+  orderCount: number;
+  itemCount: number;
+  avgPickPerUnitSec: number;
+  avgPackPerUnitSec: number;
+  avgTotalPerUnitSec: number;
+}
+
+export interface BoxOverlapTierStats {
+  count: number;
+  avgUnitsPerEan: number;
+  avgPickPerUnitSec: number;
+  avgPackPerUnitSec: number;
+  singleItemPackPerUnitSec: number;
+  multiItemPackPerUnitSec: number;
+  categories: Record<ItemBracket | 'all', SynergyCategoryStat>;
+}
+
+export interface HypothesisBracketComparison {
+  bracket: ItemBracket | 'all';
+  label: string;
+  highPickSec: number;
+  lowPickSec: number;
+  pickSavingsPct: number;
+  highPackSec: number;
+  lowPackSec: number;
+  packSavingsPct: number;
+  highTotalSec: number;
+  lowTotalSec: number;
+  totalSavingsPct: number;
+  highOrders: number;
+  lowOrders: number;
+}
+
+export interface HypothesisAnalysis {
+  highOverlapBoxes: BoxOverlapTierStats;
+  mediumOverlapBoxes: BoxOverlapTierStats;
+  lowOverlapBoxes: BoxOverlapTierStats;
+  pickingSpeedupPct: number; // how much faster picking is in high overlap vs low overlap
+  packingSpeedupPct: number; // how much faster packing is in high overlap vs low overlap for comparable categories
+  packingSlowdownInDiverseMultiItemPct: number; // how much slower packing is when multi-item orders have diverse products
+  bracketComparisons: HypothesisBracketComparison[];
+}
 
 export interface BracketStat {
   bracket: ItemBracket | 'all';
   label: string;
   shipmentCount: number;
   itemCount: number;
+  shipmentSharePct: number; // % share of total shipments in period
+  itemSharePct: number;     // % share of total items in period
   avgPickTotalSec: number;
   avgPickPerItemSec: number;
   medianPickPerItemSec: number;
@@ -65,14 +135,107 @@ export interface BracketStat {
   totalSavingsPctVsSingle: number;
 }
 
+export interface SimulationBracketResult {
+  bracket: ItemBracket | 'all';
+  label: string;
+  orderCount: number;
+  itemCount: number;
+  orderSharePct: number;
+  itemSharePct: number;
+
+  // Baseline (current algorithm)
+  baselinePickSec: number;
+  baselinePackSec: number;
+  baselineTotalSec: number;
+  baselinePickPerItemSec: number;
+  baselinePackPerItemSec: number;
+  baselineTotalPerItemSec: number;
+
+  // Optimized (2-hour slot multipicking clustering)
+  optimizedPickSec: number;
+  optimizedPackSec: number;
+  optimizedTotalSec: number;
+  optimizedPickPerItemSec: number;
+  optimizedPackPerItemSec: number;
+  optimizedTotalPerItemSec: number;
+
+  // Savings
+  pickSavingsSec: number;
+  pickSavingsPct: number;
+  packSavingsSec: number;
+  packSavingsPct: number;
+  totalSavingsSec: number;
+  totalSavingsPct: number;
+}
+
+export interface MultipickSimulationReport {
+  boxCapacityLimit: number;
+  maxObservedUnitsInBox: number;
+  p95ObservedUnitsInBox: number;
+  avgObservedUnitsInBox: number;
+  totalBoxesCurrent: number;
+  totalBoxesSimulated: number;
+  totalTwoHourSlots: number;
+  bracketResults: SimulationBracketResult[];
+  totalSavedSeconds: number;
+  totalSavedHours: number;
+  totalBaselineHours: number;
+  totalOptimizedHours: number;
+  overallSavingsPct: number;
+  baselineMultipickRatioPct: number;
+  simulatedMultipickRatioPct: number;
+}
+
+
+
+export interface ProductParetoData {
+  totalUniqueProducts: number;
+  totalUnits: number;
+  top80ProductsCount: number;
+  top80ProductsSharePct: number;
+  top80Units: number;
+  top80UnitsPct: number;
+  remaining20ProductsCount: number;
+  remaining20ProductsSharePct: number;
+  remaining20Units: number;
+  remaining20UnitsPct: number;
+  topProducts: {
+    ean: string;
+    units: number;
+    sharePct: number;
+  }[];
+}
+
+export interface DayOfWeekStat {
+  dayIndex: number; // 0 = Pondělí, 1 = Úterý, ... 6 = Neděle
+  dayNameCs: string;
+  dayNameEn: string;
+  dayShortCs: string;
+  dayShortEn: string;
+  totalOrders: number;
+  totalUnits: number;
+  avgPickPerItemSec: number;
+  avgPackPerItemSec: number;
+  avgTotalPerItemSec: number;
+  avgPickPerOrderSec: number;
+  avgPackPerOrderSec: number;
+  avgTotalPerOrderSec: number;
+  pareto: ProductParetoData;
+}
+
 export interface DailyStat {
   date: string; // YYYY-MM-DD
   dayLabel: string; // e.g. "Po 12.5."
+  dayOfWeekIndex: number; // 0 = Po, 6 = Ne
   totalShipments: number;
   totalItems: number;
   avgPickPerItemSec: number;
   avgPackPerItemSec: number;
   avgTotalPerItemSec: number;
+  avgPickPerOrderSec: number;
+  avgPackPerOrderSec: number;
+  avgTotalPerOrderSec: number;
+  pareto: ProductParetoData;
   bracketBreakdown: Record<ItemBracket, {
     shipments: number;
     items: number;
@@ -80,6 +243,12 @@ export interface DailyStat {
     avgPackPerItemSec: number;
     avgTotalPerItemSec: number;
   }>;
+}
+
+export interface DailyPerformanceReport {
+  dayOfWeekStats: DayOfWeekStat[];
+  dailyStats: DailyStat[];
+  overallPareto: ProductParetoData;
 }
 
 export interface FilterState {

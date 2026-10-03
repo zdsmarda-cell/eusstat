@@ -1,6 +1,7 @@
 import React from 'react';
 import { Calendar, Filter, Search, Clock, SlidersHorizontal, RotateCcw } from 'lucide-react';
 import { FilterState, ItemBracket } from '../types.js';
+import { useLanguage } from '../context/LanguageContext.js';
 
 interface FilterBarProps {
   filter: FilterState;
@@ -17,22 +18,25 @@ export const FilterBar: React.FC<FilterBarProps> = ({
   totalFilteredCount,
   totalAllCount,
 }) => {
+  const { lang, t } = useLanguage();
+
   const brackets: { id: 'all' | ItemBracket; label: string }[] = [
-    { id: 'all', label: 'Všechny zásilky' },
-    { id: '1', label: '1 kus' },
-    { id: '2', label: '2 kusy' },
-    { id: '3', label: '3 kusy' },
-    { id: '4', label: '4 kusy' },
-    { id: '5+', label: '5 a více kusů' },
+    { id: 'all', label: lang === 'cs' ? 'Všechny zásilky' : 'All sizes' },
+    { id: '1', label: lang === 'cs' ? '1 kus' : '1 item' },
+    { id: '2', label: lang === 'cs' ? '2 kusy' : '2 items' },
+    { id: '3', label: lang === 'cs' ? '3 kusy' : '3 items' },
+    { id: '4', label: lang === 'cs' ? '4 kusy' : '4 items' },
+    { id: '5', label: lang === 'cs' ? '5 kusů' : '5 items' },
+    { id: '6+', label: lang === 'cs' ? '6 a více kusů' : '6+ items' },
   ];
 
   const presets: { id: FilterState['datePreset']; label: string }[] = [
-    { id: 'all', label: 'Celé období' },
-    { id: '30days', label: 'Posledních 30 dní' },
-    { id: '14days', label: '14 dní' },
-    { id: '7days', label: '7 dní' },
-    { id: 'today', label: 'Dnes' },
-    { id: 'custom', label: 'Vlastní' },
+    { id: 'all', label: t.filter.all },
+    { id: '30days', label: t.filter.days30 },
+    { id: '14days', label: t.filter.days14 },
+    { id: '7days', label: t.filter.days7 },
+    { id: 'today', label: t.filter.today },
+    { id: 'custom', label: t.filter.custom },
   ];
 
   return (
@@ -43,7 +47,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
         <div className="flex flex-wrap items-center gap-1.5 bg-slate-950/60 p-1 rounded-xl border border-slate-800/80">
           <span className="text-xs text-slate-400 px-2 flex items-center gap-1">
             <Calendar className="w-3.5 h-3.5 text-indigo-400" />
-            <span>Období:</span>
+            <span>{t.filter.periodLabel}:</span>
           </span>
           {presets.map(p => (
             <button
@@ -66,7 +70,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           <div className="flex items-center bg-slate-950/60 p-1 rounded-xl border border-slate-800/80 text-xs">
             <span className="text-slate-400 px-2 flex items-center gap-1">
               <Clock className="w-3 h-3 text-slate-400" />
-              <span>Jednotky:</span>
+              <span>{t.filter.timeUnit}:</span>
             </span>
             <button
               onClick={() => onChange({ ...filter, unit: 'sec' })}
@@ -76,7 +80,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
                   : 'text-slate-400 hover:text-slate-200'
               }`}
             >
-              Sekundy (s)
+              {t.filter.seconds}
             </button>
             <button
               onClick={() => onChange({ ...filter, unit: 'min' })}
@@ -86,7 +90,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
                   : 'text-slate-400 hover:text-slate-200'
               }`}
             >
-              Minuty (min)
+              {t.filter.minutes}
             </button>
           </div>
 
@@ -101,7 +105,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
             title="Vynechá pauzy a nestandardní operace delší než 30 minut"
           >
             <SlidersHorizontal className="w-3 h-3" />
-            <span>Filtrovat extrémy (&gt;30m)</span>
+            <span>{t.filter.excludeOutliers}</span>
           </button>
         </div>
       </div>
@@ -111,7 +115,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="text-xs font-semibold text-slate-300 mr-1 flex items-center gap-1">
             <Filter className="w-3.5 h-3.5 text-blue-400" />
-            <span>Kusovost zásilky:</span>
+            <span>{t.filter.orderSize}:</span>
           </span>
           {brackets.map(b => {
             const isActive = filter.bracket === b.id;
@@ -134,12 +138,12 @@ export const FilterBar: React.FC<FilterBarProps> = ({
         {/* Counter of active rows */}
         <div className="flex items-center space-x-2 text-xs text-slate-400">
           <span>
-            Zobrazeno <strong className="text-white font-mono">{totalFilteredCount}</strong> z {totalAllCount} záznamů
+            {t.filter.showingCount} <strong className="text-white font-mono">{totalFilteredCount}</strong> {t.filter.ofCount} {totalAllCount} {t.filter.recordsWord}
           </span>
           <button
             onClick={onReset}
             className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-lg transition-colors"
-            title="Resetovat všechny filtry"
+            title={t.filter.resetFilters}
           >
             <RotateCcw className="w-3.5 h-3.5" />
           </button>
@@ -154,7 +158,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
             type="text"
             value={filter.searchQuery}
             onChange={(e) => onChange({ ...filter, searchQuery: e.target.value })}
-            placeholder="Hledat číslo objednávky nebo EAN produktu..."
+            placeholder={t.filter.searchQueryPlaceholder}
             className="w-full pl-9 pr-3 py-1.5 bg-slate-950/60 border border-slate-800 rounded-xl text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
           />
         </div>
@@ -164,21 +168,21 @@ export const FilterBar: React.FC<FilterBarProps> = ({
             type="text"
             value={filter.searchBox}
             onChange={(e) => onChange({ ...filter, searchBox: e.target.value })}
-            placeholder="Filtrovat sběrný box..."
+            placeholder={t.filter.searchBoxPlaceholder}
             className="w-full px-3 py-1.5 bg-slate-950/60 border border-slate-800 rounded-xl text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500"
           />
         </div>
 
         {filter.datePreset === 'custom' && (
           <div className="flex items-center space-x-2 text-xs text-slate-300">
-            <span className="text-slate-400">Od:</span>
+            <span className="text-slate-400">{t.filter.from}:</span>
             <input
               type="date"
               value={filter.dateFrom}
               onChange={(e) => onChange({ ...filter, dateFrom: e.target.value })}
               className="px-2.5 py-1 bg-slate-950 border border-slate-800 rounded-lg text-slate-200"
             />
-            <span className="text-slate-400">Do:</span>
+            <span className="text-slate-400">{t.filter.to}:</span>
             <input
               type="date"
               value={filter.dateTo}
