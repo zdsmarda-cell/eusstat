@@ -1,17 +1,27 @@
 const fs = require('fs');
 const path = require('path');
 
-// Pokud existuje sestavený dist/server.js, použijeme nativní node.
-// Jinak se jako fallback použije lokální tsx z node_modules.
+// Kontrola cest k serveru (dist/server.js, přímý server.js, nebo fallback na tsx)
 const distServerPath = path.resolve(__dirname, 'dist', 'server.js');
-const useCompiled = fs.existsSync(distServerPath);
+const rootServerPath = path.resolve(__dirname, 'server.js');
+
+let scriptTarget = './node_modules/.bin/tsx';
+let scriptArgs = 'server.ts';
+
+if (fs.existsSync(distServerPath)) {
+  scriptTarget = 'dist/server.js';
+  scriptArgs = '';
+} else if (fs.existsSync(rootServerPath)) {
+  scriptTarget = 'server.js';
+  scriptArgs = '';
+}
 
 module.exports = {
   apps: [
     {
       name: 'eusstat',
-      script: useCompiled ? 'dist/server.js' : './node_modules/.bin/tsx',
-      args: useCompiled ? [] : 'server.ts',
+      script: scriptTarget,
+      args: scriptArgs,
       cwd: __dirname,
       instances: 1,
       autorestart: true,

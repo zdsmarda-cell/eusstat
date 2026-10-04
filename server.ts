@@ -182,10 +182,33 @@ if (!isProduction) {
   });
   app.use(vite.middlewares);
 } else {
-  app.use(express.static(path.resolve(__dirname, 'dist')));
-  app.get('*', (req, res) => {
-    res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
-  });
+  const distDir = path.resolve(__dirname, 'dist');
+  const indexHtml = path.resolve(distDir, 'index.html');
+  
+  // If frontend dist files are present, serve them
+  try {
+    const fs = await import('fs');
+    if (fs.existsSync(indexHtml)) {
+      app.use(express.static(distDir));
+      app.get('*', (req, res) => {
+        res.sendFile(indexHtml);
+      });
+    } else {
+      // Standalone backend mode (e.g. when frontend is served directly by Nginx)
+      app.get('/', (req, res) => {
+        res.json({
+          status: 'ok',
+          service: 'Warehouse Pick & Pack Analytics Backend API',
+          version: '1.0.0',
+        });
+      });
+    }
+  } catch {
+    // Fallback if fs check fails
+    app.get('/', (req, res) => {
+      res.json({ status: 'ok', service: 'Warehouse Analytics API' });
+    });
+  }
 }
 
 const server = app.listen(PORT, '0.0.0.0', () => {
