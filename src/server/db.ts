@@ -3,12 +3,12 @@ import { MariaDbConfig, MovementRecord, DbStatus } from '../types.js';
 
 let pool: mysql.Pool | null = null;
 let currentConfig: MariaDbConfig = {
-  host: process.env.MARIADB_HOST || '',
-  port: Number(process.env.MARIADB_PORT) || 3306,
-  user: process.env.MARIADB_USER || '',
-  password: process.env.MARIADB_PASSWORD || '',
-  database: process.env.MARIADB_DATABASE || '',
-  ssl: process.env.MARIADB_SSL === 'true',
+  host: process.env.DB_HOST || process.env.MARIADB_HOST || '',
+  port: Number(process.env.DB_PORT || process.env.MARIADB_PORT) || 3306,
+  user: process.env.DB_USER || process.env.MARIADB_USER || '',
+  password: process.env.DB_PASSWORD || process.env.MARIADB_PASSWORD || '',
+  database: process.env.DB_NAME || process.env.DB_DATABASE || process.env.MARIADB_DATABASE || '',
+  ssl: process.env.DB_SSL === 'true' || process.env.MARIADB_SSL === 'true',
 };
 
 // In-memory fallback dataset so analytics work immediately out-of-the-box
@@ -40,6 +40,8 @@ export async function setDbConfig(config: Partial<MariaDbConfig>): Promise<DbSta
   return await testConnection();
 }
 
+let schemaInitialized = false;
+
 export async function getPool(): Promise<mysql.Pool | null> {
   if (pool) return pool;
   if (!currentConfig.host || !currentConfig.user || !currentConfig.database) {
@@ -47,7 +49,7 @@ export async function getPool(): Promise<mysql.Pool | null> {
   }
 
   try {
-    pool = mysql.createPool({
+    const newPool = mysql.createPool({
       host: currentConfig.host,
       port: currentConfig.port,
       user: currentConfig.user,
@@ -59,6 +61,18 @@ export async function getPool(): Promise<mysql.Pool | null> {
       queueLimit: 0,
       connectTimeout: 8000,
     });
+
+    if (!schemaInitialized) {
+      try {
+        await initMariaDbSchema(newPool);
+        schemaInitialized = true;
+        console.log(`MariaDB schema verified for database '${currentConfig.database}' on ${currentConfig.host}`);
+      } catch (schemaErr: any) {
+        console.warn('Warning: Could not auto-initialize schema on pool creation:', schemaErr?.message);
+      }
+    }
+
+    pool = newPool;
     return pool;
   } catch (err) {
     console.error('Failed to create MariaDB pool:', err);

@@ -19,18 +19,28 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = Number(process.env.PORT) || 3000;
+const PORT = Number(process.env.API_PORT || process.env.APP_PORT || process.env.PORT) || 3000;
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Initial seed if empty
+// Initial database connection check and schema verification
 (async () => {
-  const status = await getDbStatus();
-  if (status.totalRows === 0) {
-    console.log('Seeding initial sample warehouse dataset...');
-    const samples = generateSampleWarehouseData(14, 380);
-    await insertMovements(samples);
+  try {
+    const status = await getDbStatus();
+    if (status.connected && status.type === 'mariadb') {
+      console.log(`✅ Úspěšně připojeno k MariaDB: ${status.user}@${status.host}/${status.database} (řádků: ${status.totalRows})`);
+    } else {
+      console.log(`ℹ️ Aplikace běží v lokálním režimu (paměť). Pro připojení MariaDB nastavte DB_HOST, DB_USER, DB_PASSWORD, DB_NAME v .env.`);
+    }
+
+    if (process.env.NODE_ENV !== 'production' && !process.env.DB_HOST && !process.env.MARIADB_HOST && status.totalRows === 0) {
+      console.log('Generuji ukázková data skladu pro vývojové prostředí...');
+      const samples = generateSampleWarehouseData(14, 380);
+      await insertMovements(samples);
+    }
+  } catch (err: any) {
+    console.error('Chyba při inicializaci DB:', err?.message || err);
   }
 })();
 
@@ -178,6 +188,18 @@ if (!isProduction) {
   });
 }
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Warehouse Pick & Pack Analytics server running on http://0.0.0.0:${PORT}`);
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Warehouse Pick & Pack Analytics server běží na http://0.0.0.0:${PORT}`);
+});
+
+server.on('error', (err: any) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`\n❌ CHYBA PORTU: Port ${PORT} je již obsazen jiným procesem (např. lokálním MySQL/MariaDB serverem nebo jinou aplikací)!`);
+    console.error(`👉 Řešení pro produkci v souboru .env:`);
+    console.error(`   PORT=3000          (port webové aplikace pro Nginx proxy_pass)`);
+    console.error(`   DB_PORT=3306       (port vzdálené MariaDB/MySQL databáze)`);
+    console.error(`   DB_HOST=db.mobilgroup.cz\n`);
+  } else {
+    console.error('Chyba serveru při spuštění:', err);
+  }
 });
