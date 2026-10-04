@@ -35,7 +35,19 @@ process.on('unhandledRejection', (reason: any) => {
 });
 
 const app = express();
-const PORT = Number(process.env.PORT || process.env.APP_PORT || process.env.API_PORT) || 3000;
+// Web application server port:
+// APP_PORT is the server port for Express (e.g. 3030 in production).
+// Note: PORT in .env points to MariaDB (port 3306). Never bind Express to port 3306!
+let APP_SERVER_PORT: number;
+if (process.env.APP_PORT) {
+  APP_SERVER_PORT = Number(process.env.APP_PORT);
+} else if (process.env.API_PORT) {
+  APP_SERVER_PORT = Number(process.env.API_PORT);
+} else if (process.env.PORT && Number(process.env.PORT) !== 3306) {
+  APP_SERVER_PORT = Number(process.env.PORT);
+} else {
+  APP_SERVER_PORT = 3030;
+}
 
 // CORS middleware allowing cross-origin requests (e.g. from port 443 to port 3030)
 app.use((req, res, next) => {
@@ -306,30 +318,44 @@ if (sslKeyPath && sslCertPath) {
       isHttps = true;
       console.log(`🔒 SSL certifikáty aktivovány:\n   KEY:  ${sslKeyPath}\n   CERT: ${resolvedCertPath}`);
     } else {
-      console.warn(`⚠️ SSL soubory nenalezeny:\n   KEY (${sslKeyPath}): ${fs.existsSync(sslKeyPath) ? 'nalezen' : 'NENALEZEN'}\n   CERT (${resolvedCertPath}): ${fs.existsSync(resolvedCertPath) ? 'nalezen' : 'NENALEZEN'}\n   👉 Spouštím server v HTTP režimu na portu ${PORT}.`);
+      console.warn(`⚠️ SSL soubory nenalezeny:\n   KEY (${sslKeyPath}): ${fs.existsSync(sslKeyPath) ? 'nalezen' : 'NENALEZEN'}\n   CERT (${resolvedCertPath}): ${fs.existsSync(resolvedCertPath) ? 'nalezen' : 'NENALEZEN'}\n   👉 Spouštím server v HTTP režimu na portu ${APP_SERVER_PORT}.`);
       server = http.createServer(app);
     }
   } catch (sslErr: any) {
     console.error(`⚠️ Chyba při inicializaci SSL certifikátů: ${sslErr?.message || sslErr}`);
-    console.log(`👉 Spouštím server v HTTP režimu na portu ${PORT}, aby byla aplikace dostupná.`);
+    console.log(`👉 Spouštím server v HTTP režimu na portu ${APP_SERVER_PORT}, aby byla aplikace dostupná.`);
     server = http.createServer(app);
   }
 } else {
   server = http.createServer(app);
 }
 
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(APP_SERVER_PORT, '0.0.0.0', () => {
   const protocol = isHttps ? 'https' : 'http';
-  console.log(`🚀 Warehouse Pick & Pack Analytics server úspěšně běží na ${protocol}://0.0.0.0:${PORT}`);
+  console.log(`🚀 Warehouse Pick & Pack Analytics server úspěšně běží na ${protocol}://0.0.0.0:${APP_SERVER_PORT}`);
 });
+
+// Pokud je APP_SERVER_PORT jiný než 3000 (např. 3030 na produkci), spustíme též listener na portu 3000 pro AI Studio iframe náhled
+if (APP_SERVER_PORT !== 3000) {
+  try {
+    const devProxyServer = http.createServer(app);
+    devProxyServer.listen(3000, '0.0.0.0', () => {
+      console.log(`🌐 AI Studio dev listener aktivní na http://0.0.0.0:3000`);
+    });
+    devProxyServer.on('error', () => {
+      // Ignorovat, pokud je port 3000 obsazen nebo nedostupný
+    });
+  } catch {
+    // ignore
+  }
+}
 
 server.on('error', (err: any) => {
   if (err.code === 'EADDRINUSE') {
-    console.error(`\n❌ CHYBA PORTU: Port ${PORT} je již obsazen jiným procesem (např. lokálním MySQL/MariaDB serverem nebo jinou aplikací)!`);
-    console.error(`👉 Řešení pro produkci v souboru .env:`);
-    console.error(`   PORT=3000          (port webové aplikace pro Nginx proxy_pass)`);
-    console.error(`   DB_PORT=3306       (port vzdálené MariaDB/MySQL databáze)`);
-    console.error(`   DB_HOST=db.mobilgroup.cz\n`);
+    console.error(`\n❌ CHYBA PORTU: Aplikační port ${APP_SERVER_PORT} je již obsazen jiným procesem!`);
+    console.error(`👉 Nastavte v souboru .env volný port pro webový server:`);
+    console.error(`   APP_PORT=3030      (port webové aplikace)`);
+    console.error(`   PORT=3306          (port MariaDB serveru)\n`);
   } else {
     console.error('Chyba serveru při spuštění:', err);
   }

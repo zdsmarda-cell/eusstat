@@ -34,7 +34,12 @@ function loadSavedConfig(): MariaDbConfig {
 
   return {
     host: fileConfig.host || process.env.DB_HOST || process.env.MARIADB_HOST || 'db.mobilgroup.cz',
-    port: Number(fileConfig.port || process.env.DB_PORT || process.env.MARIADB_PORT) || 3306,
+    port: Number(
+      fileConfig.port ||
+      process.env.DB_PORT ||
+      process.env.MARIADB_PORT ||
+      (Number(process.env.PORT) === 3306 ? 3306 : undefined)
+    ) || 3306,
     user: fileConfig.user || process.env.DB_USER || process.env.MARIADB_USER || 'fhb_crm',
     password: fileConfig.password !== undefined ? fileConfig.password : (process.env.DB_PASSWORD || process.env.MARIADB_PASSWORD || ''),
     database: fileConfig.database || process.env.DB_NAME || process.env.DB_DATABASE || process.env.MARIADB_DATABASE || 'fhb_crm',

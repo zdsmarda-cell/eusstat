@@ -36,7 +36,9 @@ function loadSavedConfig() {
   }
   return {
     host: fileConfig.host || process.env.DB_HOST || process.env.MARIADB_HOST || "db.mobilgroup.cz",
-    port: Number(fileConfig.port || process.env.DB_PORT || process.env.MARIADB_PORT) || 3306,
+    port: Number(
+      fileConfig.port || process.env.DB_PORT || process.env.MARIADB_PORT || (Number(process.env.PORT) === 3306 ? 3306 : void 0)
+    ) || 3306,
     user: fileConfig.user || process.env.DB_USER || process.env.MARIADB_USER || "fhb_crm",
     password: fileConfig.password !== void 0 ? fileConfig.password : process.env.DB_PASSWORD || process.env.MARIADB_PASSWORD || "",
     database: fileConfig.database || process.env.DB_NAME || process.env.DB_DATABASE || process.env.MARIADB_DATABASE || "fhb_crm",
@@ -654,7 +656,16 @@ process.on("unhandledRejection", (reason) => {
   console.error("\u274C [NEZACHYCEN\xDD PROMISE REJECTION]:", reason?.message || reason);
 });
 var app = express();
-var PORT = Number(process.env.PORT || process.env.APP_PORT || process.env.API_PORT) || 3e3;
+var APP_SERVER_PORT;
+if (process.env.APP_PORT) {
+  APP_SERVER_PORT = Number(process.env.APP_PORT);
+} else if (process.env.API_PORT) {
+  APP_SERVER_PORT = Number(process.env.API_PORT);
+} else if (process.env.PORT && Number(process.env.PORT) !== 3306) {
+  APP_SERVER_PORT = Number(process.env.PORT);
+} else {
+  APP_SERVER_PORT = 3030;
+}
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
@@ -884,29 +895,39 @@ if (sslKeyPath && sslCertPath) {
       console.warn(`\u26A0\uFE0F SSL soubory nenalezeny:
    KEY (${sslKeyPath}): ${fs2.existsSync(sslKeyPath) ? "nalezen" : "NENALEZEN"}
    CERT (${resolvedCertPath}): ${fs2.existsSync(resolvedCertPath) ? "nalezen" : "NENALEZEN"}
-   \u{1F449} Spou\u0161t\xEDm server v HTTP re\u017Eimu na portu ${PORT}.`);
+   \u{1F449} Spou\u0161t\xEDm server v HTTP re\u017Eimu na portu ${APP_SERVER_PORT}.`);
       server = http.createServer(app);
     }
   } catch (sslErr) {
     console.error(`\u26A0\uFE0F Chyba p\u0159i inicializaci SSL certifik\xE1t\u016F: ${sslErr?.message || sslErr}`);
-    console.log(`\u{1F449} Spou\u0161t\xEDm server v HTTP re\u017Eimu na portu ${PORT}, aby byla aplikace dostupn\xE1.`);
+    console.log(`\u{1F449} Spou\u0161t\xEDm server v HTTP re\u017Eimu na portu ${APP_SERVER_PORT}, aby byla aplikace dostupn\xE1.`);
     server = http.createServer(app);
   }
 } else {
   server = http.createServer(app);
 }
-server.listen(PORT, "0.0.0.0", () => {
+server.listen(APP_SERVER_PORT, "0.0.0.0", () => {
   const protocol = isHttps ? "https" : "http";
-  console.log(`\u{1F680} Warehouse Pick & Pack Analytics server \xFAsp\u011B\u0161n\u011B b\u011B\u017E\xED na ${protocol}://0.0.0.0:${PORT}`);
+  console.log(`\u{1F680} Warehouse Pick & Pack Analytics server \xFAsp\u011B\u0161n\u011B b\u011B\u017E\xED na ${protocol}://0.0.0.0:${APP_SERVER_PORT}`);
 });
+if (APP_SERVER_PORT !== 3e3) {
+  try {
+    const devProxyServer = http.createServer(app);
+    devProxyServer.listen(3e3, "0.0.0.0", () => {
+      console.log(`\u{1F310} AI Studio dev listener aktivn\xED na http://0.0.0.0:3000`);
+    });
+    devProxyServer.on("error", () => {
+    });
+  } catch {
+  }
+}
 server.on("error", (err) => {
   if (err.code === "EADDRINUSE") {
     console.error(`
-\u274C CHYBA PORTU: Port ${PORT} je ji\u017E obsazen jin\xFDm procesem (nap\u0159. lok\xE1ln\xEDm MySQL/MariaDB serverem nebo jinou aplikac\xED)!`);
-    console.error(`\u{1F449} \u0158e\u0161en\xED pro produkci v souboru .env:`);
-    console.error(`   PORT=3000          (port webov\xE9 aplikace pro Nginx proxy_pass)`);
-    console.error(`   DB_PORT=3306       (port vzd\xE1len\xE9 MariaDB/MySQL datab\xE1ze)`);
-    console.error(`   DB_HOST=db.mobilgroup.cz
+\u274C CHYBA PORTU: Aplika\u010Dn\xED port ${APP_SERVER_PORT} je ji\u017E obsazen jin\xFDm procesem!`);
+    console.error(`\u{1F449} Nastavte v souboru .env voln\xFD port pro webov\xFD server:`);
+    console.error(`   APP_PORT=3030      (port webov\xE9 aplikace)`);
+    console.error(`   PORT=3306          (port MariaDB serveru)
 `);
   } else {
     console.error("Chyba serveru p\u0159i spu\u0161t\u011Bn\xED:", err);
