@@ -1,4 +1,7 @@
 import express from 'express';
+import http from 'http';
+import https from 'https';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
@@ -20,6 +23,17 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = Number(process.env.API_PORT || process.env.APP_PORT || process.env.PORT) || 3000;
+
+// CORS middleware allowing cross-origin requests (e.g. from port 443 to port 3030)
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+  next();
+});
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -211,8 +225,56 @@ if (!isProduction) {
   }
 }
 
-const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Warehouse Pick & Pack Analytics server běží na http://0.0.0.0:${PORT}`);
+// HTTPS / SSL configuration from .env
+const sslKeyPath = process.env.SSL_KEY_PATH;
+let sslCertPath = process.env.SSL_CERT_PATH || process.env.SSL_CRT_PATH;
+const sslCaPath = process.env.SSL_CA_PATH || process.env.SSL_CHAIN_PATH;
+
+let server: http.Server | https.Server;
+let isHttps = false;
+
+if (sslKeyPath && sslCertPath) {
+  try {
+    // Check if .csr was specified but a .crt file exists alongside it
+    if (!fs.existsSync(sslCertPath) && sslCertPath.endsWith('.csr')) {
+      const crtCandidate = sslCertPath.replace(/\.csr$/, '.crt');
+      if (fs.existsSync(crtCandidate)) {
+        console.log(`ℹ️ Používám nalezený certifikát: ${crtCandidate}`);
+        sslCertPath = crtCandidate;
+      }
+    }
+
+    if (fs.existsSync(sslKeyPath) && fs.existsSync(sslCertPath)) {
+      const keyContent = fs.readFileSync(sslKeyPath);
+      const certContent = fs.readFileSync(sslCertPath);
+
+      const httpsOptions: https.ServerOptions = {
+        key: keyContent,
+        cert: certContent,
+      };
+
+      if (sslCaPath && fs.existsSync(sslCaPath)) {
+        httpsOptions.ca = fs.readFileSync(sslCaPath);
+      }
+
+      server = https.createServer(httpsOptions, app);
+      isHttps = true;
+      console.log(`🔒 SSL certifikáty aktivovány:\n   KEY:  ${sslKeyPath}\n   CERT: ${sslCertPath}`);
+    } else {
+      console.warn(`⚠️ SSL soubory nenalezeny:\n   KEY (${sslKeyPath}): ${fs.existsSync(sslKeyPath) ? 'nalezen' : 'NENALEZEN'}\n   CERT (${sslCertPath}): ${fs.existsSync(sslCertPath) ? 'nalezen' : 'NENALEZEN'}\n   Spouštím v HTTP režimu.`);
+      server = http.createServer(app);
+    }
+  } catch (sslErr: any) {
+    console.error(`⚠️ Chyba při inicializaci SSL certifikátů (${sslErr?.message || sslErr}). Spouštím v HTTP režimu.`);
+    server = http.createServer(app);
+  }
+} else {
+  server = http.createServer(app);
+}
+
+server.listen(PORT, '0.0.0.0', () => {
+  const protocol = isHttps ? 'https' : 'http';
+  console.log(`🚀 Warehouse Pick & Pack Analytics server běží na ${protocol}://0.0.0.0:${PORT}`);
 });
 
 server.on('error', (err: any) => {

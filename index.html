@@ -12,6 +12,10 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // Volitelná konfigurace API pro produkci (pokud běží API na jiném portu než web)
+      window.__APP_CONFIG__ = window.__APP_CONFIG__ || {};
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

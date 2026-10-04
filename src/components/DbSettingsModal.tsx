@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, Database, CheckCircle2, AlertCircle, RefreshCw, KeyRound, Server, HardDrive, ShieldCheck, HelpCircle } from 'lucide-react';
 import { MariaDbConfig, DbStatus } from '../types.js';
 import { useLanguage } from '../context/LanguageContext.js';
+import { apiUrl } from '../config/api.js';
 
 interface DbSettingsModalProps {
   isOpen: boolean;
@@ -31,7 +32,7 @@ export const DbSettingsModal: React.FC<DbSettingsModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
-      fetch('/api/db/config')
+      fetch(apiUrl('/api/db/config'))
         .then(res => res.json())
         .then(data => {
           setConfig(prev => ({
@@ -54,7 +55,7 @@ export const DbSettingsModal: React.FC<DbSettingsModalProps> = ({
     setTestResult(null);
 
     try {
-      const res = await fetch('/api/db/test', {
+      const res = await fetch(apiUrl('/api/db/test'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config),
@@ -75,7 +76,7 @@ export const DbSettingsModal: React.FC<DbSettingsModalProps> = ({
   const handleSaveConfig = async () => {
     setIsSaving(true);
     try {
-      const res = await fetch('/api/db/save', {
+      const res = await fetch(apiUrl('/api/db/save'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config),
