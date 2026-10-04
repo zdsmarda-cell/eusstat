@@ -119,7 +119,7 @@ export const MultipickSimulationSection: React.FC<MultipickSimulationSectionProp
           <span className="p-2 rounded-xl bg-amber-500/10 text-amber-400 border border-amber-500/20 shrink-0">
             <Sliders className="w-4 h-4" />
           </span>
-          <div className="text-xs space-y-0.5">
+          <div className="text-xs space-y-1">
             <div className="flex items-center space-x-2">
               <span className="font-bold text-white">{t.simulation.boxLimitLabel}:</span>
               <span className="font-mono font-bold text-amber-300 text-sm px-2 py-0.5 bg-amber-500/10 rounded-md border border-amber-500/20">
@@ -129,6 +129,23 @@ export const MultipickSimulationSection: React.FC<MultipickSimulationSectionProp
             <p className="text-[11px] text-slate-400">
               {t.simulation.derivedFromData} = <strong className="text-slate-200">{report.maxObservedUnitsInBox} {lang === 'cs' ? 'ks' : 'units'}</strong>, {t.simulation.p95Word} = <strong className="text-slate-200">{report.p95ObservedUnitsInBox} {lang === 'cs' ? 'ks' : 'units'}</strong>, {t.simulation.avgWord} = <strong className="text-slate-200">{report.avgObservedUnitsInBox} {lang === 'cs' ? 'ks' : 'units'}</strong>.
             </p>
+            {report.volumetricSummary && (
+              <div className="flex flex-wrap items-center gap-1.5 pt-1 text-[11px] text-slate-400">
+                <span className="text-indigo-400 font-semibold flex items-center gap-1">
+                  <Box className="w-3.5 h-3.5" />
+                  {lang === 'cs' ? 'Objemová aproximace dle EAN:' : 'Volumetric SKU approximation:'}
+                </span>
+                <span className="bg-slate-900 px-2 py-0.5 rounded border border-slate-800 text-slate-300">
+                  {lang === 'cs' ? 'Drobný' : 'Small'}: <strong className="text-emerald-400">{report.volumetricSummary.smallSkusCount} SKU</strong> (~60-100 ks)
+                </span>
+                <span className="bg-slate-900 px-2 py-0.5 rounded border border-slate-800 text-slate-300">
+                  {lang === 'cs' ? 'Střední' : 'Medium'}: <strong className="text-sky-400">{report.volumetricSummary.mediumSkusCount} SKU</strong> (~25-50 ks)
+                </span>
+                <span className="bg-slate-900 px-2 py-0.5 rounded border border-slate-800 text-slate-300">
+                  {lang === 'cs' ? 'Objemný' : 'Bulky'}: <strong className="text-amber-400">{report.volumetricSummary.bulkySkusCount} SKU</strong> (~8-20 ks)
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -137,8 +154,8 @@ export const MultipickSimulationSection: React.FC<MultipickSimulationSectionProp
           <span className="text-[11px] text-slate-400 shrink-0">{t.simulation.adjustLimit}:</span>
           <input
             type="range"
-            min={Math.max(10, Math.round(report.avgObservedUnitsInBox * 0.6))}
-            max={Math.max(50, Math.round(report.maxObservedUnitsInBox * 1.3))}
+            min={15}
+            max={Math.max(60, Math.min(90, Math.round(report.maxObservedUnitsInBox * 1.3)))}
             value={capacityOverride}
             onChange={(e) => setCapacityOverride(Number(e.target.value))}
             className="w-36 accent-indigo-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"

@@ -9,7 +9,9 @@ import {
   MultipickSimulationReport,
   ProductParetoData,
   DayOfWeekStat,
-  DailyPerformanceReport
+  DailyPerformanceReport,
+  SkuVolumeProfile,
+  VolumetricAnalysisSummary,
 } from '../types.js';
 import { parseDateTime } from './fileParser.js';
 
@@ -414,6 +416,108 @@ export function computeDailyPerformanceReport(records: MovementRecord[]): DailyP
 }
 
 /**
+ * Rozlišení reálných fyzických várek/naplnění sběrných přepravek (box waves/sessions).
+ * Přepravka (sberny_box) se v provozu točí opakovaně. Pokud není box_id unikátní pro dávku,
+ * rozlišíme jednotlivé várky podle času (časový rozestup > 45 minut nebo jiný kalendářní den).
+ */
+export function getBoxWaveKey(record: MovementRecord): string {
+  if (record.box_id && record.box_id !== record.sberny_box && record.box_id !== '0' && record.box_id !== '') {
+    return `box_${record.box_id}`;
+  }
+  const rawTime = record.zacatek_pickovani || record.zacatek_baleni;
+  const d = rawTime ? new Date(rawTime) : new Date(0);
+  const timeMs = isNaN(d.getTime()) ? 0 : d.getTime();
+  // 45-minutový blok pro jednu fyzickou pickovací várku sběrného boxu
+  const sessionIndex = Math.floor(timeMs / (45 * 60 * 1000));
+  const dateStr = isNaN(d.getTime()) ? '2026-10-01' : d.toISOString().substring(0, 10);
+  const boxCode = record.sberny_box || 'default_box';
+  return `${boxCode}_${dateStr}_s${sessionIndex}`;
+}
+
+/**
+ * Ze stávajících obsahů produktů v boxech aproximuje maximální možný počet
+ * pro každý produkt uložený v boxu (dle EAN) a odvodí jeho poměrný objem.
+ */
+export function estimateSkuVolumeProfiles(records: MovementRecord[]): Map<string, SkuVolumeProfile> {
+  const statsMap = new Map<string, {
+    totalUnits: number;
+    maxSingleOrder: number;
+    maxBoxSession: number;
+    ordersCount: number;
+  }>();
+
+  const sessionBoxUnits = new Map<string, Map<string, number>>();
+
+  for (const r of records) {
+    const ean = (r.ean_produktu ? r.ean_produktu.split(' ')[0] : 'UNKNOWN').trim();
+    const units = r.pocet_produktu || 1;
+    const waveKey = getBoxWaveKey(r);
+
+    if (!statsMap.has(ean)) {
+      statsMap.set(ean, { totalUnits: 0, maxSingleOrder: 0, maxBoxSession: 0, ordersCount: 0 });
+    }
+    const stat = statsMap.get(ean)!;
+    stat.totalUnits += units;
+    stat.ordersCount += 1;
+    if (units > stat.maxSingleOrder) {
+      stat.maxSingleOrder = units;
+    }
+
+    if (!sessionBoxUnits.has(waveKey)) {
+      sessionBoxUnits.set(waveKey, new Map());
+    }
+    const boxEans = sessionBoxUnits.get(waveKey)!;
+    boxEans.set(ean, (boxEans.get(ean) || 0) + units);
+  }
+
+  // Zjistíme maximální množství daného EAN v jedné sběrné dávce boxu
+  for (const [, boxEans] of sessionBoxUnits.entries()) {
+    for (const [ean, count] of boxEans.entries()) {
+      const stat = statsMap.get(ean);
+      if (stat && count > stat.maxBoxSession) {
+        stat.maxBoxSession = count;
+      }
+    }
+  }
+
+  const result = new Map<string, SkuVolumeProfile>();
+
+  for (const [ean, stat] of statsMap.entries()) {
+    let estimatedFullBoxCapacity: number;
+    let category: 'small' | 'medium' | 'bulky';
+
+    // Heuristická aproximace na základě reálných dat:
+    // Pokud byl daný EAN viděn v dávce ve velkém počtu (např. 15+ ks), je to drobný produkt.
+    if (stat.maxBoxSession >= 15 || stat.maxSingleOrder >= 8) {
+      category = 'small';
+      estimatedFullBoxCapacity = Math.max(50, Math.min(100, Math.round(Math.max(stat.maxBoxSession * 1.5, 60))));
+    } else if (stat.maxBoxSession >= 4 || stat.maxSingleOrder >= 3 || (stat.totalUnits / stat.ordersCount) >= 2) {
+      category = 'medium';
+      estimatedFullBoxCapacity = Math.max(25, Math.min(50, Math.round(Math.max(stat.maxBoxSession * 1.3, 35))));
+    } else {
+      category = 'bulky';
+      estimatedFullBoxCapacity = Math.max(8, Math.min(20, Math.round(Math.max(stat.maxBoxSession * 1.2, 12))));
+    }
+
+    // Bezpečnostní fyzické mantinely pro standardní sběrnou přepravku (např. 45–55 litrů):
+    estimatedFullBoxCapacity = Math.max(6, Math.min(100, estimatedFullBoxCapacity));
+    const unitVolumeFraction = 1 / estimatedFullBoxCapacity;
+
+    result.set(ean, {
+      ean,
+      totalUnitsObserved: stat.totalUnits,
+      maxUnitsInSingleOrder: stat.maxSingleOrder,
+      maxUnitsInSingleBoxSession: stat.maxBoxSession,
+      estimatedFullBoxCapacity,
+      unitVolumeFraction,
+      category,
+    });
+  }
+
+  return result;
+}
+
+/**
  * Analyzes Product Matches in Boxes (Multipicking & Pack Complexity)
  * Evaluates the user's hypothesis:
  * 1. Multipicking speedup: high SKU overlap in a box reduces picking time per unit
@@ -423,10 +527,10 @@ export function computeBoxSynergyAndHypothesis(records: MovementRecord[]): {
   boxStats: BoxSynergyStat[];
   hypothesis: HypothesisAnalysis;
 } {
-  // Group records by box
+  // Group records by real box session wave
   const boxGroups = new Map<string, MovementRecord[]>();
   for (const r of records) {
-    const key = String(r.box_id || r.sberny_box);
+    const key = getBoxWaveKey(r);
     if (!boxGroups.has(key)) {
       boxGroups.set(key, []);
     }
@@ -705,26 +809,44 @@ export function runMultipickSlotSimulation(
   records: MovementRecord[],
   capacityOverride?: number
 ): MultipickSimulationReport {
-  // 1. Analyze existing boxes to deduce capacity constraints
+  // 1. Zjistíme profily jednotlivých SKU (objem, kapacita pro EAN z reálných dat)
+  const skuProfiles = estimateSkuVolumeProfiles(records);
+
+  // 2. Analyzujeme reálné jednotlivé dávky boxů (waves), nikoliv celý kumulovaný čas
   const boxUnitsMap = new Map<string, number>();
   for (const r of records) {
-    const bKey = String(r.sberny_box || r.box_id || 'box_default');
-    boxUnitsMap.set(bKey, (boxUnitsMap.get(bKey) || 0) + (r.pocet_produktu || 1));
+    const waveKey = getBoxWaveKey(r);
+    boxUnitsMap.set(waveKey, (boxUnitsMap.get(waveKey) || 0) + (r.pocet_produktu || 1));
   }
 
-  const unitsPerBoxList = Array.from(boxUnitsMap.values()).sort((a, b) => a - b);
-  const maxObservedUnitsInBox = unitsPerBoxList.length > 0 ? Math.max(...unitsPerBoxList) : 60;
-  const p95ObservedUnitsInBox = unitsPerBoxList.length > 0 ? Math.round(percentile(unitsPerBoxList, 95)) : 50;
+  // Zjištěné kapacity v reálných várkách z dat
+  const rawUnitsPerBoxList = Array.from(boxUnitsMap.values()).sort((a, b) => a - b);
+  // Ošetření anomálií: reálná přepravka má meze (např. 10 až 65 ks)
+  const unitsPerBoxList = rawUnitsPerBoxList.length > 0
+    ? rawUnitsPerBoxList.map(u => Math.min(u, 65))
+    : [35];
+
+  const maxObservedUnitsInBox = unitsPerBoxList.length > 0 ? Math.max(...unitsPerBoxList) : 48;
+  const p95ObservedUnitsInBox = unitsPerBoxList.length > 0 ? Math.round(percentile(unitsPerBoxList, 95)) : 42;
   const avgObservedUnitsInBox = unitsPerBoxList.length > 0
     ? Math.round(unitsPerBoxList.reduce((a, b) => a + b, 0) / unitsPerBoxList.length)
+    : 34;
+
+  // Průměrná kapacita boxu odvozená z objemového mixu stávajících produktů
+  const profileList = Array.from(skuProfiles.values());
+  const avgSkuCapacity = profileList.length > 0
+    ? Math.round(profileList.reduce((sum, p) => sum + p.estimatedFullBoxCapacity, 0) / profileList.length)
     : 35;
 
-  // Use override if provided, or default to safe upper capacity limit
+  const baselineDefaultCapacity = Math.max(15, Math.min(55, Math.round((avgObservedUnitsInBox + avgSkuCapacity) / 2)));
   const boxCapacityLimit = capacityOverride !== undefined && capacityOverride > 0
     ? capacityOverride
-    : Math.max(15, Math.min(maxObservedUnitsInBox, Math.round(p95ObservedUnitsInBox * 1.05 || 60)));
+    : baselineDefaultCapacity;
 
-  // 2. Group orders by 2-hour slots
+  // Cílové procento zaplnění boxu podle nastaveného limitu
+  const targetBoxVolumeFactor = Math.max(0.4, Math.min(1.0, (boxCapacityLimit / baselineDefaultCapacity) * 0.85));
+
+  // 3. Rozdělení objednávek do 2-hodinových oken (slotů)
   const slotsMap = new Map<string, MovementRecord[]>();
   for (const r of records) {
     const rawTime = r.zacatek_pickovani || r.zacatek_baleni;
@@ -778,7 +900,37 @@ export function runMultipickSlotSimulation(
     const slotUnits = slotRecords.reduce((sum, r) => sum + (r.pocet_produktu || 1), 0);
     totalUnitsOverall += slotUnits;
 
-    const boxesNeededInSlot = Math.max(1, Math.ceil(slotUnits / boxCapacityLimit));
+    // Kombinatorické naplnění sběrných boxů podle objemů produktů
+    const sortedSlotRecords = [...slotRecords].sort((a, b) => {
+      const eA = a.ean_produktu || '';
+      const eB = b.ean_produktu || '';
+      return eA.localeCompare(eB);
+    });
+
+    let currentBoxVol = 0;
+    let currentBoxUnits = 0;
+    let boxesNeededInSlot = 0;
+
+    for (const r of sortedSlotRecords) {
+      const ean = (r.ean_produktu ? r.ean_produktu.split(' ')[0] : 'UNKNOWN').trim();
+      const units = r.pocet_produktu || 1;
+      const prof = skuProfiles.get(ean);
+      const unitVol = prof ? prof.unitVolumeFraction : (1 / boxCapacityLimit);
+      const orderVol = units * unitVol;
+
+      if (currentBoxUnits > 0 && (currentBoxVol + orderVol > targetBoxVolumeFactor || currentBoxUnits + units > boxCapacityLimit)) {
+        boxesNeededInSlot += 1;
+        currentBoxVol = orderVol;
+        currentBoxUnits = units;
+      } else {
+        currentBoxVol += orderVol;
+        currentBoxUnits += units;
+      }
+    }
+    if (currentBoxUnits > 0) {
+      boxesNeededInSlot += 1;
+    }
+    boxesNeededInSlot = Math.max(1, boxesNeededInSlot);
     totalSimulatedBoxes += boxesNeededInSlot;
 
     const eanFrequency = new Map<string, number>();
@@ -946,6 +1098,14 @@ export function runMultipickSlotSimulation(
     ? Math.min(95, Math.round((simulatedSharedSkuUnits / totalUnitsOverall) * 100))
     : 78;
 
+  const volumetricSummary: VolumetricAnalysisSummary = {
+    totalSkusAnalyzed: skuProfiles.size,
+    avgEstimatedCapacityPerSku: avgSkuCapacity,
+    smallSkusCount: Array.from(skuProfiles.values()).filter(p => p.category === 'small').length,
+    mediumSkusCount: Array.from(skuProfiles.values()).filter(p => p.category === 'medium').length,
+    bulkySkusCount: Array.from(skuProfiles.values()).filter(p => p.category === 'bulky').length,
+  };
+
   return {
     boxCapacityLimit,
     maxObservedUnitsInBox,
@@ -962,5 +1122,6 @@ export function runMultipickSlotSimulation(
     overallSavingsPct: grandTotalSavingsPct,
     baselineMultipickRatioPct: Math.max(15, baselineMultipickRatioPct),
     simulatedMultipickRatioPct: Math.max(65, simulatedMultipickRatioPct),
+    volumetricSummary,
   };
 }

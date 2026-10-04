@@ -168,6 +168,24 @@ export interface SimulationBracketResult {
   totalSavingsPct: number;
 }
 
+export interface SkuVolumeProfile {
+  ean: string;
+  totalUnitsObserved: number;
+  maxUnitsInSingleOrder: number;
+  maxUnitsInSingleBoxSession: number;
+  estimatedFullBoxCapacity: number;
+  unitVolumeFraction: number;
+  category: 'small' | 'medium' | 'bulky';
+}
+
+export interface VolumetricAnalysisSummary {
+  totalSkusAnalyzed: number;
+  avgEstimatedCapacityPerSku: number;
+  smallSkusCount: number;
+  mediumSkusCount: number;
+  bulkySkusCount: number;
+}
+
 export interface MultipickSimulationReport {
   boxCapacityLimit: number;
   maxObservedUnitsInBox: number;
@@ -184,6 +202,7 @@ export interface MultipickSimulationReport {
   overallSavingsPct: number;
   baselineMultipickRatioPct: number;
   simulatedMultipickRatioPct: number;
+  volumetricSummary?: VolumetricAnalysisSummary;
 }
 
 
