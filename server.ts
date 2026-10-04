@@ -1,6 +1,7 @@
 import express from 'express';
 import http from 'http';
 import https from 'https';
+import tls from 'tls';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -16,13 +17,25 @@ import {
 } from './src/server/db.js';
 import { generateSampleWarehouseData } from './src/server/sampleData.js';
 
-dotenv.config();
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Načtení .env ze všech možných umístění (kořen projektu, aktuální cwd, nadřazený adresář dist)
+dotenv.config();
+dotenv.config({ path: path.resolve(process.cwd(), '.env') });
+dotenv.config({ path: path.resolve(__dirname, '.env') });
+dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
+
+// Globální zachycení chyb, aby server nikdy tiše nespadl
+process.on('uncaughtException', (err: any) => {
+  console.error('❌ [NEZACHYCENÁ CHYBA SERVERU]:', err?.message || err);
+});
+process.on('unhandledRejection', (reason: any) => {
+  console.error('❌ [NEZACHYCENÝ PROMISE REJECTION]:', reason?.message || reason);
+});
+
 const app = express();
-const PORT = Number(process.env.API_PORT || process.env.APP_PORT || process.env.PORT) || 3000;
+const PORT = Number(process.env.APP_PORT || process.env.API_PORT || process.env.PORT) || 3030;
 
 // CORS middleware allowing cross-origin requests (e.g. from port 443 to port 3030)
 app.use((req, res, next) => {
@@ -235,18 +248,43 @@ let isHttps = false;
 
 if (sslKeyPath && sslCertPath) {
   try {
-    // Check if .csr was specified but a .crt file exists alongside it
-    if (!fs.existsSync(sslCertPath) && sslCertPath.endsWith('.csr')) {
-      const crtCandidate = sslCertPath.replace(/\.csr$/, '.crt');
+    // 1. Kontrola existence souborů
+    let resolvedCertPath = sslCertPath;
+
+    // Pokud je zadána cesta .csr a soubor neexistuje, nebo pokud chceme preferovat skutečný certifikát .crt
+    const crtCandidate = sslCertPath.replace(/\.csr$/, '.crt');
+    const pemCandidate = sslCertPath.replace(/\.csr$/, '.pem');
+
+    if (!fs.existsSync(resolvedCertPath)) {
       if (fs.existsSync(crtCandidate)) {
-        console.log(`ℹ️ Používám nalezený certifikát: ${crtCandidate}`);
-        sslCertPath = crtCandidate;
+        console.log(`ℹ️ Cesta ${sslCertPath} neexistuje, používám nalezený certifikát: ${crtCandidate}`);
+        resolvedCertPath = crtCandidate;
+      } else if (fs.existsSync(pemCandidate)) {
+        console.log(`ℹ️ Cesta ${sslCertPath} neexistuje, používám nalezený certifikát: ${pemCandidate}`);
+        resolvedCertPath = pemCandidate;
       }
     }
 
-    if (fs.existsSync(sslKeyPath) && fs.existsSync(sslCertPath)) {
+    if (fs.existsSync(sslKeyPath) && fs.existsSync(resolvedCertPath)) {
       const keyContent = fs.readFileSync(sslKeyPath);
-      const certContent = fs.readFileSync(sslCertPath);
+      let certContent = fs.readFileSync(resolvedCertPath);
+
+      // 2. Kontrola, zda soubor není pouze CSR (žádost o podpis), která by shodila TLS stack
+      const certStr = certContent.toString('utf8');
+      if (certStr.includes('CERTIFICATE REQUEST') && !certStr.includes('BEGIN CERTIFICATE')) {
+        console.warn(`⚠️ POZOR: Soubor ${resolvedCertPath} je žádost (CSR), nikoliv certifikát!`);
+        if (fs.existsSync(crtCandidate)) {
+          console.log(`✅ Nalezen skutečný certifikát: ${crtCandidate}`);
+          resolvedCertPath = crtCandidate;
+          certContent = fs.readFileSync(crtCandidate);
+        } else if (fs.existsSync(pemCandidate)) {
+          console.log(`✅ Nalezen skutečný certifikát: ${pemCandidate}`);
+          resolvedCertPath = pemCandidate;
+          certContent = fs.readFileSync(pemCandidate);
+        } else {
+          throw new Error(`Soubor ${resolvedCertPath} je pouze žádost (.csr). V .env nastavte cestu ke skutečnému certifikátu (.crt nebo .pem)!`);
+        }
+      }
 
       const httpsOptions: https.ServerOptions = {
         key: keyContent,
@@ -257,15 +295,23 @@ if (sslKeyPath && sslCertPath) {
         httpsOptions.ca = fs.readFileSync(sslCaPath);
       }
 
+      // 3. Validace TLS kontextu před spuštěním, aby server nikdy nespadl s uncaught výjimkou
+      tls.createSecureContext({
+        key: keyContent,
+        cert: certContent,
+        ca: httpsOptions.ca,
+      });
+
       server = https.createServer(httpsOptions, app);
       isHttps = true;
-      console.log(`🔒 SSL certifikáty aktivovány:\n   KEY:  ${sslKeyPath}\n   CERT: ${sslCertPath}`);
+      console.log(`🔒 SSL certifikáty aktivovány:\n   KEY:  ${sslKeyPath}\n   CERT: ${resolvedCertPath}`);
     } else {
-      console.warn(`⚠️ SSL soubory nenalezeny:\n   KEY (${sslKeyPath}): ${fs.existsSync(sslKeyPath) ? 'nalezen' : 'NENALEZEN'}\n   CERT (${sslCertPath}): ${fs.existsSync(sslCertPath) ? 'nalezen' : 'NENALEZEN'}\n   Spouštím v HTTP režimu.`);
+      console.warn(`⚠️ SSL soubory nenalezeny:\n   KEY (${sslKeyPath}): ${fs.existsSync(sslKeyPath) ? 'nalezen' : 'NENALEZEN'}\n   CERT (${resolvedCertPath}): ${fs.existsSync(resolvedCertPath) ? 'nalezen' : 'NENALEZEN'}\n   👉 Spouštím server v HTTP režimu na portu ${PORT}.`);
       server = http.createServer(app);
     }
   } catch (sslErr: any) {
-    console.error(`⚠️ Chyba při inicializaci SSL certifikátů (${sslErr?.message || sslErr}). Spouštím v HTTP režimu.`);
+    console.error(`⚠️ Chyba při inicializaci SSL certifikátů: ${sslErr?.message || sslErr}`);
+    console.log(`👉 Spouštím server v HTTP režimu na portu ${PORT}, aby byla aplikace dostupná.`);
     server = http.createServer(app);
   }
 } else {
@@ -274,7 +320,7 @@ if (sslKeyPath && sslCertPath) {
 
 server.listen(PORT, '0.0.0.0', () => {
   const protocol = isHttps ? 'https' : 'http';
-  console.log(`🚀 Warehouse Pick & Pack Analytics server běží na ${protocol}://0.0.0.0:${PORT}`);
+  console.log(`🚀 Warehouse Pick & Pack Analytics server úspěšně běží na ${protocol}://0.0.0.0:${PORT}`);
 });
 
 server.on('error', (err: any) => {

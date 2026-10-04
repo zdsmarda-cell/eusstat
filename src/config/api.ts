@@ -11,40 +11,48 @@ declare global {
 
 /**
  * Získá základní URL pro volání API backendu.
- * Podporuje:
- * - Runtime konfiguraci přes window.__APP_CONFIG__
- * - Proměnnou VITE_API_URL
- * - Proměnnou APP_PORT / VITE_APP_PORT z .env (např. 3030)
- * - Fallback na relativní cestu "" (např. při stejném portu nebo proxy)
+ * 1. Runtime explicitní API_URL (window.__APP_CONFIG__.API_URL)
+ * 2. Hardcoded pravidlo pro produkční doménu eusstat.impossible.cz -> https://eusstat.impossible.cz:3030
+ * 3. Vite build VITE_API_URL
+ * 4. Runtime / Build APP_PORT
+ * 5. Fallback na relativní ""
  */
 export function getApiBaseUrl(): string {
-  // 1. Runtime explicitní API URL
-  if (typeof window !== 'undefined' && window.__APP_CONFIG__?.API_URL) {
+  if (typeof window === 'undefined') return '';
+
+  // 1. Runtime konfigurace z index.html
+  if (window.__APP_CONFIG__?.API_URL) {
     return window.__APP_CONFIG__.API_URL.replace(/\/+$/, '');
   }
 
-  // 2. Vite build VITE_API_URL
+  const hostname = window.location.hostname;
+  const protocol = window.location.protocol;
+
+  // 2. Automatická detekce pro produkční doménu eusstat.impossible.cz
+  if (hostname === 'eusstat.impossible.cz') {
+    const port = window.__APP_CONFIG__?.APP_PORT || 3030;
+    // Pokud prohlížeč není přímo na portu 3030
+    if (window.location.port !== String(port)) {
+      return `${protocol}//${hostname}:${port}`;
+    }
+  }
+
+  // 3. Vite build proměnná VITE_API_URL
   const envApiUrl = import.meta.env.VITE_API_URL as string | undefined;
   if (envApiUrl && envApiUrl.trim()) {
     return envApiUrl.replace(/\/+$/, '');
   }
 
-  // 3. Port z runtime nebo z .env (APP_PORT, VITE_APP_PORT)
-  const runtimePort = window?.__APP_CONFIG__?.APP_PORT?.toString();
+  // 4. Port z konfigurace nebo .env (APP_PORT, VITE_APP_PORT)
+  const runtimePort = window.__APP_CONFIG__?.APP_PORT?.toString();
   const envPort = ((import.meta.env.VITE_APP_PORT || import.meta.env.APP_PORT) as string | undefined)?.trim();
   const targetPort = runtimePort || envPort;
 
-  if (typeof window !== 'undefined' && targetPort) {
-    const currentPort = window.location.port;
-    // Pokud aktuální port v prohlížeči není cílový port a neběžíme na výchozím preview
-    if (currentPort !== targetPort && window.location.hostname !== 'localhost' && !window.location.hostname.includes('run.app')) {
-      const protocol = window.location.protocol;
-      const hostname = window.location.hostname;
-      return `${protocol}//${hostname}:${targetPort}`;
-    }
+  if (targetPort && window.location.port !== targetPort && hostname !== 'localhost' && !hostname.includes('run.app')) {
+    return `${protocol}//${hostname}:${targetPort}`;
   }
 
-  // 4. Výchozí relativní cesta (pro preview, localhost a standardní proxy)
+  // 5. Výchozí relativní cesta (pro preview a vývoj)
   return '';
 }
 

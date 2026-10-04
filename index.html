@@ -13,8 +13,13 @@
   <body>
     <div id="root"></div>
     <script>
-      // Volitelná konfigurace API pro produkci (pokud běží API na jiném portu než web)
-      window.__APP_CONFIG__ = window.__APP_CONFIG__ || {};
+      // Konfigurace API pro produkční doménu eusstat.impossible.cz
+      window.__APP_CONFIG__ = {
+        APP_PORT: 3030,
+        API_URL: (typeof window !== 'undefined' && window.location.hostname === 'eusstat.impossible.cz')
+          ? 'https://eusstat.impossible.cz:3030'
+          : ''
+      };
     </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
