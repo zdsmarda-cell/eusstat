@@ -9,7 +9,8 @@ interface ImportModalProps {
   onClose: () => void;
   onImportComplete: (
     records: MovementRecord[],
-    onProgress?: (saved: number, total: number) => void
+    onProgress?: (saved: number, total: number) => void,
+    replaceExisting?: boolean
   ) => Promise<void>;
   dbStatus: DbStatus;
 }
@@ -27,6 +28,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
   const [isParsing, setIsParsing] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [replaceExisting, setReplaceExisting] = useState(true);
   const [importProgress, setImportProgress] = useState<{ saved: number; total: number } | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -81,9 +83,13 @@ export const ImportModal: React.FC<ImportModalProps> = ({
     setImportProgress({ saved: 0, total: parseResult.records.length });
 
     try {
-      await onImportComplete(parseResult.records, (saved, total) => {
-        setImportProgress({ saved, total });
-      });
+      await onImportComplete(
+        parseResult.records,
+        (saved, total) => {
+          setImportProgress({ saved, total });
+        },
+        replaceExisting
+      );
       onClose();
     } catch (err: any) {
       setImportError(err.message || 'Nepodařilo se importovat záznamy do databáze.');
@@ -355,30 +361,46 @@ export const ImportModal: React.FC<ImportModalProps> = ({
         </div>
 
         {/* Modal Footer */}
-        <div className="mt-6 pt-4 border-t border-slate-800 flex items-center justify-end space-x-3">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white transition-colors"
-          >
-            Zrušit
-          </button>
-          <button
-            onClick={handleSubmitImport}
-            disabled={!parseResult || parseResult.records.length === 0 || isImporting}
-            className="flex items-center space-x-2 px-5 py-2 rounded-xl text-xs font-semibold bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white shadow-lg shadow-blue-500/20 disabled:opacity-40 disabled:hover:from-blue-600 disabled:hover:to-indigo-600 transition-all"
-          >
-            {isImporting ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span>Ukládám do databáze...</span>
-              </>
-            ) : (
-              <>
-                <span>Potvrdit a importovat {parseResult?.records.length || 0} záznamů</span>
-                <ArrowRight className="w-4 h-4" />
-              </>
-            )}
-          </button>
+        <div className="mt-6 pt-4 border-t border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <label className="flex items-center space-x-2 text-xs text-slate-300 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={replaceExisting}
+              onChange={(e) => setReplaceExisting(e.target.checked)}
+              className="rounded border-slate-700 text-indigo-600 focus:ring-indigo-500 bg-slate-950"
+            />
+            <span>
+              {lang === 'cs'
+                ? 'Nahradit stávající data (vymazat předchozí/vzorová data)'
+                : 'Replace existing data (clear previous/sample records)'}
+            </span>
+          </label>
+
+          <div className="flex items-center space-x-3 self-end sm:self-auto">
+            <button
+              onClick={onClose}
+              className="px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white transition-colors"
+            >
+              Zrušit
+            </button>
+            <button
+              onClick={handleSubmitImport}
+              disabled={!parseResult || parseResult.records.length === 0 || isImporting}
+              className="flex items-center space-x-2 px-5 py-2 rounded-xl text-xs font-semibold bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white shadow-lg shadow-blue-500/20 disabled:opacity-40 disabled:hover:from-blue-600 disabled:hover:to-indigo-600 transition-all"
+            >
+              {isImporting ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Ukládám do databáze...</span>
+                </>
+              ) : (
+                <>
+                  <span>Potvrdit a importovat {parseResult?.records.length || 0} záznamů</span>
+                  <ArrowRight className="w-4 h-4" />
+                </>
+              )}
+            </button>
+          </div>
         </div>
       </div>
     </div>

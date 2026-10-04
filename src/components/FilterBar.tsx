@@ -1,5 +1,5 @@
 import React from 'react';
-import { Calendar, Filter, Search, Clock, SlidersHorizontal, RotateCcw } from 'lucide-react';
+import { Calendar, Filter, Search, Clock, SlidersHorizontal, RotateCcw, FileCode } from 'lucide-react';
 import { FilterState, ItemBracket } from '../types.js';
 import { useLanguage } from '../context/LanguageContext.js';
 
@@ -7,6 +7,7 @@ interface FilterBarProps {
   filter: FilterState;
   onChange: (filter: FilterState) => void;
   onReset: () => void;
+  onExportHtml?: () => void;
   totalFilteredCount: number;
   totalAllCount: number;
 }
@@ -15,6 +16,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
   filter,
   onChange,
   onReset,
+  onExportHtml,
   totalFilteredCount,
   totalAllCount,
 }) => {
@@ -135,10 +137,10 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           })}
         </div>
 
-        {/* Counter of active rows */}
-        <div className="flex items-center space-x-2 text-xs text-slate-400">
+        {/* Counter of active rows & HTML export */}
+        <div className="flex items-center space-x-2.5 text-xs text-slate-400">
           <span>
-            {t.filter.showingCount} <strong className="text-white font-mono">{totalFilteredCount}</strong> {t.filter.ofCount} {totalAllCount} {t.filter.recordsWord}
+            {t.filter.showingCount} <strong className="text-white font-mono">{totalFilteredCount.toLocaleString('cs-CZ')}</strong> {t.filter.ofCount} {totalAllCount.toLocaleString('cs-CZ')} {t.filter.recordsWord}
           </span>
           <button
             onClick={onReset}
@@ -147,6 +149,17 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           >
             <RotateCcw className="w-3.5 h-3.5" />
           </button>
+          {onExportHtml && (
+            <button
+              onClick={onExportHtml}
+              disabled={totalFilteredCount === 0}
+              className="flex items-center space-x-1.5 px-2.5 py-1 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 rounded-lg text-xs font-semibold shadow-sm transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-40"
+              title={lang === 'cs' ? 'Uložit aktuálně zobrazené výstupy jako samostatný HTML soubor k prohlížení a odeslání dalším uživatelům' : 'Save current dashboard views as standalone HTML report'}
+            >
+              <FileCode className="w-3.5 h-3.5 text-emerald-400" />
+              <span>{lang === 'cs' ? 'Uložit HTML' : 'Export HTML'}</span>
+            </button>
+          )}
         </div>
       </div>
 

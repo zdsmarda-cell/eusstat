@@ -1,5 +1,5 @@
 import React from 'react';
-import { Database, UploadCloud, RefreshCw, Sparkles, Download, Layers, ShieldCheck, AlertCircle, Globe, LogOut, User } from 'lucide-react';
+import { Database, UploadCloud, RefreshCw, Sparkles, Download, Layers, ShieldCheck, AlertCircle, Globe, LogOut, User, FileCode } from 'lucide-react';
 import { DbStatus } from '../types.js';
 import { downloadSampleCsv, downloadSampleExcel } from '../utils/fileParser.js';
 import { useLanguage } from '../context/LanguageContext.js';
@@ -10,6 +10,7 @@ interface HeaderProps {
   onOpenImport: () => void;
   onOpenDbSettings: () => void;
   onLoadSampleData: () => void;
+  onExportHtml?: () => void;
   isLoading: boolean;
   totalRecordsCount: number;
 }
@@ -19,6 +20,7 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenImport,
   onOpenDbSettings,
   onLoadSampleData,
+  onExportHtml,
   isLoading,
   totalRecordsCount,
 }) => {
@@ -146,6 +148,19 @@ export const Header: React.FC<HeaderProps> = ({
               <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
               <span>{t.header.sampleDataBtn}</span>
             </button>
+
+            {/* HTML Report Export Button */}
+            {onExportHtml && (
+              <button
+                onClick={onExportHtml}
+                disabled={totalRecordsCount === 0 || isLoading}
+                className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-40"
+                title={lang === 'cs' ? 'Uložit výstupy jako samostatný HTML dokument k prohlížení a odeslání' : 'Save outputs as standalone HTML document'}
+              >
+                <FileCode className="w-4 h-4 text-emerald-400" />
+                <span className="hidden md:inline">{lang === 'cs' ? 'Uložit jako HTML' : 'Save as HTML'}</span>
+              </button>
+            )}
 
             {/* Import Button */}
             <button

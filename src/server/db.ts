@@ -306,7 +306,7 @@ export async function getMovements(params: {
       );
       const total = Number(countResult[0]?.total || 0);
 
-      const limit = params.limit || 5000;
+      const limit = params.limit !== undefined && params.limit > 0 ? params.limit : 500000;
       const offset = params.offset || 0;
 
       const [rows]: any = await p.query(
@@ -371,7 +371,7 @@ export async function getMovements(params: {
 
   const total = filtered.length;
   const offset = params.offset || 0;
-  const limit = params.limit || 5000;
+  const limit = params.limit !== undefined && params.limit > 0 ? params.limit : total;
   const paged = filtered.slice(offset, offset + limit);
 
   return {

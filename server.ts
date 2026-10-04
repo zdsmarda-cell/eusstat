@@ -96,7 +96,7 @@ app.get('/api/movements', async (req, res) => {
       bracket: bracket as string,
       box: box as string,
       query: query as string,
-      limit: limit ? Number(limit) : 5000,
+      limit: limit ? Number(limit) : 500000,
       offset: offset ? Number(offset) : 0,
     });
     res.json(result);

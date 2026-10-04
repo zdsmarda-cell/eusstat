@@ -6,7 +6,6 @@ import { KpiCards } from './components/KpiCards.js';
 import { BracketComparisonSection } from './components/BracketComparisonSection.js';
 import { BoxSynergyAnalysis } from './components/BoxSynergyAnalysis.js';
 import { DailyTrendChart } from './components/DailyTrendChart.js';
-import { MovementsTable } from './components/MovementsTable.js';
 import { MultipickSimulationSection } from './components/MultipickSimulationSection.js';
 import { ImportModal } from './components/ImportModal.js';
 import { DbSettingsModal } from './components/DbSettingsModal.js';
@@ -14,7 +13,8 @@ import { LoginForm } from './components/LoginForm.js';
 import { AuthProvider, useAuth } from './context/AuthContext.js';
 import { LanguageProvider, useLanguage } from './context/LanguageContext.js';
 import { computeBracketStatistics, computeDailyStatistics, computeBoxSynergyAndHypothesis } from './utils/analytics.js';
-import { AlertCircle, CheckCircle2, Loader2, Sparkles, Database } from 'lucide-react';
+import { downloadHtmlReport } from './utils/htmlReportGenerator.js';
+import { AlertCircle, CheckCircle2, Loader2, Sparkles, Database, FileCode, Download, Share2 } from 'lucide-react';
 
 function Dashboard() {
   const { lang, t } = useLanguage();
@@ -53,7 +53,7 @@ function Dashboard() {
     try {
       const [statusRes, movementsRes] = await Promise.all([
         fetch('/api/db/status'),
-        fetch('/api/movements?limit=10000'),
+        fetch('/api/movements?limit=500000'),
       ]);
 
       let statusData: DbStatus = { connected: false, type: 'memory' };
@@ -91,6 +91,34 @@ function Dashboard() {
     fetchData();
   }, [fetchData]);
 
+  // Export current filtered dashboard views as standalone offline HTML report
+  const handleExportHtml = () => {
+    if (filteredRecords.length === 0) {
+      showToast(
+        lang === 'cs' ? 'Není k dispozici žádný záznam k exportu.' : 'No records available to export.',
+        'error'
+      );
+      return;
+    }
+    try {
+      downloadHtmlReport({
+        records: filteredRecords,
+        filter,
+        unit: filter.unit,
+        lang,
+      });
+      showToast(
+        lang === 'cs'
+          ? `Kompletní HTML report (${filteredRecords.length.toLocaleString('cs-CZ')} záznamů) byl úspěšně vygenerován a stažen!`
+          : `Complete HTML report (${filteredRecords.length.toLocaleString()} records) generated & downloaded!`,
+        'success'
+      );
+    } catch (err: any) {
+      console.error('Chyba při exportu HTML:', err);
+      showToast(lang === 'cs' ? 'Chyba při generování HTML reportu.' : 'Error generating HTML report.', 'error');
+    }
+  };
+
   // Seed sample data
   const handleLoadSampleData = async () => {
     setIsLoading(true);
@@ -113,9 +141,19 @@ function Dashboard() {
   // Import handler with safe batching / chunking to prevent proxy payload/timeout errors
   const handleImportComplete = async (
     newRecords: MovementRecord[],
-    onProgress?: (saved: number, total: number) => void
+    onProgress?: (saved: number, total: number) => void,
+    replaceExisting: boolean = true
   ) => {
-    const BATCH_SIZE = 350;
+    // If replacing existing, clear old records before importing new dataset
+    if (replaceExisting) {
+      try {
+        await fetch('/api/movements', { method: 'DELETE' });
+      } catch {
+        // ignore
+      }
+    }
+
+    const BATCH_SIZE = 2500;
     const total = newRecords.length;
     let saved = 0;
 
@@ -257,6 +295,7 @@ function Dashboard() {
         onOpenImport={() => setIsImportModalOpen(true)}
         onOpenDbSettings={() => setIsDbSettingsModalOpen(true)}
         onLoadSampleData={handleLoadSampleData}
+        onExportHtml={handleExportHtml}
         isLoading={isLoading}
         totalRecordsCount={records.length}
       />
@@ -295,6 +334,7 @@ function Dashboard() {
           filter={filter}
           onChange={setFilter}
           onReset={() => setFilter(initialFilter)}
+          onExportHtml={handleExportHtml}
           totalFilteredCount={filteredRecords.length}
           totalAllCount={records.length}
         />
@@ -336,6 +376,33 @@ function Dashboard() {
           </div>
         ) : (
           <>
+            {/* Quick Export HTML Banner */}
+            <div className="flex flex-wrap items-center justify-between p-3.5 bg-gradient-to-r from-emerald-950/40 via-slate-900/60 to-slate-900 border border-emerald-500/25 rounded-2xl gap-3">
+              <div className="flex items-center space-x-3 text-xs">
+                <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                  <FileCode className="w-4 h-4" />
+                </div>
+                <div>
+                  <span className="font-bold text-white block">
+                    {lang === 'cs' ? 'Uložit výstupy k prohlížení a odeslání dalším uživatelům' : 'Export & Share Offline HTML Report'}
+                  </span>
+                  <span className="text-slate-400">
+                    {lang === 'cs'
+                      ? `Zafiltrováno ${filteredRecords.length.toLocaleString('cs-CZ')} záznamů. Uložte celou stránku jako samostatný HTML soubor a pošlete jej kolegům k okamžitému zobrazení v prohlížeči.`
+                      : `${filteredRecords.length.toLocaleString()} records filtered. Save the complete dashboard as a standalone HTML file to view offline or send to colleagues.`}
+                  </span>
+                </div>
+              </div>
+              <button
+                onClick={handleExportHtml}
+                disabled={filteredRecords.length === 0}
+                className="flex items-center space-x-2 px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl text-xs font-semibold shadow-lg shadow-emerald-500/20 transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-40"
+              >
+                <Download className="w-4 h-4" />
+                <span>{lang === 'cs' ? 'Uložit jako HTML report' : 'Download HTML Report'}</span>
+              </button>
+            </div>
+
             {/* KPI Cards */}
             <KpiCards bracketStats={bracketStats} unit={filter.unit} />
 
@@ -347,9 +414,6 @@ function Dashboard() {
 
             {/* Daily Performance Table & Pareto Analysis (Vývoj přes dny a dny v týdnu) */}
             <DailyTrendChart dailyStats={dailyStats} records={filteredRecords} unit={filter.unit} />
-
-            {/* Detailed Movements Table */}
-            <MovementsTable records={filteredRecords} unit={filter.unit} />
 
             {/* Zhodnocení: Simulace optimalizace a přeskupení do 2h slotů (Multipicking) */}
             <MultipickSimulationSection records={filteredRecords} unit={filter.unit} />
