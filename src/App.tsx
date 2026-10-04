@@ -14,7 +14,7 @@ import { AuthProvider, useAuth } from './context/AuthContext.js';
 import { LanguageProvider, useLanguage } from './context/LanguageContext.js';
 import { computeBracketStatistics, computeDailyStatistics, computeBoxSynergyAndHypothesis } from './utils/analytics.js';
 import { downloadHtmlReport } from './utils/htmlReportGenerator.js';
-import { apiUrl } from './config/api.js';
+import { apiUrl, authFetch } from './config/api.js';
 import { AlertCircle, CheckCircle2, Loader2, Sparkles, Database, FileCode, Download, Share2 } from 'lucide-react';
 
 function Dashboard() {
@@ -53,8 +53,8 @@ function Dashboard() {
     setIsLoading(true);
     try {
       const [statusRes, movementsRes] = await Promise.all([
-        fetch(apiUrl('/api/db/status')),
-        fetch(apiUrl('/api/movements?limit=500000')),
+        authFetch(apiUrl('/api/db/status')),
+        authFetch(apiUrl('/api/movements?limit=500000')),
       ]);
 
       let statusData: DbStatus = { connected: false, type: 'memory' };
@@ -124,7 +124,7 @@ function Dashboard() {
   const handleLoadSampleData = async () => {
     setIsLoading(true);
     try {
-      const res = await fetch(apiUrl('/api/movements/seed-sample'), {
+      const res = await authFetch(apiUrl('/api/movements/seed-sample'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ count: 420, days: 14 }),
@@ -148,7 +148,7 @@ function Dashboard() {
     // If replacing existing, clear old records before importing new dataset
     if (replaceExisting) {
       try {
-        await fetch(apiUrl('/api/movements'), { method: 'DELETE' });
+        await authFetch(apiUrl('/api/movements'), { method: 'DELETE' });
       } catch {
         // ignore
       }
@@ -160,7 +160,7 @@ function Dashboard() {
 
     for (let i = 0; i < total; i += BATCH_SIZE) {
       const batch = newRecords.slice(i, i + BATCH_SIZE);
-      const res = await fetch(apiUrl('/api/movements/import'), {
+      const res = await authFetch(apiUrl('/api/movements/import'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ records: batch }),

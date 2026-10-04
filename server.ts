@@ -15,6 +15,12 @@ import {
   getMovements,
   clearMovements,
 } from './src/server/db.js';
+import {
+  requireAuth,
+  generateTokenPair,
+  refreshAccessToken,
+  revokeRefreshToken,
+} from './src/server/auth.js';
 import { generateSampleWarehouseData } from './src/server/sampleData.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -49,11 +55,15 @@ if (process.env.APP_PORT) {
   APP_SERVER_PORT = 3030;
 }
 
-// CORS middleware allowing cross-origin requests (e.g. from port 443 to port 3030)
+app.disable('x-powered-by');
+
+// Security & CORS middleware
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  res.header('X-Content-Type-Options', 'nosniff');
+  res.header('X-Frame-Options', 'SAMEORIGIN');
   if (req.method === 'OPTIONS') {
     return res.sendStatus(204);
   }
@@ -70,7 +80,7 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
     if (status.connected && status.type === 'mariadb') {
       console.log(`✅ Úspěšně připojeno k MariaDB: ${status.user}@${status.host}/${status.database} (řádků: ${status.totalRows})`);
     } else {
-      console.log(`ℹ️ Aplikace běží v lokálním režimu (paměť). Pro připojení MariaDB nastavte DB_HOST, DB_USER, DB_PASSWORD, DB_NAME v .env.`);
+      console.log(`ℹ️ Aplikace běží v lokálním diskovém režimu. Pro připojení MariaDB zadejte heslo v Nastavení DB.`);
     }
 
     if (process.env.NODE_ENV !== 'production' && !process.env.DB_HOST && !process.env.MARIADB_HOST && status.totalRows === 0) {
@@ -83,19 +93,87 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
   }
 })();
 
-// Authentication Endpoint (Hardcoded credentials requirement: eusfhb / Master353)
+// =========================================================================
+// PUBLIC AUTH ENDPOINTS (Accessible without JWT)
+// =========================================================================
+
+// POST /api/auth/login: Authenticates credentials & issues JWT Access + Refresh token pair
 app.post('/api/auth/login', (req, res) => {
-  const { username, password } = req.body;
-  if (username === 'eusfhb' && password === 'Master353') {
+  const { username, password } = req.body || {};
+  const expectedUser = (process.env.APP_USER || 'eusfhb').trim();
+  const expectedPass = (process.env.APP_PASSWORD || 'Master353').trim();
+
+  if (typeof username === 'string' && typeof password === 'string' &&
+      username.trim() === expectedUser && password === expectedPass) {
+    const tokens = generateTokenPair(expectedUser);
     return res.json({
       success: true,
-      user: { username: 'eusfhb' },
-      token: 'authenticated_eusfhb_353',
+      user: { username: expectedUser },
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      expiresIn: tokens.expiresIn,
+      message: 'Přihlášení úspěšné. JWT token vygenerován.',
     });
   }
+
   return res.status(401).json({
     success: false,
-    error: 'Neplatné přihlašovací údaje / Invalid credentials',
+    error: 'Neplatné uživatelské jméno nebo heslo / Invalid credentials',
+    code: 'INVALID_CREDENTIALS',
+  });
+});
+
+// POST /api/auth/refresh: Validates Refresh Token and issues a new Token Pair
+app.post('/api/auth/refresh', (req, res) => {
+  const { refreshToken } = req.body || {};
+  if (!refreshToken) {
+    return res.status(400).json({
+      success: false,
+      error: 'Chybí parametr refreshToken.',
+      code: 'MISSING_REFRESH_TOKEN',
+    });
+  }
+
+  const result = refreshAccessToken(refreshToken);
+  if (!result.success) {
+    return res.status(401).json({
+      success: false,
+      error: result.error || 'Refresh token je neplatný nebo expirovaný.',
+      code: 'INVALID_REFRESH_TOKEN',
+    });
+  }
+
+  return res.json({
+    success: true,
+    accessToken: result.accessToken,
+    refreshToken: result.refreshToken,
+    expiresIn: result.expiresIn,
+  });
+});
+
+// POST /api/auth/logout: Revokes the Refresh Token
+app.post('/api/auth/logout', (req, res) => {
+  const { refreshToken } = req.body || {};
+  if (refreshToken) {
+    revokeRefreshToken(refreshToken);
+  }
+  return res.json({
+    success: true,
+    message: 'Odhlášení proběhlo úspěšně. Token byl zneplatněn.',
+  });
+});
+
+// =========================================================================
+// STRICT SECURITY SHIELD: ALL SUBSEQUENT /api ROUTES REQUIRE VALID JWT
+// Internet users without a valid JWT token cannot access or see any data
+// =========================================================================
+app.use('/api', requireAuth);
+
+// GET /api/auth/me: Returns current authenticated user info
+app.get('/api/auth/me', (req, res) => {
+  res.json({
+    success: true,
+    user: (req as any).user,
   });
 });
 

@@ -3,8 +3,8 @@ import express from "express";
 import http from "http";
 import https from "https";
 import tls from "tls";
-import fs2 from "fs";
-import path2 from "path";
+import fs3 from "fs";
+import path3 from "path";
 import { fileURLToPath } from "url";
 import dotenv2 from "dotenv";
 
@@ -491,6 +491,196 @@ async function clearMovements() {
   }
 }
 
+// src/server/auth.ts
+import crypto from "crypto";
+import fs2 from "fs";
+import path2 from "path";
+var DATA_DIR = path2.resolve(process.cwd(), "data");
+if (!fs2.existsSync(DATA_DIR)) {
+  try {
+    fs2.mkdirSync(DATA_DIR, { recursive: true });
+  } catch {
+  }
+}
+function getOrGenerateJwtSecret() {
+  if (process.env.JWT_SECRET && process.env.JWT_SECRET.trim().length >= 16) {
+    return process.env.JWT_SECRET.trim();
+  }
+  const secretPath = path2.join(DATA_DIR, "jwt-secret.key");
+  try {
+    if (fs2.existsSync(secretPath)) {
+      const saved = fs2.readFileSync(secretPath, "utf-8").trim();
+      if (saved.length >= 32) {
+        return saved;
+      }
+    }
+  } catch {
+  }
+  const newSecret = crypto.randomBytes(48).toString("hex");
+  try {
+    fs2.writeFileSync(secretPath, newSecret, { mode: 384 });
+  } catch {
+  }
+  return newSecret;
+}
+var JWT_SECRET = getOrGenerateJwtSecret();
+var ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
+var REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60;
+var REFRESH_TOKENS_FILE = path2.join(DATA_DIR, "active_refresh_tokens.json");
+var activeRefreshTokens = /* @__PURE__ */ new Set();
+try {
+  if (fs2.existsSync(REFRESH_TOKENS_FILE)) {
+    const raw = fs2.readFileSync(REFRESH_TOKENS_FILE, "utf-8");
+    const list = JSON.parse(raw);
+    if (Array.isArray(list)) {
+      activeRefreshTokens = new Set(list);
+    }
+  }
+} catch {
+  activeRefreshTokens = /* @__PURE__ */ new Set();
+}
+function persistRefreshTokens() {
+  try {
+    fs2.writeFileSync(REFRESH_TOKENS_FILE, JSON.stringify(Array.from(activeRefreshTokens)), "utf-8");
+  } catch {
+  }
+}
+function base64UrlEncode(str) {
+  return Buffer.from(str).toString("base64").replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+}
+function base64UrlDecode(str) {
+  let base64 = str.replace(/-/g, "+").replace(/_/g, "/");
+  while (base64.length % 4) {
+    base64 += "=";
+  }
+  return Buffer.from(base64, "base64").toString("utf-8");
+}
+function createJwtToken(payload, expiresInSeconds) {
+  const now = Math.floor(Date.now() / 1e3);
+  const fullPayload = {
+    ...payload,
+    sub: payload.sub,
+    username: payload.username,
+    type: payload.type,
+    iat: now,
+    exp: now + expiresInSeconds,
+    jti: crypto.randomBytes(16).toString("hex")
+  };
+  const header = { alg: "HS256", typ: "JWT" };
+  const encodedHeader = base64UrlEncode(JSON.stringify(header));
+  const encodedPayload = base64UrlEncode(JSON.stringify(fullPayload));
+  const signature = crypto.createHmac("sha256", JWT_SECRET).update(`${encodedHeader}.${encodedPayload}`).digest("base64").replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+  return `${encodedHeader}.${encodedPayload}.${signature}`;
+}
+function verifyJwtToken(token) {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) {
+      return { valid: false, expired: false, error: "Form\xE1t tokenu je neplatn\xFD" };
+    }
+    const [encodedHeader, encodedPayload, signature] = parts;
+    const expectedSignature = crypto.createHmac("sha256", JWT_SECRET).update(`${encodedHeader}.${encodedPayload}`).digest("base64").replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+    const expectedBuffer = Buffer.from(expectedSignature);
+    const actualBuffer = Buffer.from(signature);
+    if (expectedBuffer.length !== actualBuffer.length || !crypto.timingSafeEqual(expectedBuffer, actualBuffer)) {
+      return { valid: false, expired: false, error: "Podpis tokenu je neplatn\xFD" };
+    }
+    const payload = JSON.parse(base64UrlDecode(encodedPayload));
+    const now = Math.floor(Date.now() / 1e3);
+    if (payload.exp && payload.exp < now) {
+      return { valid: false, expired: true, payload, error: "Platnost JWT tokenu vypr\u0161ela" };
+    }
+    return { valid: true, expired: false, payload };
+  } catch (err) {
+    return { valid: false, expired: false, error: err?.message || "Chyba ov\u011B\u0159en\xED tokenu" };
+  }
+}
+function generateTokenPair(username) {
+  const accessToken = createJwtToken(
+    { sub: username, username, type: "access" },
+    ACCESS_TOKEN_TTL_SECONDS
+  );
+  const refreshToken = createJwtToken(
+    { sub: username, username, type: "refresh" },
+    REFRESH_TOKEN_TTL_SECONDS
+  );
+  activeRefreshTokens.add(refreshToken);
+  persistRefreshTokens();
+  return {
+    accessToken,
+    refreshToken,
+    expiresIn: ACCESS_TOKEN_TTL_SECONDS
+  };
+}
+function refreshAccessToken(oldRefreshToken) {
+  if (!oldRefreshToken) {
+    return { success: false, error: "Chyb\xED refresh token" };
+  }
+  if (!activeRefreshTokens.has(oldRefreshToken)) {
+    return { success: false, error: "Refresh token je neplatn\xFD nebo byl odvol\xE1n" };
+  }
+  const result = verifyJwtToken(oldRefreshToken);
+  if (!result.valid || !result.payload || result.payload.type !== "refresh") {
+    activeRefreshTokens.delete(oldRefreshToken);
+    persistRefreshTokens();
+    return {
+      success: false,
+      error: result.expired ? "Platnost refresh tokenu vypr\u0161ela" : result.error || "Neplatn\xFD token"
+    };
+  }
+  activeRefreshTokens.delete(oldRefreshToken);
+  const newPair = generateTokenPair(result.payload.username);
+  return {
+    success: true,
+    ...newPair
+  };
+}
+function revokeRefreshToken(refreshToken) {
+  if (refreshToken) {
+    activeRefreshTokens.delete(refreshToken);
+    persistRefreshTokens();
+  }
+}
+function requireAuth(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    res.status(401).json({
+      success: false,
+      error: "P\u0159\xEDstup zam\xEDtnut: API vy\u017Eaduje platn\xFD autoriza\u010Dn\xED JWT token (Authorization: Bearer <token>).",
+      code: "UNAUTHORIZED"
+    });
+    return;
+  }
+  const token = authHeader.substring(7).trim();
+  if (!token) {
+    res.status(401).json({
+      success: false,
+      error: "P\u0159\xEDstup zam\xEDtnut: Token je pr\xE1zdn\xFD.",
+      code: "UNAUTHORIZED"
+    });
+    return;
+  }
+  const verifyResult = verifyJwtToken(token);
+  if (verifyResult.expired) {
+    res.status(401).json({
+      success: false,
+      error: "Platnost JWT p\u0159\xEDstupov\xE9ho tokenu vypr\u0161ela. Pou\u017Eijte refresh token pro obnoven\xED.",
+      code: "TOKEN_EXPIRED"
+    });
+    return;
+  }
+  if (!verifyResult.valid || !verifyResult.payload || verifyResult.payload.type !== "access") {
+    res.status(401).json({
+      success: false,
+      error: "Neplatn\xFD nebo nepodporovan\xFD autoriza\u010Dn\xED token.",
+      code: "INVALID_TOKEN"
+    });
+    return;
+  }
+  req.user = verifyResult.payload;
+  next();
+}
+
 // src/server/sampleData.ts
 function generateSampleWarehouseData(daysBack = 14, totalRecords = 420) {
   const records = [];
@@ -644,11 +834,11 @@ function generateSampleWarehouseData(daysBack = 14, totalRecords = 420) {
 
 // server.ts
 var __filename = fileURLToPath(import.meta.url);
-var __dirname = path2.dirname(__filename);
+var __dirname = path3.dirname(__filename);
 dotenv2.config();
-dotenv2.config({ path: path2.resolve(process.cwd(), ".env") });
-dotenv2.config({ path: path2.resolve(__dirname, ".env") });
-dotenv2.config({ path: path2.resolve(__dirname, "..", ".env") });
+dotenv2.config({ path: path3.resolve(process.cwd(), ".env") });
+dotenv2.config({ path: path3.resolve(__dirname, ".env") });
+dotenv2.config({ path: path3.resolve(__dirname, "..", ".env") });
 process.on("uncaughtException", (err) => {
   console.error("\u274C [NEZACHYCEN\xC1 CHYBA SERVERU]:", err?.message || err);
 });
@@ -666,10 +856,13 @@ if (process.env.APP_PORT) {
 } else {
   APP_SERVER_PORT = 3030;
 }
+app.disable("x-powered-by");
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
   res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
+  res.header("X-Content-Type-Options", "nosniff");
+  res.header("X-Frame-Options", "SAMEORIGIN");
   if (req.method === "OPTIONS") {
     return res.sendStatus(204);
   }
@@ -683,7 +876,7 @@ app.use(express.urlencoded({ extended: true, limit: "50mb" }));
     if (status.connected && status.type === "mariadb") {
       console.log(`\u2705 \xDAsp\u011B\u0161n\u011B p\u0159ipojeno k MariaDB: ${status.user}@${status.host}/${status.database} (\u0159\xE1dk\u016F: ${status.totalRows})`);
     } else {
-      console.log(`\u2139\uFE0F Aplikace b\u011B\u017E\xED v lok\xE1ln\xEDm re\u017Eimu (pam\u011B\u0165). Pro p\u0159ipojen\xED MariaDB nastavte DB_HOST, DB_USER, DB_PASSWORD, DB_NAME v .env.`);
+      console.log(`\u2139\uFE0F Aplikace b\u011B\u017E\xED v lok\xE1ln\xEDm diskov\xE9m re\u017Eimu. Pro p\u0159ipojen\xED MariaDB zadejte heslo v Nastaven\xED DB.`);
     }
     if (process.env.NODE_ENV !== "production" && !process.env.DB_HOST && !process.env.MARIADB_HOST && status.totalRows === 0) {
       console.log("Generuji uk\xE1zkov\xE1 data skladu pro v\xFDvojov\xE9 prost\u0159ed\xED...");
@@ -695,17 +888,65 @@ app.use(express.urlencoded({ extended: true, limit: "50mb" }));
   }
 })();
 app.post("/api/auth/login", (req, res) => {
-  const { username, password } = req.body;
-  if (username === "eusfhb" && password === "Master353") {
+  const { username, password } = req.body || {};
+  const expectedUser = (process.env.APP_USER || "eusfhb").trim();
+  const expectedPass = (process.env.APP_PASSWORD || "Master353").trim();
+  if (typeof username === "string" && typeof password === "string" && username.trim() === expectedUser && password === expectedPass) {
+    const tokens = generateTokenPair(expectedUser);
     return res.json({
       success: true,
-      user: { username: "eusfhb" },
-      token: "authenticated_eusfhb_353"
+      user: { username: expectedUser },
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      expiresIn: tokens.expiresIn,
+      message: "P\u0159ihl\xE1\u0161en\xED \xFAsp\u011B\u0161n\xE9. JWT token vygenerov\xE1n."
     });
   }
   return res.status(401).json({
     success: false,
-    error: "Neplatn\xE9 p\u0159ihla\u0161ovac\xED \xFAdaje / Invalid credentials"
+    error: "Neplatn\xE9 u\u017Eivatelsk\xE9 jm\xE9no nebo heslo / Invalid credentials",
+    code: "INVALID_CREDENTIALS"
+  });
+});
+app.post("/api/auth/refresh", (req, res) => {
+  const { refreshToken } = req.body || {};
+  if (!refreshToken) {
+    return res.status(400).json({
+      success: false,
+      error: "Chyb\xED parametr refreshToken.",
+      code: "MISSING_REFRESH_TOKEN"
+    });
+  }
+  const result = refreshAccessToken(refreshToken);
+  if (!result.success) {
+    return res.status(401).json({
+      success: false,
+      error: result.error || "Refresh token je neplatn\xFD nebo expirovan\xFD.",
+      code: "INVALID_REFRESH_TOKEN"
+    });
+  }
+  return res.json({
+    success: true,
+    accessToken: result.accessToken,
+    refreshToken: result.refreshToken,
+    expiresIn: result.expiresIn
+  });
+});
+app.post("/api/auth/logout", (req, res) => {
+  const { refreshToken } = req.body || {};
+  if (refreshToken) {
+    revokeRefreshToken(refreshToken);
+  }
+  return res.json({
+    success: true,
+    message: "Odhl\xE1\u0161en\xED prob\u011Bhlo \xFAsp\u011B\u0161n\u011B. Token byl zneplatn\u011Bn."
+  });
+});
+app.use("/api", requireAuth);
+app.get("/api/auth/me", (req, res) => {
+  res.json({
+    success: true,
+    user: req.user
   });
 });
 app.get("/api/db/config", (req, res) => {
@@ -813,11 +1054,11 @@ if (!isProduction) {
   });
   app.use(vite.middlewares);
 } else {
-  const distDir = path2.resolve(__dirname, "dist");
-  const indexHtml = path2.resolve(distDir, "index.html");
+  const distDir = path3.resolve(__dirname, "dist");
+  const indexHtml = path3.resolve(distDir, "index.html");
   try {
-    const fs3 = await import("fs");
-    if (fs3.existsSync(indexHtml)) {
+    const fs4 = await import("fs");
+    if (fs4.existsSync(indexHtml)) {
       app.use(express.static(distDir));
       app.get("*", (req, res) => {
         res.sendFile(indexHtml);
@@ -847,29 +1088,29 @@ if (sslKeyPath && sslCertPath) {
     let resolvedCertPath = sslCertPath;
     const crtCandidate = sslCertPath.replace(/\.csr$/, ".crt");
     const pemCandidate = sslCertPath.replace(/\.csr$/, ".pem");
-    if (!fs2.existsSync(resolvedCertPath)) {
-      if (fs2.existsSync(crtCandidate)) {
+    if (!fs3.existsSync(resolvedCertPath)) {
+      if (fs3.existsSync(crtCandidate)) {
         console.log(`\u2139\uFE0F Cesta ${sslCertPath} neexistuje, pou\u017E\xEDv\xE1m nalezen\xFD certifik\xE1t: ${crtCandidate}`);
         resolvedCertPath = crtCandidate;
-      } else if (fs2.existsSync(pemCandidate)) {
+      } else if (fs3.existsSync(pemCandidate)) {
         console.log(`\u2139\uFE0F Cesta ${sslCertPath} neexistuje, pou\u017E\xEDv\xE1m nalezen\xFD certifik\xE1t: ${pemCandidate}`);
         resolvedCertPath = pemCandidate;
       }
     }
-    if (fs2.existsSync(sslKeyPath) && fs2.existsSync(resolvedCertPath)) {
-      const keyContent = fs2.readFileSync(sslKeyPath);
-      let certContent = fs2.readFileSync(resolvedCertPath);
+    if (fs3.existsSync(sslKeyPath) && fs3.existsSync(resolvedCertPath)) {
+      const keyContent = fs3.readFileSync(sslKeyPath);
+      let certContent = fs3.readFileSync(resolvedCertPath);
       const certStr = certContent.toString("utf8");
       if (certStr.includes("CERTIFICATE REQUEST") && !certStr.includes("BEGIN CERTIFICATE")) {
         console.warn(`\u26A0\uFE0F POZOR: Soubor ${resolvedCertPath} je \u017E\xE1dost (CSR), nikoliv certifik\xE1t!`);
-        if (fs2.existsSync(crtCandidate)) {
+        if (fs3.existsSync(crtCandidate)) {
           console.log(`\u2705 Nalezen skute\u010Dn\xFD certifik\xE1t: ${crtCandidate}`);
           resolvedCertPath = crtCandidate;
-          certContent = fs2.readFileSync(crtCandidate);
-        } else if (fs2.existsSync(pemCandidate)) {
+          certContent = fs3.readFileSync(crtCandidate);
+        } else if (fs3.existsSync(pemCandidate)) {
           console.log(`\u2705 Nalezen skute\u010Dn\xFD certifik\xE1t: ${pemCandidate}`);
           resolvedCertPath = pemCandidate;
-          certContent = fs2.readFileSync(pemCandidate);
+          certContent = fs3.readFileSync(pemCandidate);
         } else {
           throw new Error(`Soubor ${resolvedCertPath} je pouze \u017E\xE1dost (.csr). V .env nastavte cestu ke skute\u010Dn\xE9mu certifik\xE1tu (.crt nebo .pem)!`);
         }
@@ -878,8 +1119,8 @@ if (sslKeyPath && sslCertPath) {
         key: keyContent,
         cert: certContent
       };
-      if (sslCaPath && fs2.existsSync(sslCaPath)) {
-        httpsOptions.ca = fs2.readFileSync(sslCaPath);
+      if (sslCaPath && fs3.existsSync(sslCaPath)) {
+        httpsOptions.ca = fs3.readFileSync(sslCaPath);
       }
       tls.createSecureContext({
         key: keyContent,
@@ -893,8 +1134,8 @@ if (sslKeyPath && sslCertPath) {
    CERT: ${resolvedCertPath}`);
     } else {
       console.warn(`\u26A0\uFE0F SSL soubory nenalezeny:
-   KEY (${sslKeyPath}): ${fs2.existsSync(sslKeyPath) ? "nalezen" : "NENALEZEN"}
-   CERT (${resolvedCertPath}): ${fs2.existsSync(resolvedCertPath) ? "nalezen" : "NENALEZEN"}
+   KEY (${sslKeyPath}): ${fs3.existsSync(sslKeyPath) ? "nalezen" : "NENALEZEN"}
+   CERT (${resolvedCertPath}): ${fs3.existsSync(resolvedCertPath) ? "nalezen" : "NENALEZEN"}
    \u{1F449} Spou\u0161t\xEDm server v HTTP re\u017Eimu na portu ${APP_SERVER_PORT}.`);
       server = http.createServer(app);
     }
