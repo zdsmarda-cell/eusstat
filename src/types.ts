@@ -212,6 +212,21 @@ export interface MultipickSimulationReport {
 
 
 
+export interface PeriodSummary {
+  dateFrom: string;
+  dateTo: string;
+  daysCount: number;
+  totalOrders: number;
+  totalSkus: number;
+  totalUnits: number;
+  avgUnitsPerOrder: number;
+  medianOrdersPerBox: number;
+  avgOrdersPerBox: number;
+  totalBoxesCount: number;
+  minOrdersPerBox: number;
+  maxOrdersPerBox: number;
+}
+
 export interface ProductParetoData {
   totalUniqueProducts: number;
   totalUnits: number;

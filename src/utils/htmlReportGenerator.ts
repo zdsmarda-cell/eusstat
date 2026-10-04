@@ -4,6 +4,7 @@ import {
   computeDailyPerformanceReport,
   computeBoxSynergyAndHypothesis,
   runMultipickSlotSimulation,
+  computePeriodSummary,
   formatTimeValue,
   formatDurationHuman,
   getBracketLabel,
@@ -45,6 +46,7 @@ export function generateHtmlReport(data: HtmlReportData): string {
   const synergyData = computeBoxSynergyAndHypothesis(records);
   const dailyReport = computeDailyPerformanceReport(records);
   const simulation = runMultipickSlotSimulation(records);
+  const periodSummary = computePeriodSummary(records);
 
   const totalOrders = records.length;
   const totalUnits = records.reduce((sum, r) => sum + (r.pocet_produktu || 1), 0);
@@ -531,6 +533,56 @@ export function generateHtmlReport(data: HtmlReportData): string {
     ${filter.searchQuery ? `<span class="meta-tag">${isCs ? 'Hledání' : 'Query'}: <strong>${escapeHtml(filter.searchQuery)}</strong></span>` : ''}
     <span class="meta-tag" style="margin-left: auto;">${isCs ? 'Zahrnuto záznamů' : 'Records count'}: <strong>${totalOrders.toLocaleString('cs-CZ')}</strong> (${totalUnits.toLocaleString('cs-CZ')} ${isCs ? 'ks' : 'units'})</span>
   </div>
+
+  <!-- Executive Period Summary (Zkoumané období, objednávky, SKU, kusy, průměr ks/zásilku, medián obj./box) -->
+  <section class="content-box" style="background: linear-gradient(135deg, rgba(30, 27, 75, 0.45), rgba(15, 23, 42, 0.95)); border: 1px solid rgba(99, 102, 241, 0.35);">
+    <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 12px;">
+      <div>
+        <div style="font-size: 16px; font-weight: 800; color: #ffffff;">
+          ${isCs ? 'Sumární info za zkoumané období' : 'Executive Period Summary'}
+        </div>
+        <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">
+          ${isCs ? 'Klíčová bilance objemu zakázek, sortimentní šíře (SKU) a hustoty konsolidace do balicích boxů' : 'Overview of dispatched orders, SKU diversity, item volume, and crate consolidation density'}
+        </div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; font-size: 12px; background: rgba(15, 23, 42, 0.8); border: 1px solid #334155; padding: 6px 12px; border-radius: 10px;">
+        <span>📅 ${escapeHtml(periodSummary.dateFrom || '–')} – ${escapeHtml(periodSummary.dateTo || '–')}</span>
+        <span style="color: var(--text-muted);">(${periodSummary.daysCount} ${isCs ? (periodSummary.daysCount === 1 ? 'den' : periodSummary.daysCount < 5 ? 'dny' : 'dní') : 'days'})</span>
+      </div>
+    </div>
+
+    <div class="kpi-grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));">
+      <div class="kpi-card" style="border-color: rgba(59, 130, 246, 0.3);">
+        <div class="kpi-card-title">${isCs ? 'Objednávky celkem' : 'Total Orders'}</div>
+        <div class="kpi-card-value" style="color: #60a5fa;">${periodSummary.totalOrders.toLocaleString('cs-CZ')}</div>
+        <div class="kpi-card-sub">${isCs ? 'Vyexpedovaných zásilek' : 'Dispatched shipments'}</div>
+      </div>
+
+      <div class="kpi-card" style="border-color: rgba(168, 85, 247, 0.3);">
+        <div class="kpi-card-title">${isCs ? 'Zpracováno SKU' : 'Processed SKUs'}</div>
+        <div class="kpi-card-value" style="color: #c084fc;">${periodSummary.totalSkus.toLocaleString('cs-CZ')}</div>
+        <div class="kpi-card-sub">${isCs ? 'Unikátních EAN položek' : 'Unique product EANs'}</div>
+      </div>
+
+      <div class="kpi-card" style="border-color: rgba(16, 185, 129, 0.3);">
+        <div class="kpi-card-title">${isCs ? 'Zpracovaných kusů (ks)' : 'Total Units'}</div>
+        <div class="kpi-card-value" style="color: #34d399;">${periodSummary.totalUnits.toLocaleString('cs-CZ')}</div>
+        <div class="kpi-card-sub">${Math.round(periodSummary.totalUnits / Math.max(1, periodSummary.daysCount)).toLocaleString('cs-CZ')} ${isCs ? 'ks / den' : 'units / day'}</div>
+      </div>
+
+      <div class="kpi-card" style="border-color: rgba(245, 158, 11, 0.3);">
+        <div class="kpi-card-title">${isCs ? 'Průměr ks / zásilka' : 'Avg Units / Order'}</div>
+        <div class="kpi-card-value" style="color: #fbbf24;">${periodSummary.avgUnitsPerOrder} <span style="font-size: 14px; font-weight: 500; color: var(--text-muted);">${isCs ? 'ks' : 'units'}</span></div>
+        <div class="kpi-card-sub">${isCs ? 'Průměrná velikost košíku' : 'Average order basket'}</div>
+      </div>
+
+      <div class="kpi-card" style="border-color: rgba(99, 102, 241, 0.3);">
+        <div class="kpi-card-title">${isCs ? 'Medián obj. v 1 boxu' : 'Median Orders / Box'}</div>
+        <div class="kpi-card-value" style="color: #818cf8;">${periodSummary.medianOrdersPerBox} <span style="font-size: 14px; font-weight: 500; color: var(--text-muted);">${isCs ? 'obj.' : 'orders'}</span></div>
+        <div class="kpi-card-sub">${isCs ? `Průměr: ${periodSummary.avgOrdersPerBox} obj. (${periodSummary.totalBoxesCount} boxů)` : `Mean: ${periodSummary.avgOrdersPerBox} (${periodSummary.totalBoxesCount} crates)`}</div>
+      </div>
+    </div>
+  </section>
 
   <!-- KPI Overview -->
   <section>

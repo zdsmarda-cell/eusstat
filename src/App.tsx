@@ -12,7 +12,8 @@ import { DbSettingsModal } from './components/DbSettingsModal.js';
 import { LoginForm } from './components/LoginForm.js';
 import { AuthProvider, useAuth } from './context/AuthContext.js';
 import { LanguageProvider, useLanguage } from './context/LanguageContext.js';
-import { computeBracketStatistics, computeDailyStatistics, computeBoxSynergyAndHypothesis } from './utils/analytics.js';
+import { computeBracketStatistics, computeDailyStatistics, computeBoxSynergyAndHypothesis, computePeriodSummary } from './utils/analytics.js';
+import { PeriodExecutiveSummary } from './components/PeriodExecutiveSummary.js';
 import { downloadHtmlReport } from './utils/htmlReportGenerator.js';
 import { apiUrl, authFetch } from './config/api.js';
 import { AlertCircle, CheckCircle2, Loader2, Sparkles, Database, FileCode, Download, Share2 } from 'lucide-react';
@@ -266,6 +267,11 @@ function Dashboard() {
     return computeBoxSynergyAndHypothesis(filteredRecords);
   }, [filteredRecords]);
 
+  // Sumární bilance za zkoumané období (objednávky, SKU, kusy, průměr ks/zásilku, medián obj./box)
+  const periodSummary = useMemo(() => {
+    return computePeriodSummary(filteredRecords);
+  }, [filteredRecords]);
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col antialiased selection:bg-indigo-500 selection:text-white">
       {/* Toast Notification */}
@@ -404,8 +410,15 @@ function Dashboard() {
               </button>
             </div>
 
-            {/* KPI Cards */}
-            <KpiCards bracketStats={bracketStats} unit={filter.unit} />
+            {/* 1. Sumární přehled za zkoumané období (Objednávky, SKU, Kusy, Průměr ks/zásilku, Medián obj./box) */}
+            <PeriodExecutiveSummary
+              summary={periodSummary}
+              totalFilteredRecords={filteredRecords.length}
+              totalAllRecords={records.length}
+            />
+
+            {/* 2. KPI Cards */}
+            <KpiCards bracketStats={bracketStats} periodSummary={periodSummary} unit={filter.unit} />
 
             {/* Core Section: Bracket Comparison (1, 2, 3, 4, 5, 6+ ks) */}
             <BracketComparisonSection bracketStats={bracketStats} unit={filter.unit} />

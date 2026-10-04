@@ -1,24 +1,27 @@
 import React from 'react';
-import { Package, CheckCircle2, Box, TrendingDown, Clock, ArrowDownRight, Layers } from 'lucide-react';
-import { BracketStat } from '../types.js';
+import { Package, CheckCircle2, Box, TrendingDown, Clock, ArrowDownRight, Layers, Barcode, Boxes } from 'lucide-react';
+import { BracketStat, PeriodSummary } from '../types.js';
 import { formatTimeValue } from '../utils/analytics.js';
 import { useLanguage } from '../context/LanguageContext.js';
 
 interface KpiCardsProps {
   bracketStats: BracketStat[];
+  periodSummary?: PeriodSummary;
   unit: 'sec' | 'min';
 }
 
-export const KpiCards: React.FC<KpiCardsProps> = ({ bracketStats, unit }) => {
+export const KpiCards: React.FC<KpiCardsProps> = ({ bracketStats, periodSummary, unit }) => {
   const { lang, t } = useLanguage();
 
   const allStat = bracketStats.find(s => s.bracket === 'all') || bracketStats[0];
   const singleStat = bracketStats.find(s => s.bracket === '1');
   const multiStat = bracketStats.find(s => s.bracket === '6+') || bracketStats.find(s => s.bracket === '5');
 
-  const avgItemsPerShipment = allStat && allStat.shipmentCount > 0
-    ? (allStat.itemCount / allStat.shipmentCount).toFixed(2)
-    : '0';
+  const totalShipments = periodSummary ? periodSummary.totalOrders : (allStat?.shipmentCount || 0);
+  const totalItems = periodSummary ? periodSummary.totalUnits : (allStat?.itemCount || 0);
+  const avgItemsPerShipment = periodSummary
+    ? periodSummary.avgUnitsPerOrder
+    : (allStat && allStat.shipmentCount > 0 ? (allStat.itemCount / allStat.shipmentCount).toFixed(2) : '0');
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -35,20 +38,26 @@ export const KpiCards: React.FC<KpiCardsProps> = ({ bracketStats, unit }) => {
         <div className="mt-3">
           <div className="flex items-baseline space-x-2">
             <span className="text-2xl font-bold text-white tracking-tight font-mono">
-              {allStat?.shipmentCount.toLocaleString('cs-CZ')}
+              {totalShipments.toLocaleString('cs-CZ')}
             </span>
             <span className="text-xs text-slate-400">{lang === 'cs' ? 'zásilek' : 'orders'}</span>
           </div>
           <div className="mt-1 flex items-center justify-between text-xs text-slate-400">
             <span>{lang === 'cs' ? 'Celkem kusů:' : 'Total items:'}</span>
             <span className="text-slate-200 font-semibold font-mono">
-              {allStat?.itemCount.toLocaleString('cs-CZ')} {lang === 'cs' ? 'ks' : 'units'}
+              {totalItems.toLocaleString('cs-CZ')} {lang === 'cs' ? 'ks' : 'units'}
             </span>
           </div>
           <div className="mt-0.5 flex items-center justify-between text-xs text-slate-400">
             <span>{lang === 'cs' ? 'Průměrně na zásilku:' : 'Average per order:'}</span>
             <span className="text-indigo-400 font-medium font-mono">{avgItemsPerShipment} {lang === 'cs' ? 'ks' : 'units'}</span>
           </div>
+          {periodSummary && (
+            <div className="mt-1.5 pt-1.5 border-t border-slate-800/60 flex items-center justify-between text-[11px] text-slate-400">
+              <span>{lang === 'cs' ? 'Medián v 1 boxu:' : 'Median / box:'}</span>
+              <span className="text-indigo-300 font-semibold font-mono">{periodSummary.medianOrdersPerBox} {lang === 'cs' ? 'obj.' : 'orders'}</span>
+            </div>
+          )}
         </div>
         <div className="absolute -right-4 -bottom-4 w-20 h-20 bg-blue-500/5 rounded-full blur-xl group-hover:bg-blue-500/10 transition-colors" />
       </div>

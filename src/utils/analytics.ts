@@ -12,6 +12,7 @@ import {
   DailyPerformanceReport,
   SkuVolumeProfile,
   VolumetricAnalysisSummary,
+  PeriodSummary,
 } from '../types.js';
 import { parseDateTime } from './fileParser.js';
 
@@ -27,6 +28,124 @@ function percentile(values: number[], p: number): number {
   const sorted = [...values].sort((a, b) => a - b);
   const index = Math.ceil((p / 100) * sorted.length) - 1;
   return sorted[Math.max(0, Math.min(index, sorted.length - 1))];
+}
+
+/**
+ * Vypočítá sumární informace za zkoumané období:
+ * - časový rozsah (od - do, počet dní)
+ * - celkový počet unikátních objednávek
+ * - celkový počet unikátních SKU
+ * - celkový počet zpracovaných kusů (ks)
+ * - průměrný počet kusů na 1 zásilku
+ * - medián počtu objednávek v 1 balicím boxu
+ */
+export function computePeriodSummary(records: MovementRecord[]): PeriodSummary {
+  if (!records || records.length === 0) {
+    return {
+      dateFrom: '',
+      dateTo: '',
+      daysCount: 0,
+      totalOrders: 0,
+      totalSkus: 0,
+      totalUnits: 0,
+      avgUnitsPerOrder: 0,
+      medianOrdersPerBox: 0,
+      avgOrdersPerBox: 0,
+      totalBoxesCount: 0,
+      minOrdersPerBox: 0,
+      maxOrdersPerBox: 0,
+    };
+  }
+
+  // 1. Zkoumané období (časové rozmezí)
+  let minTime = Infinity;
+  let maxTime = -Infinity;
+  const uniqueDates = new Set<string>();
+
+  for (const r of records) {
+    const rawStart = r.zacatek_pickovani || r.zacatek_baleni;
+    const rawEnd = r.konec_baleni || r.konec_pickovani || rawStart;
+
+    if (rawStart) {
+      const tStart = new Date(rawStart).getTime();
+      if (!isNaN(tStart)) {
+        if (tStart < minTime) minTime = tStart;
+        if (tStart > maxTime) maxTime = tStart;
+        uniqueDates.add(new Date(tStart).toISOString().substring(0, 10));
+      }
+    }
+    if (rawEnd) {
+      const tEnd = new Date(rawEnd).getTime();
+      if (!isNaN(tEnd)) {
+        if (tEnd < minTime) minTime = tEnd;
+        if (tEnd > maxTime) maxTime = tEnd;
+        uniqueDates.add(new Date(tEnd).toISOString().substring(0, 10));
+      }
+    }
+  }
+
+  const dateFrom = minTime !== Infinity ? new Date(minTime).toLocaleDateString('cs-CZ') : '';
+  const dateTo = maxTime !== -Infinity ? new Date(maxTime).toLocaleDateString('cs-CZ') : '';
+  const daysCount = Math.max(1, uniqueDates.size);
+
+  // 2. Počet objednávek, SKU a celkem kusů
+  const orderUnitsMap = new Map<string, number>();
+  const uniqueSkus = new Set<string>();
+
+  for (const r of records) {
+    const orderKey = r.obsah_objednavek ? String(r.obsah_objednavek).trim() : String(r.id || '');
+    const units = r.pocet_produktu || r.pocet_ks || 1;
+
+    if (!orderUnitsMap.has(orderKey)) {
+      orderUnitsMap.set(orderKey, units);
+    }
+
+    if (r.ean_produktu) {
+      const cleanEan = String(r.ean_produktu).trim().split(' ')[0];
+      if (cleanEan && cleanEan !== 'N/A' && cleanEan !== 'UNKNOWN') {
+        uniqueSkus.add(cleanEan);
+      }
+    }
+  }
+
+  const totalOrders = orderUnitsMap.size;
+  const totalSkus = uniqueSkus.size;
+  const totalUnits = Array.from(orderUnitsMap.values()).reduce((sum, n) => sum + n, 0);
+  const avgUnitsPerOrder = totalOrders > 0 ? Number((totalUnits / totalOrders).toFixed(2)) : 0;
+
+  // 3. Medián počtu objednávek v 1 balicím/sběrném boxu
+  const boxOrderMap = new Map<string, Set<string>>();
+  for (const r of records) {
+    const boxKey = getBoxWaveKey(r);
+    const orderKey = r.obsah_objednavek ? String(r.obsah_objednavek).trim() : String(r.id || '');
+    if (!boxOrderMap.has(boxKey)) {
+      boxOrderMap.set(boxKey, new Set());
+    }
+    boxOrderMap.get(boxKey)!.add(orderKey);
+  }
+
+  const ordersPerBoxList = Array.from(boxOrderMap.values()).map(orders => orders.size);
+  const totalBoxesCount = boxOrderMap.size;
+  const medianOrdersPerBox = Number(median(ordersPerBoxList).toFixed(1));
+  const sumOrdersInBoxes = ordersPerBoxList.reduce((acc, v) => acc + v, 0);
+  const avgOrdersPerBox = totalBoxesCount > 0 ? Number((sumOrdersInBoxes / totalBoxesCount).toFixed(1)) : 0;
+  const minOrdersPerBox = ordersPerBoxList.length > 0 ? Math.min(...ordersPerBoxList) : 0;
+  const maxOrdersPerBox = ordersPerBoxList.length > 0 ? Math.max(...ordersPerBoxList) : 0;
+
+  return {
+    dateFrom,
+    dateTo,
+    daysCount,
+    totalOrders,
+    totalSkus,
+    totalUnits,
+    avgUnitsPerOrder,
+    medianOrdersPerBox,
+    avgOrdersPerBox,
+    totalBoxesCount,
+    minOrdersPerBox,
+    maxOrdersPerBox,
+  };
 }
 
 export function computeBracketStatistics(records: MovementRecord[]): BracketStat[] {
