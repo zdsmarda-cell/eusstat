@@ -1,20 +1,14 @@
 const fs = require('fs');
 const path = require('path');
 
-// Kontrola cest k serveru (dist/server.js, přímý server.js, nebo fallback na tsx)
-const distServerPath = path.resolve(__dirname, 'dist', 'server.js');
-const rootServerPath = path.resolve(__dirname, 'server.js');
+const rootServer = path.resolve(__dirname, 'server.js');
+const distServer = path.resolve(__dirname, 'dist', 'server.js');
 
-let scriptTarget = 'dist/server.js';
-let scriptArgs = undefined;
-
-if (fs.existsSync(distServerPath)) {
-  scriptTarget = 'dist/server.js';
-} else if (fs.existsSync(rootServerPath)) {
+let scriptTarget = 'server.js';
+if (fs.existsSync(rootServer)) {
   scriptTarget = 'server.js';
-} else {
-  scriptTarget = './node_modules/.bin/tsx';
-  scriptArgs = 'server.ts';
+} else if (fs.existsSync(distServer)) {
+  scriptTarget = 'dist/server.js';
 }
 
 module.exports = {
@@ -22,8 +16,7 @@ module.exports = {
     {
       name: 'eusstat',
       script: scriptTarget,
-      ...(scriptArgs ? { args: scriptArgs } : {}),
-      cwd: __dirname,
+      exec_mode: 'fork',       // DŮLEŽITÉ: fork režim (nikoliv cluster)
       instances: 1,
       autorestart: true,
       watch: false,
