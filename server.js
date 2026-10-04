@@ -3,23 +3,99 @@ import express from "express";
 import http from "http";
 import https from "https";
 import tls from "tls";
-import fs from "fs";
-import path from "path";
+import fs2 from "fs";
+import path2 from "path";
 import { fileURLToPath } from "url";
-import dotenv from "dotenv";
+import dotenv2 from "dotenv";
 
 // src/server/db.ts
 import mysql from "mysql2/promise";
-var pool = null;
-var currentConfig = {
-  host: process.env.DB_HOST || process.env.MARIADB_HOST || "",
-  port: Number(process.env.DB_PORT || process.env.MARIADB_PORT) || 3306,
-  user: process.env.DB_USER || process.env.MARIADB_USER || "",
-  password: process.env.DB_PASSWORD || process.env.MARIADB_PASSWORD || "",
-  database: process.env.DB_NAME || process.env.DB_DATABASE || process.env.MARIADB_DATABASE || "",
-  ssl: process.env.DB_SSL === "true" || process.env.MARIADB_SSL === "true"
-};
+import fs from "fs";
+import path from "path";
+import dotenv from "dotenv";
+dotenv.config();
+dotenv.config({ path: path.resolve(process.cwd(), ".env") });
+var CONFIG_FILE_PATH = path.resolve(process.cwd(), "data", "db-config.json");
+var PERSISTENT_DATA_PATH = path.resolve(process.cwd(), "data", "warehouse_movements.json");
+try {
+  const dataDir = path.resolve(process.cwd(), "data");
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+  }
+} catch {
+}
+function loadSavedConfig() {
+  let fileConfig = {};
+  if (fs.existsSync(CONFIG_FILE_PATH)) {
+    try {
+      const content = fs.readFileSync(CONFIG_FILE_PATH, "utf-8");
+      fileConfig = JSON.parse(content);
+    } catch (e) {
+      console.warn("Could not read db-config.json:", e);
+    }
+  }
+  return {
+    host: fileConfig.host || process.env.DB_HOST || process.env.MARIADB_HOST || "db.mobilgroup.cz",
+    port: Number(fileConfig.port || process.env.DB_PORT || process.env.MARIADB_PORT) || 3306,
+    user: fileConfig.user || process.env.DB_USER || process.env.MARIADB_USER || "fhb_crm",
+    password: fileConfig.password !== void 0 ? fileConfig.password : process.env.DB_PASSWORD || process.env.MARIADB_PASSWORD || "",
+    database: fileConfig.database || process.env.DB_NAME || process.env.DB_DATABASE || process.env.MARIADB_DATABASE || "fhb_crm",
+    ssl: fileConfig.ssl !== void 0 ? Boolean(fileConfig.ssl) : process.env.DB_SSL === "true" || process.env.MARIADB_SSL === "true"
+  };
+}
+function saveConfigToFile(config) {
+  try {
+    fs.writeFileSync(CONFIG_FILE_PATH, JSON.stringify(config, null, 2), "utf-8");
+  } catch (err) {
+    console.error("Failed to write db-config.json:", err);
+  }
+  try {
+    const envPath = path.resolve(process.cwd(), ".env");
+    let envContent = "";
+    if (fs.existsSync(envPath)) {
+      envContent = fs.readFileSync(envPath, "utf-8");
+    }
+    const updates = {
+      DB_HOST: config.host,
+      DB_PORT: String(config.port),
+      DB_USER: config.user,
+      DB_PASSWORD: config.password || "",
+      DB_NAME: config.database,
+      DB_SSL: String(config.ssl)
+    };
+    for (const [k, v] of Object.entries(updates)) {
+      const regex = new RegExp(`^${k}=.*$`, "m");
+      if (regex.test(envContent)) {
+        envContent = envContent.replace(regex, `${k}="${v}"`);
+      } else {
+        envContent += `
+${k}="${v}"`;
+      }
+    }
+    fs.writeFileSync(envPath, envContent.trim() + "\n", "utf-8");
+  } catch {
+  }
+}
 var memoryMovements = [];
+try {
+  if (fs.existsSync(PERSISTENT_DATA_PATH)) {
+    const raw = fs.readFileSync(PERSISTENT_DATA_PATH, "utf-8");
+    memoryMovements = JSON.parse(raw);
+    console.log(`\u{1F4C2} Na\u010Dteno ${memoryMovements.length} ulo\u017Een\xFDch z\xE1znam\u016F z diskov\xE9ho \xFAlo\u017Ei\u0161t\u011B (${PERSISTENT_DATA_PATH})`);
+  }
+} catch (e) {
+  console.warn("Could not read persistent warehouse_movements.json:", e);
+}
+function saveMovementsToDisk() {
+  try {
+    fs.writeFileSync(PERSISTENT_DATA_PATH, JSON.stringify(memoryMovements), "utf-8");
+  } catch (err) {
+    console.error("Failed to save movements to disk:", err);
+  }
+}
+var pool = null;
+var currentConfig = loadSavedConfig();
+var lastConnectionError = null;
 function getDbConfig() {
   return {
     ...currentConfig,
@@ -27,11 +103,13 @@ function getDbConfig() {
   };
 }
 async function setDbConfig(config) {
+  const newPassword = config.password !== void 0 && config.password !== "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022" ? config.password : currentConfig.password;
   currentConfig = {
     ...currentConfig,
     ...config,
-    password: config.password !== void 0 && config.password !== "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022" ? config.password : currentConfig.password
+    password: newPassword
   };
+  saveConfigToFile(currentConfig);
   if (pool) {
     try {
       await pool.end();
@@ -39,12 +117,18 @@ async function setDbConfig(config) {
     }
     pool = null;
   }
+  schemaInitialized = false;
   return await testConnection();
 }
 var schemaInitialized = false;
 async function getPool() {
   if (pool) return pool;
   if (!currentConfig.host || !currentConfig.user || !currentConfig.database) {
+    lastConnectionError = "Chyb\xED host, u\u017Eivatel nebo n\xE1zev datab\xE1ze.";
+    return null;
+  }
+  if (!currentConfig.password) {
+    lastConnectionError = "Chyb\xED heslo k datab\xE1zi fhb_crm na db.mobilgroup.cz. Zadejte heslo v Nastaven\xED DB pro trval\xE9 ukl\xE1d\xE1n\xED.";
     return null;
   }
   try {
@@ -58,21 +142,28 @@ async function getPool() {
       waitForConnections: true,
       connectionLimit: 10,
       queueLimit: 0,
-      connectTimeout: 8e3
+      connectTimeout: 7e3,
+      enableKeepAlive: true,
+      keepAliveInitialDelay: 1e4
     });
     if (!schemaInitialized) {
       try {
         await initMariaDbSchema(newPool);
         schemaInitialized = true;
-        console.log(`MariaDB schema verified for database '${currentConfig.database}' on ${currentConfig.host}`);
+        lastConnectionError = null;
+        console.log(`\u2705 MariaDB spojen\xED a sch\xE9ma ov\u011B\u0159eno: ${currentConfig.user}@${currentConfig.host}:${currentConfig.port}/${currentConfig.database}`);
+        syncPendingMovementsToMariaDb(newPool).catch(() => {
+        });
       } catch (schemaErr) {
-        console.warn("Warning: Could not auto-initialize schema on pool creation:", schemaErr?.message);
+        lastConnectionError = schemaErr?.message || "Chyba inicializace MariaDB sch\xE9matu";
+        console.warn("Warning: Could not auto-initialize schema on pool creation:", lastConnectionError);
       }
     }
     pool = newPool;
     return pool;
   } catch (err) {
-    console.error("Failed to create MariaDB pool:", err);
+    lastConnectionError = err?.message || "Chyba p\u0159i vytv\xE1\u0159en\xED MariaDB poolu";
+    console.error("Failed to create MariaDB pool:", lastConnectionError);
     pool = null;
     return null;
   }
@@ -122,14 +213,25 @@ async function testConnection() {
       connected: false,
       type: "memory",
       totalRows: memoryMovements.length,
-      lastError: "MariaDB nen\xED nakonfigurov\xE1na (vyu\u017E\xEDv\xE1 se lok\xE1ln\xED pam\u011B\u0165ov\xE9 \xFAlo\u017Ei\u0161t\u011B)"
+      lastError: "MariaDB nen\xED nakonfigurov\xE1na (vyu\u017E\xEDv\xE1 se lok\xE1ln\xED diskov\xE9 \xFAlo\u017Ei\u0161t\u011B)"
+    };
+  }
+  if (!currentConfig.password) {
+    return {
+      connected: false,
+      type: "memory",
+      host: currentConfig.host,
+      database: currentConfig.database,
+      user: currentConfig.user,
+      totalRows: memoryMovements.length,
+      lastError: "Chyb\xED heslo k datab\xE1zi. Zadejte heslo k datab\xE1zi fhb_crm na db.mobilgroup.cz."
     };
   }
   const startTime = Date.now();
   try {
     const p = await getPool();
     if (!p) {
-      throw new Error("Nepoda\u0159ilo se vytvo\u0159it connection pool.");
+      throw new Error(lastConnectionError || "Nepoda\u0159ilo se vytvo\u0159it connection pool.");
     }
     const [rows] = await p.query("SELECT VERSION() as version, DATABASE() as db");
     const latency = Date.now() - startTime;
@@ -137,6 +239,7 @@ async function testConnection() {
     await initMariaDbSchema(p);
     const [countRows] = await p.query("SELECT COUNT(*) as count FROM warehouse_movements");
     const totalRows = countRows[0]?.count || 0;
+    lastConnectionError = null;
     return {
       connected: true,
       type: "mariadb",
@@ -148,13 +251,15 @@ async function testConnection() {
       totalRows: Number(totalRows)
     };
   } catch (err) {
+    const errMsg = err?.message || "Chyba p\u0159ipojen\xED k MariaDB";
+    lastConnectionError = errMsg;
     return {
       connected: false,
       type: "memory",
       host: currentConfig.host,
       database: currentConfig.database,
       user: currentConfig.user,
-      lastError: err?.message || "Chyba p\u0159ipojen\xED k MariaDB",
+      lastError: errMsg,
       totalRows: memoryMovements.length
     };
   }
@@ -165,8 +270,11 @@ async function getDbStatus() {
     return {
       connected: false,
       type: "memory",
+      host: currentConfig.host,
+      database: currentConfig.database,
+      user: currentConfig.user,
       totalRows: memoryMovements.length,
-      lastError: "MariaDB nen\xED p\u0159ipojena (pou\u017E\xEDv\xE1 se lok\xE1ln\xED re\u017Eim)"
+      lastError: lastConnectionError || (currentConfig.password ? "Nelze nav\xE1zat spojen\xED se serverem MariaDB" : "Chyb\xED heslo k MariaDB datab\xE1zi")
     };
   }
   try {
@@ -174,6 +282,7 @@ async function getDbStatus() {
     const [rows] = await p.query("SELECT VERSION() as version");
     const latency = Date.now() - startTime;
     const [countRows] = await p.query("SELECT COUNT(*) as count FROM warehouse_movements");
+    lastConnectionError = null;
     return {
       connected: true,
       type: "mariadb",
@@ -185,11 +294,15 @@ async function getDbStatus() {
       totalRows: Number(countRows[0]?.count || 0)
     };
   } catch (err) {
+    lastConnectionError = err?.message || "Chyba komunikace s MariaDB";
     return {
       connected: false,
       type: "memory",
+      host: currentConfig.host,
+      database: currentConfig.database,
+      user: currentConfig.user,
       totalRows: memoryMovements.length,
-      lastError: err.message
+      lastError: lastConnectionError || void 0
     };
   }
 }
@@ -198,52 +311,72 @@ function safeDate(val) {
   const d = new Date(val);
   return isNaN(d.getTime()) ? /* @__PURE__ */ new Date() : d;
 }
+async function syncPendingMovementsToMariaDb(p) {
+  if (memoryMovements.length === 0) return;
+  try {
+    const [countRows] = await p.query("SELECT COUNT(*) as count FROM warehouse_movements");
+    const totalInDb = Number(countRows[0]?.count || 0);
+    if (totalInDb === 0 && memoryMovements.length > 0) {
+      console.log(`\u{1F504} Synchronizuji ${memoryMovements.length} existuj\xEDc\xEDch z\xE1znam\u016F do pr\xE1zdn\xE9 MariaDB tabulky...`);
+      await insertMovementsDirect(p, memoryMovements);
+      console.log(`\u2705 ${memoryMovements.length} z\xE1znam\u016F \xFAsp\u011B\u0161n\u011B ulo\u017Eeno do MariaDB.`);
+    }
+  } catch (e) {
+    console.warn("Sync to MariaDB failed:", e);
+  }
+}
+async function insertMovementsDirect(p, records) {
+  await initMariaDbSchema(p);
+  const insertSql = `
+    INSERT INTO warehouse_movements (
+      box_id, sberny_box, obsah_objednavek, pocet_produktu, ean_produktu, pocet_ks,
+      zacatek_pickovani, konec_pickovani, zacatek_baleni, konec_baleni,
+      pick_duration_s, pack_duration_s, pick_per_item_s, pack_per_item_s, bracket,
+      packer, sec_per_scan, wait_pick_to_pack_min
+    ) VALUES ?
+  `;
+  const values = records.map((r) => [
+    r.box_id ? String(r.box_id) : null,
+    r.sberny_box,
+    r.obsah_objednavek,
+    r.pocet_produktu,
+    r.ean_produktu,
+    r.pocet_ks || 1,
+    safeDate(r.zacatek_pickovani),
+    safeDate(r.konec_pickovani),
+    safeDate(r.zacatek_baleni),
+    safeDate(r.konec_baleni),
+    r.pick_duration_s || 0,
+    r.pack_duration_s || 0,
+    r.pick_per_item_s || 0,
+    r.pack_per_item_s || 0,
+    r.bracket || "1",
+    r.packer || null,
+    r.sec_per_scan !== void 0 ? r.sec_per_scan : null,
+    r.wait_pick_to_pack_min !== void 0 ? r.wait_pick_to_pack_min : null
+  ]);
+  const chunkSize = 500;
+  for (let i = 0; i < values.length; i += chunkSize) {
+    const chunk = values.slice(i, i + chunkSize);
+    await p.query(insertSql, [chunk]);
+  }
+}
 async function insertMovements(records) {
   if (records.length === 0) return { count: 0, destination: "memory" };
   const p = await getPool();
   if (p) {
     try {
-      await initMariaDbSchema(p);
-      const insertSql = `
-        INSERT INTO warehouse_movements (
-          box_id, sberny_box, obsah_objednavek, pocet_produktu, ean_produktu, pocet_ks,
-          zacatek_pickovani, konec_pickovani, zacatek_baleni, konec_baleni,
-          pick_duration_s, pack_duration_s, pick_per_item_s, pack_per_item_s, bracket,
-          packer, sec_per_scan, wait_pick_to_pack_min
-        ) VALUES ?
-      `;
-      const values = records.map((r) => [
-        r.box_id ? String(r.box_id) : null,
-        r.sberny_box,
-        r.obsah_objednavek,
-        r.pocet_produktu,
-        r.ean_produktu,
-        r.pocet_ks || 1,
-        safeDate(r.zacatek_pickovani),
-        safeDate(r.konec_pickovani),
-        safeDate(r.zacatek_baleni),
-        safeDate(r.konec_baleni),
-        r.pick_duration_s || 0,
-        r.pack_duration_s || 0,
-        r.pick_per_item_s || 0,
-        r.pack_per_item_s || 0,
-        r.bracket || "1",
-        r.packer || null,
-        r.sec_per_scan !== void 0 ? r.sec_per_scan : null,
-        r.wait_pick_to_pack_min !== void 0 ? r.wait_pick_to_pack_min : null
-      ]);
-      const chunkSize = 500;
-      for (let i = 0; i < values.length; i += chunkSize) {
-        const chunk = values.slice(i, i + chunkSize);
-        await p.query(insertSql, [chunk]);
-      }
+      await insertMovementsDirect(p, records);
       memoryMovements = [...records, ...memoryMovements];
+      saveMovementsToDisk();
       return { count: records.length, destination: "mariadb" };
     } catch (err) {
-      console.error("Error inserting into MariaDB, falling back to local memory store:", err);
+      console.error("\u274C Chyba p\u0159i vkl\xE1d\xE1n\xED do MariaDB, ukl\xE1d\xE1m do lok\xE1ln\xEDho perzistentn\xEDho \xFAlo\u017Ei\u0161t\u011B:", err?.message || err);
+      lastConnectionError = err?.message || "Chyba z\xE1pisu do MariaDB";
     }
   }
   memoryMovements = [...records, ...memoryMovements];
+  saveMovementsToDisk();
   return { count: records.length, destination: "memory" };
 }
 async function getMovements(params) {
@@ -309,7 +442,8 @@ async function getMovements(params) {
         source: "mariadb"
       };
     } catch (err) {
-      console.error("Error querying MariaDB, falling back to memory:", err);
+      console.error("Error querying MariaDB, falling back to persistent disk store:", err?.message || err);
+      lastConnectionError = err?.message || "Chyba dotazu do MariaDB";
     }
   }
   let filtered = [...memoryMovements];
@@ -345,6 +479,7 @@ async function getMovements(params) {
 }
 async function clearMovements() {
   memoryMovements = [];
+  saveMovementsToDisk();
   const p = await getPool();
   if (p) {
     try {
@@ -507,11 +642,11 @@ function generateSampleWarehouseData(daysBack = 14, totalRecords = 420) {
 
 // server.ts
 var __filename = fileURLToPath(import.meta.url);
-var __dirname = path.dirname(__filename);
-dotenv.config();
-dotenv.config({ path: path.resolve(process.cwd(), ".env") });
-dotenv.config({ path: path.resolve(__dirname, ".env") });
-dotenv.config({ path: path.resolve(__dirname, "..", ".env") });
+var __dirname = path2.dirname(__filename);
+dotenv2.config();
+dotenv2.config({ path: path2.resolve(process.cwd(), ".env") });
+dotenv2.config({ path: path2.resolve(__dirname, ".env") });
+dotenv2.config({ path: path2.resolve(__dirname, "..", ".env") });
 process.on("uncaughtException", (err) => {
   console.error("\u274C [NEZACHYCEN\xC1 CHYBA SERVERU]:", err?.message || err);
 });
@@ -519,7 +654,7 @@ process.on("unhandledRejection", (reason) => {
   console.error("\u274C [NEZACHYCEN\xDD PROMISE REJECTION]:", reason?.message || reason);
 });
 var app = express();
-var PORT = Number(process.env.APP_PORT || process.env.API_PORT || process.env.PORT) || 3030;
+var PORT = Number(process.env.PORT || process.env.APP_PORT || process.env.API_PORT) || 3e3;
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
@@ -667,11 +802,11 @@ if (!isProduction) {
   });
   app.use(vite.middlewares);
 } else {
-  const distDir = path.resolve(__dirname, "dist");
-  const indexHtml = path.resolve(distDir, "index.html");
+  const distDir = path2.resolve(__dirname, "dist");
+  const indexHtml = path2.resolve(distDir, "index.html");
   try {
-    const fs2 = await import("fs");
-    if (fs2.existsSync(indexHtml)) {
+    const fs3 = await import("fs");
+    if (fs3.existsSync(indexHtml)) {
       app.use(express.static(distDir));
       app.get("*", (req, res) => {
         res.sendFile(indexHtml);
@@ -701,29 +836,29 @@ if (sslKeyPath && sslCertPath) {
     let resolvedCertPath = sslCertPath;
     const crtCandidate = sslCertPath.replace(/\.csr$/, ".crt");
     const pemCandidate = sslCertPath.replace(/\.csr$/, ".pem");
-    if (!fs.existsSync(resolvedCertPath)) {
-      if (fs.existsSync(crtCandidate)) {
+    if (!fs2.existsSync(resolvedCertPath)) {
+      if (fs2.existsSync(crtCandidate)) {
         console.log(`\u2139\uFE0F Cesta ${sslCertPath} neexistuje, pou\u017E\xEDv\xE1m nalezen\xFD certifik\xE1t: ${crtCandidate}`);
         resolvedCertPath = crtCandidate;
-      } else if (fs.existsSync(pemCandidate)) {
+      } else if (fs2.existsSync(pemCandidate)) {
         console.log(`\u2139\uFE0F Cesta ${sslCertPath} neexistuje, pou\u017E\xEDv\xE1m nalezen\xFD certifik\xE1t: ${pemCandidate}`);
         resolvedCertPath = pemCandidate;
       }
     }
-    if (fs.existsSync(sslKeyPath) && fs.existsSync(resolvedCertPath)) {
-      const keyContent = fs.readFileSync(sslKeyPath);
-      let certContent = fs.readFileSync(resolvedCertPath);
+    if (fs2.existsSync(sslKeyPath) && fs2.existsSync(resolvedCertPath)) {
+      const keyContent = fs2.readFileSync(sslKeyPath);
+      let certContent = fs2.readFileSync(resolvedCertPath);
       const certStr = certContent.toString("utf8");
       if (certStr.includes("CERTIFICATE REQUEST") && !certStr.includes("BEGIN CERTIFICATE")) {
         console.warn(`\u26A0\uFE0F POZOR: Soubor ${resolvedCertPath} je \u017E\xE1dost (CSR), nikoliv certifik\xE1t!`);
-        if (fs.existsSync(crtCandidate)) {
+        if (fs2.existsSync(crtCandidate)) {
           console.log(`\u2705 Nalezen skute\u010Dn\xFD certifik\xE1t: ${crtCandidate}`);
           resolvedCertPath = crtCandidate;
-          certContent = fs.readFileSync(crtCandidate);
-        } else if (fs.existsSync(pemCandidate)) {
+          certContent = fs2.readFileSync(crtCandidate);
+        } else if (fs2.existsSync(pemCandidate)) {
           console.log(`\u2705 Nalezen skute\u010Dn\xFD certifik\xE1t: ${pemCandidate}`);
           resolvedCertPath = pemCandidate;
-          certContent = fs.readFileSync(pemCandidate);
+          certContent = fs2.readFileSync(pemCandidate);
         } else {
           throw new Error(`Soubor ${resolvedCertPath} je pouze \u017E\xE1dost (.csr). V .env nastavte cestu ke skute\u010Dn\xE9mu certifik\xE1tu (.crt nebo .pem)!`);
         }
@@ -732,8 +867,8 @@ if (sslKeyPath && sslCertPath) {
         key: keyContent,
         cert: certContent
       };
-      if (sslCaPath && fs.existsSync(sslCaPath)) {
-        httpsOptions.ca = fs.readFileSync(sslCaPath);
+      if (sslCaPath && fs2.existsSync(sslCaPath)) {
+        httpsOptions.ca = fs2.readFileSync(sslCaPath);
       }
       tls.createSecureContext({
         key: keyContent,
@@ -747,8 +882,8 @@ if (sslKeyPath && sslCertPath) {
    CERT: ${resolvedCertPath}`);
     } else {
       console.warn(`\u26A0\uFE0F SSL soubory nenalezeny:
-   KEY (${sslKeyPath}): ${fs.existsSync(sslKeyPath) ? "nalezen" : "NENALEZEN"}
-   CERT (${resolvedCertPath}): ${fs.existsSync(resolvedCertPath) ? "nalezen" : "NENALEZEN"}
+   KEY (${sslKeyPath}): ${fs2.existsSync(sslKeyPath) ? "nalezen" : "NENALEZEN"}
+   CERT (${resolvedCertPath}): ${fs2.existsSync(resolvedCertPath) ? "nalezen" : "NENALEZEN"}
    \u{1F449} Spou\u0161t\xEDm server v HTTP re\u017Eimu na portu ${PORT}.`);
       server = http.createServer(app);
     }

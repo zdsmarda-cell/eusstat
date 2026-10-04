@@ -1,18 +1,111 @@
 import mysql from 'mysql2/promise';
+import fs from 'fs';
+import path from 'path';
+import dotenv from 'dotenv';
 import { MariaDbConfig, MovementRecord, DbStatus } from '../types.js';
 
-let pool: mysql.Pool | null = null;
-let currentConfig: MariaDbConfig = {
-  host: process.env.DB_HOST || process.env.MARIADB_HOST || '',
-  port: Number(process.env.DB_PORT || process.env.MARIADB_PORT) || 3306,
-  user: process.env.DB_USER || process.env.MARIADB_USER || '',
-  password: process.env.DB_PASSWORD || process.env.MARIADB_PASSWORD || '',
-  database: process.env.DB_NAME || process.env.DB_DATABASE || process.env.MARIADB_DATABASE || '',
-  ssl: process.env.DB_SSL === 'true' || process.env.MARIADB_SSL === 'true',
-};
+// Always load .env immediately upon module import
+dotenv.config();
+dotenv.config({ path: path.resolve(process.cwd(), '.env') });
 
-// In-memory fallback dataset so analytics work immediately out-of-the-box
+const CONFIG_FILE_PATH = path.resolve(process.cwd(), 'data', 'db-config.json');
+const PERSISTENT_DATA_PATH = path.resolve(process.cwd(), 'data', 'warehouse_movements.json');
+
+// Ensure data folder exists
+try {
+  const dataDir = path.resolve(process.cwd(), 'data');
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+  }
+} catch {
+  // ignore
+}
+
+function loadSavedConfig(): MariaDbConfig {
+  let fileConfig: Partial<MariaDbConfig> = {};
+  if (fs.existsSync(CONFIG_FILE_PATH)) {
+    try {
+      const content = fs.readFileSync(CONFIG_FILE_PATH, 'utf-8');
+      fileConfig = JSON.parse(content);
+    } catch (e) {
+      console.warn('Could not read db-config.json:', e);
+    }
+  }
+
+  return {
+    host: fileConfig.host || process.env.DB_HOST || process.env.MARIADB_HOST || 'db.mobilgroup.cz',
+    port: Number(fileConfig.port || process.env.DB_PORT || process.env.MARIADB_PORT) || 3306,
+    user: fileConfig.user || process.env.DB_USER || process.env.MARIADB_USER || 'fhb_crm',
+    password: fileConfig.password !== undefined ? fileConfig.password : (process.env.DB_PASSWORD || process.env.MARIADB_PASSWORD || ''),
+    database: fileConfig.database || process.env.DB_NAME || process.env.DB_DATABASE || process.env.MARIADB_DATABASE || 'fhb_crm',
+    ssl: fileConfig.ssl !== undefined ? Boolean(fileConfig.ssl) : (process.env.DB_SSL === 'true' || process.env.MARIADB_SSL === 'true'),
+  };
+}
+
+function saveConfigToFile(config: MariaDbConfig): void {
+  try {
+    fs.writeFileSync(CONFIG_FILE_PATH, JSON.stringify(config, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Failed to write db-config.json:', err);
+  }
+
+  // Also update .env file if it exists or create it
+  try {
+    const envPath = path.resolve(process.cwd(), '.env');
+    let envContent = '';
+    if (fs.existsSync(envPath)) {
+      envContent = fs.readFileSync(envPath, 'utf-8');
+    }
+
+    const updates: Record<string, string> = {
+      DB_HOST: config.host,
+      DB_PORT: String(config.port),
+      DB_USER: config.user,
+      DB_PASSWORD: config.password || '',
+      DB_NAME: config.database,
+      DB_SSL: String(config.ssl),
+    };
+
+    for (const [k, v] of Object.entries(updates)) {
+      const regex = new RegExp(`^${k}=.*$`, 'm');
+      if (regex.test(envContent)) {
+        envContent = envContent.replace(regex, `${k}="${v}"`);
+      } else {
+        envContent += `\n${k}="${v}"`;
+      }
+    }
+
+    fs.writeFileSync(envPath, envContent.trim() + '\n', 'utf-8');
+  } catch {
+    // ignore
+  }
+}
+
+// Persistent fallback dataset stored on disk (not just RAM)
 let memoryMovements: MovementRecord[] = [];
+
+// Load persistent disk records on startup
+try {
+  if (fs.existsSync(PERSISTENT_DATA_PATH)) {
+    const raw = fs.readFileSync(PERSISTENT_DATA_PATH, 'utf-8');
+    memoryMovements = JSON.parse(raw);
+    console.log(`📂 Načteno ${memoryMovements.length} uložených záznamů z diskového úložiště (${PERSISTENT_DATA_PATH})`);
+  }
+} catch (e) {
+  console.warn('Could not read persistent warehouse_movements.json:', e);
+}
+
+function saveMovementsToDisk(): void {
+  try {
+    fs.writeFileSync(PERSISTENT_DATA_PATH, JSON.stringify(memoryMovements), 'utf-8');
+  } catch (err) {
+    console.error('Failed to save movements to disk:', err);
+  }
+}
+
+let pool: mysql.Pool | null = null;
+let currentConfig: MariaDbConfig = loadSavedConfig();
+let lastConnectionError: string | null = null;
 
 export function getDbConfig(): MariaDbConfig {
   return {
@@ -22,11 +115,17 @@ export function getDbConfig(): MariaDbConfig {
 }
 
 export async function setDbConfig(config: Partial<MariaDbConfig>): Promise<DbStatus> {
+  const newPassword = config.password !== undefined && config.password !== '••••••••'
+    ? config.password
+    : currentConfig.password;
+
   currentConfig = {
     ...currentConfig,
     ...config,
-    password: config.password !== undefined && config.password !== '••••••••' ? config.password : currentConfig.password,
+    password: newPassword,
   };
+
+  saveConfigToFile(currentConfig);
 
   if (pool) {
     try {
@@ -36,6 +135,7 @@ export async function setDbConfig(config: Partial<MariaDbConfig>): Promise<DbSta
     }
     pool = null;
   }
+  schemaInitialized = false;
 
   return await testConnection();
 }
@@ -45,6 +145,11 @@ let schemaInitialized = false;
 export async function getPool(): Promise<mysql.Pool | null> {
   if (pool) return pool;
   if (!currentConfig.host || !currentConfig.user || !currentConfig.database) {
+    lastConnectionError = 'Chybí host, uživatel nebo název databáze.';
+    return null;
+  }
+  if (!currentConfig.password) {
+    lastConnectionError = 'Chybí heslo k databázi fhb_crm na db.mobilgroup.cz. Zadejte heslo v Nastavení DB pro trvalé ukládání.';
     return null;
   }
 
@@ -59,23 +164,31 @@ export async function getPool(): Promise<mysql.Pool | null> {
       waitForConnections: true,
       connectionLimit: 10,
       queueLimit: 0,
-      connectTimeout: 8000,
+      connectTimeout: 7000,
+      enableKeepAlive: true,
+      keepAliveInitialDelay: 10000,
     });
 
     if (!schemaInitialized) {
       try {
         await initMariaDbSchema(newPool);
         schemaInitialized = true;
-        console.log(`MariaDB schema verified for database '${currentConfig.database}' on ${currentConfig.host}`);
+        lastConnectionError = null;
+        console.log(`✅ MariaDB spojení a schéma ověřeno: ${currentConfig.user}@${currentConfig.host}:${currentConfig.port}/${currentConfig.database}`);
+
+        // Automatická synchronizace: Pokud jsou v lokálním úložišti záznamy a MariaDB je prázdná, synchronizujeme je do MariaDB!
+        syncPendingMovementsToMariaDb(newPool).catch(() => {});
       } catch (schemaErr: any) {
-        console.warn('Warning: Could not auto-initialize schema on pool creation:', schemaErr?.message);
+        lastConnectionError = schemaErr?.message || 'Chyba inicializace MariaDB schématu';
+        console.warn('Warning: Could not auto-initialize schema on pool creation:', lastConnectionError);
       }
     }
 
     pool = newPool;
     return pool;
-  } catch (err) {
-    console.error('Failed to create MariaDB pool:', err);
+  } catch (err: any) {
+    lastConnectionError = err?.message || 'Chyba při vytváření MariaDB poolu';
+    console.error('Failed to create MariaDB pool:', lastConnectionError);
     pool = null;
     return null;
   }
@@ -120,7 +233,7 @@ export async function initMariaDbSchema(p: mysql.Pool): Promise<void> {
     await p.query('ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS sec_per_scan DECIMAL(10,2) NULL AFTER packer');
     await p.query('ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS wait_pick_to_pack_min DECIMAL(10,2) NULL AFTER sec_per_scan');
   } catch {
-    // Column might already exist or MariaDB doesn't support IF NOT EXISTS in ADD COLUMN
+    // Column might already exist
   }
 }
 
@@ -130,7 +243,19 @@ export async function testConnection(): Promise<DbStatus> {
       connected: false,
       type: 'memory',
       totalRows: memoryMovements.length,
-      lastError: 'MariaDB není nakonfigurována (využívá se lokální paměťové úložiště)',
+      lastError: 'MariaDB není nakonfigurována (využívá se lokální diskové úložiště)',
+    };
+  }
+
+  if (!currentConfig.password) {
+    return {
+      connected: false,
+      type: 'memory',
+      host: currentConfig.host,
+      database: currentConfig.database,
+      user: currentConfig.user,
+      totalRows: memoryMovements.length,
+      lastError: 'Chybí heslo k databázi. Zadejte heslo k databázi fhb_crm na db.mobilgroup.cz.',
     };
   }
 
@@ -138,7 +263,7 @@ export async function testConnection(): Promise<DbStatus> {
   try {
     const p = await getPool();
     if (!p) {
-      throw new Error('Nepodařilo se vytvořit connection pool.');
+      throw new Error(lastConnectionError || 'Nepodařilo se vytvořit connection pool.');
     }
 
     const [rows]: any = await p.query('SELECT VERSION() as version, DATABASE() as db');
@@ -150,6 +275,7 @@ export async function testConnection(): Promise<DbStatus> {
     const [countRows]: any = await p.query('SELECT COUNT(*) as count FROM warehouse_movements');
     const totalRows = countRows[0]?.count || 0;
 
+    lastConnectionError = null;
     return {
       connected: true,
       type: 'mariadb',
@@ -161,13 +287,15 @@ export async function testConnection(): Promise<DbStatus> {
       totalRows: Number(totalRows),
     };
   } catch (err: any) {
+    const errMsg = err?.message || 'Chyba připojení k MariaDB';
+    lastConnectionError = errMsg;
     return {
       connected: false,
       type: 'memory',
       host: currentConfig.host,
       database: currentConfig.database,
       user: currentConfig.user,
-      lastError: err?.message || 'Chyba připojení k MariaDB',
+      lastError: errMsg,
       totalRows: memoryMovements.length,
     };
   }
@@ -179,8 +307,11 @@ export async function getDbStatus(): Promise<DbStatus> {
     return {
       connected: false,
       type: 'memory',
+      host: currentConfig.host,
+      database: currentConfig.database,
+      user: currentConfig.user,
       totalRows: memoryMovements.length,
-      lastError: 'MariaDB není připojena (používá se lokální režim)',
+      lastError: lastConnectionError || (currentConfig.password ? 'Nelze navázat spojení se serverem MariaDB' : 'Chybí heslo k MariaDB databázi'),
     };
   }
 
@@ -189,6 +320,7 @@ export async function getDbStatus(): Promise<DbStatus> {
     const [rows]: any = await p.query('SELECT VERSION() as version');
     const latency = Date.now() - startTime;
     const [countRows]: any = await p.query('SELECT COUNT(*) as count FROM warehouse_movements');
+    lastConnectionError = null;
     return {
       connected: true,
       type: 'mariadb',
@@ -200,11 +332,15 @@ export async function getDbStatus(): Promise<DbStatus> {
       totalRows: Number(countRows[0]?.count || 0),
     };
   } catch (err: any) {
+    lastConnectionError = err?.message || 'Chyba komunikace s MariaDB';
     return {
       connected: false,
       type: 'memory',
+      host: currentConfig.host,
+      database: currentConfig.database,
+      user: currentConfig.user,
       totalRows: memoryMovements.length,
-      lastError: err.message,
+      lastError: lastConnectionError || undefined,
     };
   }
 }
@@ -215,62 +351,87 @@ function safeDate(val: any): Date {
   return isNaN(d.getTime()) ? new Date() : d;
 }
 
+/**
+ * Automatická migrace záznamů z diskového úložiště do MariaDB,
+ * pokud se právě připojila prázdná databáze.
+ */
+async function syncPendingMovementsToMariaDb(p: mysql.Pool): Promise<void> {
+  if (memoryMovements.length === 0) return;
+  try {
+    const [countRows]: any = await p.query('SELECT COUNT(*) as count FROM warehouse_movements');
+    const totalInDb = Number(countRows[0]?.count || 0);
+    if (totalInDb === 0 && memoryMovements.length > 0) {
+      console.log(`🔄 Synchronizuji ${memoryMovements.length} existujících záznamů do prázdné MariaDB tabulky...`);
+      await insertMovementsDirect(p, memoryMovements);
+      console.log(`✅ ${memoryMovements.length} záznamů úspěšně uloženo do MariaDB.`);
+    }
+  } catch (e) {
+    console.warn('Sync to MariaDB failed:', e);
+  }
+}
+
+async function insertMovementsDirect(p: mysql.Pool, records: MovementRecord[]): Promise<void> {
+  await initMariaDbSchema(p);
+
+  const insertSql = `
+    INSERT INTO warehouse_movements (
+      box_id, sberny_box, obsah_objednavek, pocet_produktu, ean_produktu, pocet_ks,
+      zacatek_pickovani, konec_pickovani, zacatek_baleni, konec_baleni,
+      pick_duration_s, pack_duration_s, pick_per_item_s, pack_per_item_s, bracket,
+      packer, sec_per_scan, wait_pick_to_pack_min
+    ) VALUES ?
+  `;
+
+  const values = records.map(r => [
+    r.box_id ? String(r.box_id) : null,
+    r.sberny_box,
+    r.obsah_objednavek,
+    r.pocet_produktu,
+    r.ean_produktu,
+    r.pocet_ks || 1,
+    safeDate(r.zacatek_pickovani),
+    safeDate(r.konec_pickovani),
+    safeDate(r.zacatek_baleni),
+    safeDate(r.konec_baleni),
+    r.pick_duration_s || 0,
+    r.pack_duration_s || 0,
+    r.pick_per_item_s || 0,
+    r.pack_per_item_s || 0,
+    r.bracket || '1',
+    r.packer || null,
+    r.sec_per_scan !== undefined ? r.sec_per_scan : null,
+    r.wait_pick_to_pack_min !== undefined ? r.wait_pick_to_pack_min : null,
+  ]);
+
+  const chunkSize = 500;
+  for (let i = 0; i < values.length; i += chunkSize) {
+    const chunk = values.slice(i, i + chunkSize);
+    await p.query(insertSql, [chunk]);
+  }
+}
+
 export async function insertMovements(records: MovementRecord[]): Promise<{ count: number; destination: 'mariadb' | 'memory' }> {
   if (records.length === 0) return { count: 0, destination: 'memory' };
 
   const p = await getPool();
   if (p) {
     try {
-      await initMariaDbSchema(p);
-      
-      const insertSql = `
-        INSERT INTO warehouse_movements (
-          box_id, sberny_box, obsah_objednavek, pocet_produktu, ean_produktu, pocet_ks,
-          zacatek_pickovani, konec_pickovani, zacatek_baleni, konec_baleni,
-          pick_duration_s, pack_duration_s, pick_per_item_s, pack_per_item_s, bracket,
-          packer, sec_per_scan, wait_pick_to_pack_min
-        ) VALUES ?
-      `;
+      await insertMovementsDirect(p, records);
 
-      const values = records.map(r => [
-        r.box_id ? String(r.box_id) : null,
-        r.sberny_box,
-        r.obsah_objednavek,
-        r.pocet_produktu,
-        r.ean_produktu,
-        r.pocet_ks || 1,
-        safeDate(r.zacatek_pickovani),
-        safeDate(r.konec_pickovani),
-        safeDate(r.zacatek_baleni),
-        safeDate(r.konec_baleni),
-        r.pick_duration_s || 0,
-        r.pack_duration_s || 0,
-        r.pick_per_item_s || 0,
-        r.pack_per_item_s || 0,
-        r.bracket || '1',
-        r.packer || null,
-        r.sec_per_scan !== undefined ? r.sec_per_scan : null,
-        r.wait_pick_to_pack_min !== undefined ? r.wait_pick_to_pack_min : null,
-      ]);
-
-      // Chunk in blocks of 500 for high stability
-      const chunkSize = 500;
-      for (let i = 0; i < values.length; i += chunkSize) {
-        const chunk = values.slice(i, i + chunkSize);
-        await p.query(insertSql, [chunk]);
-      }
-
-      // Also mirror in memory cache for immediate instant query speeds
+      // Keep cache synced
       memoryMovements = [...records, ...memoryMovements];
+      saveMovementsToDisk();
 
       return { count: records.length, destination: 'mariadb' };
-    } catch (err) {
-      console.error('Error inserting into MariaDB, falling back to local memory store:', err);
+    } catch (err: any) {
+      console.error('❌ Chyba při vkládání do MariaDB, ukládám do lokálního perzistentního úložiště:', err?.message || err);
+      lastConnectionError = err?.message || 'Chyba zápisu do MariaDB';
     }
   }
 
-  // Fallback to memory
+  // Fallback to disk-persisted store
   memoryMovements = [...records, ...memoryMovements];
+  saveMovementsToDisk();
   return { count: records.length, destination: 'memory' };
 }
 
@@ -351,12 +512,13 @@ export async function getMovements(params: {
         total,
         source: 'mariadb',
       };
-    } catch (err) {
-      console.error('Error querying MariaDB, falling back to memory:', err);
+    } catch (err: any) {
+      console.error('Error querying MariaDB, falling back to persistent disk store:', err?.message || err);
+      lastConnectionError = err?.message || 'Chyba dotazu do MariaDB';
     }
   }
 
-  // Memory filtering
+  // Fallback to disk-persisted store
   let filtered = [...memoryMovements];
 
   if (params.dateFrom) {
@@ -397,6 +559,8 @@ export async function getMovements(params: {
 
 export async function clearMovements(): Promise<void> {
   memoryMovements = [];
+  saveMovementsToDisk();
+
   const p = await getPool();
   if (p) {
     try {

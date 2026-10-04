@@ -37,14 +37,22 @@ export const DbSettingsModal: React.FC<DbSettingsModalProps> = ({
         .then(data => {
           setConfig(prev => ({
             ...prev,
-            host: data.host || '',
+            host: data.host || 'db.mobilgroup.cz',
             port: data.port || 3306,
-            user: data.user || '',
-            database: data.database || '',
+            user: data.user || 'fhb_crm',
+            database: data.database || 'fhb_crm',
             ssl: Boolean(data.ssl),
           }));
         })
-        .catch(() => {});
+        .catch(() => {
+          setConfig(prev => ({
+            ...prev,
+            host: prev.host || 'db.mobilgroup.cz',
+            port: prev.port || 3306,
+            user: prev.user || 'fhb_crm',
+            database: prev.database || 'fhb_crm',
+          }));
+        });
     }
   }, [isOpen]);
 

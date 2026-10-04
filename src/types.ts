@@ -79,6 +79,11 @@ export interface SynergyCategoryStat {
 
 export interface BoxOverlapTierStats {
   count: number;
+  sharePct: number;             // % podíl boxů ve zkoumaném vzorku
+  totalUnits: number;           // celkový počet kusů v této kategorii
+  unitSharePct: number;         // % podíl kusů ve zkoumaném vzorku
+  totalOrders: number;          // celkový počet objednávek v této kategorii
+  orderSharePct: number;        // % podíl objednávek ve zkoumaném vzorku
   avgUnitsPerEan: number;
   avgPickPerUnitSec: number;
   avgPackPerUnitSec: number;

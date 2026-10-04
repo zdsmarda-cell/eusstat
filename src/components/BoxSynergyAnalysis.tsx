@@ -1,5 +1,5 @@
 import React from 'react';
-import { Zap, CheckCircle2, Box, Package, TrendingDown, Info, BarChart3, ArrowRight } from 'lucide-react';
+import { Zap, CheckCircle2, Box, Package, TrendingDown, Info, BarChart3, ArrowRight, PieChart } from 'lucide-react';
 import { BoxSynergyStat, HypothesisAnalysis } from '../types.js';
 import { formatTimeValue } from '../utils/analytics.js';
 import { useLanguage } from '../context/LanguageContext.js';
@@ -89,20 +89,89 @@ export const BoxSynergyAnalysis: React.FC<BoxSynergyAnalysisProps> = ({ synergyD
         </div>
       </div>
 
+      {/* NEW: Sample Distribution Overview Bar */}
+      <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-4 space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+          <span className="font-bold text-white flex items-center gap-1.5">
+            <PieChart className="w-4 h-4 text-indigo-400" />
+            {t.synergy.sampleDistributionTitle}:
+          </span>
+          <span className="text-[11px] text-slate-400 font-mono">
+            {lang === 'cs' ? 'Celkem analyzováno' : 'Total analyzed'}: <strong className="text-white">{boxStats.length}</strong> {t.synergy.boxesCount} ({((high.totalUnits || 0) + (med.totalUnits || 0) + (low.totalUnits || 0)).toLocaleString()} {lang === 'cs' ? 'kusů' : 'units'})
+          </span>
+        </div>
+
+        {/* Stacked visual distribution bar */}
+        <div className="w-full h-3.5 bg-slate-900 rounded-full overflow-hidden flex border border-slate-800 shadow-inner">
+          <div
+            style={{ width: `${Math.max(3, high.sharePct || 0)}%` }}
+            className="h-full bg-emerald-500 transition-all hover:brightness-110"
+            title={`${t.synergy.highOverlapTitle}: ${high.sharePct}%`}
+          />
+          <div
+            style={{ width: `${Math.max(3, med.sharePct || 0)}%` }}
+            className="h-full bg-indigo-500 transition-all hover:brightness-110"
+            title={`${t.synergy.medOverlapTitle}: ${med.sharePct}%`}
+          />
+          <div
+            style={{ width: `${Math.max(3, low.sharePct || 0)}%` }}
+            className="h-full bg-rose-500 transition-all hover:brightness-110"
+            title={`${t.synergy.lowOverlapTitle}: ${low.sharePct}%`}
+          />
+        </div>
+
+        {/* Legend with percentages */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px] pt-1">
+          <div className="flex items-center space-x-2 bg-emerald-950/20 border border-emerald-500/20 px-3 py-1.5 rounded-xl">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 shrink-0" />
+            <span className="text-slate-300 truncate">{t.synergy.highOverlapTitle}:</span>
+            <strong className="text-emerald-400 font-mono ml-auto font-bold">{high.sharePct}%</strong>
+            <span className="text-slate-500 text-[10px]">({high.unitSharePct}% {lang === 'cs' ? 'ks' : 'units'})</span>
+          </div>
+
+          <div className="flex items-center space-x-2 bg-indigo-950/20 border border-indigo-500/20 px-3 py-1.5 rounded-xl">
+            <span className="w-2.5 h-2.5 rounded-full bg-indigo-400 shrink-0" />
+            <span className="text-slate-300 truncate">{t.synergy.medOverlapTitle}:</span>
+            <strong className="text-indigo-400 font-mono ml-auto font-bold">{med.sharePct}%</strong>
+            <span className="text-slate-500 text-[10px]">({med.unitSharePct}% {lang === 'cs' ? 'ks' : 'units'})</span>
+          </div>
+
+          <div className="flex items-center space-x-2 bg-rose-950/20 border border-rose-500/20 px-3 py-1.5 rounded-xl">
+            <span className="w-2.5 h-2.5 rounded-full bg-rose-400 shrink-0" />
+            <span className="text-slate-300 truncate">{t.synergy.lowOverlapTitle}:</span>
+            <strong className="text-rose-400 font-mono ml-auto font-bold">{low.sharePct}%</strong>
+            <span className="text-slate-500 text-[10px]">({low.unitSharePct}% {lang === 'cs' ? 'ks' : 'units'})</span>
+          </div>
+        </div>
+      </div>
+
       {/* 3 Categories Comparison Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {/* Card 1: High overlap */}
         <div className="bg-slate-950/60 border border-emerald-500/30 rounded-2xl p-4 space-y-3 relative overflow-hidden">
-          <div className="flex items-center justify-between">
+          <div className="flex items-start justify-between">
             <span className="text-xs font-bold text-emerald-400 px-2.5 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/20">
               {t.synergy.highOverlapTitle}
             </span>
-            <span className="text-xs text-slate-500 font-mono">
-              {high.count} {t.synergy.boxesCount}
-            </span>
+            <div className="text-right">
+              <div className="text-xs font-mono font-bold text-emerald-400">
+                {high.sharePct}% <span className="text-[10px] text-slate-400 font-normal">{t.synergy.sampleShareWord}</span>
+              </div>
+              <div className="text-[10px] text-slate-500 font-mono">
+                {high.count} {t.synergy.boxesCount} • {(high.totalUnits || 0).toLocaleString()} {lang === 'cs' ? 'ks' : 'units'}
+              </div>
+            </div>
           </div>
 
           <div className="space-y-2 text-xs">
+            {/* Share badge */}
+            <div className="flex justify-between items-center text-slate-400 bg-emerald-950/20 px-2.5 py-1.5 rounded-lg border border-emerald-500/20">
+              <span className="text-slate-300 font-medium">{lang === 'cs' ? 'Zastoupení ve vzorku:' : 'Share of sample:'}</span>
+              <strong className="text-emerald-300 font-mono">
+                {high.sharePct}% {t.synergy.sampleShareOfBoxes} <span className="text-slate-400 font-normal text-[10px]">({high.unitSharePct}% {t.synergy.sampleShareOfUnits})</span>
+              </strong>
+            </div>
+
             <div className="flex justify-between items-center text-slate-400">
               <span>{t.synergy.avgUnitsPerEan}:</span>
               <strong className="text-white font-mono text-sm">{high.avgUnitsPerEan} ks/SKU</strong>
@@ -129,16 +198,29 @@ export const BoxSynergyAnalysis: React.FC<BoxSynergyAnalysisProps> = ({ synergyD
 
         {/* Card 2: Medium overlap */}
         <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-3">
-          <div className="flex items-center justify-between">
+          <div className="flex items-start justify-between">
             <span className="text-xs font-bold text-indigo-400 px-2.5 py-0.5 rounded-md bg-indigo-500/10 border border-indigo-500/20">
               {t.synergy.medOverlapTitle}
             </span>
-            <span className="text-xs text-slate-500 font-mono">
-              {med.count} {t.synergy.boxesCount}
-            </span>
+            <div className="text-right">
+              <div className="text-xs font-mono font-bold text-indigo-400">
+                {med.sharePct}% <span className="text-[10px] text-slate-400 font-normal">{t.synergy.sampleShareWord}</span>
+              </div>
+              <div className="text-[10px] text-slate-500 font-mono">
+                {med.count} {t.synergy.boxesCount} • {(med.totalUnits || 0).toLocaleString()} {lang === 'cs' ? 'ks' : 'units'}
+              </div>
+            </div>
           </div>
 
           <div className="space-y-2 text-xs">
+            {/* Share badge */}
+            <div className="flex justify-between items-center text-slate-400 bg-indigo-950/20 px-2.5 py-1.5 rounded-lg border border-indigo-500/20">
+              <span className="text-slate-300 font-medium">{lang === 'cs' ? 'Zastoupení ve vzorku:' : 'Share of sample:'}</span>
+              <strong className="text-indigo-300 font-mono">
+                {med.sharePct}% {t.synergy.sampleShareOfBoxes} <span className="text-slate-400 font-normal text-[10px]">({med.unitSharePct}% {t.synergy.sampleShareOfUnits})</span>
+              </strong>
+            </div>
+
             <div className="flex justify-between items-center text-slate-400">
               <span>{t.synergy.avgUnitsPerEan}:</span>
               <strong className="text-white font-mono text-sm">{med.avgUnitsPerEan} ks/SKU</strong>
@@ -165,16 +247,29 @@ export const BoxSynergyAnalysis: React.FC<BoxSynergyAnalysisProps> = ({ synergyD
 
         {/* Card 3: Low overlap / High diversity */}
         <div className="bg-slate-950/60 border border-rose-500/30 rounded-2xl p-4 space-y-3">
-          <div className="flex items-center justify-between">
+          <div className="flex items-start justify-between">
             <span className="text-xs font-bold text-rose-400 px-2.5 py-0.5 rounded-md bg-rose-500/10 border border-rose-500/20">
               {t.synergy.lowOverlapTitle}
             </span>
-            <span className="text-xs text-slate-500 font-mono">
-              {low.count} {t.synergy.boxesCount}
-            </span>
+            <div className="text-right">
+              <div className="text-xs font-mono font-bold text-rose-400">
+                {low.sharePct}% <span className="text-[10px] text-slate-400 font-normal">{t.synergy.sampleShareWord}</span>
+              </div>
+              <div className="text-[10px] text-slate-500 font-mono">
+                {low.count} {t.synergy.boxesCount} • {(low.totalUnits || 0).toLocaleString()} {lang === 'cs' ? 'ks' : 'units'}
+              </div>
+            </div>
           </div>
 
           <div className="space-y-2 text-xs">
+            {/* Share badge */}
+            <div className="flex justify-between items-center text-slate-400 bg-rose-950/20 px-2.5 py-1.5 rounded-lg border border-rose-500/20">
+              <span className="text-slate-300 font-medium">{lang === 'cs' ? 'Zastoupení ve vzorku:' : 'Share of sample:'}</span>
+              <strong className="text-rose-300 font-mono">
+                {low.sharePct}% {t.synergy.sampleShareOfBoxes} <span className="text-slate-400 font-normal text-[10px]">({low.unitSharePct}% {t.synergy.sampleShareOfUnits})</span>
+              </strong>
+            </div>
+
             <div className="flex justify-between items-center text-slate-400">
               <span>{t.synergy.avgUnitsPerEan}:</span>
               <strong className="text-white font-mono text-sm">{low.avgUnitsPerEan} ks/SKU</strong>

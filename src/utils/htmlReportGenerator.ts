@@ -25,6 +25,18 @@ function escapeHtml(str: string): string {
     .replace(/'/g, '&#39;');
 }
 
+function formatHoursOrMins(seconds: number): string {
+  if (seconds <= 0) return '0 min';
+  const hours = seconds / 3600;
+  if (hours >= 1) {
+    const h = Math.floor(hours);
+    const m = Math.round((seconds % 3600) / 60);
+    return m > 0 ? `${h} h ${m} min` : `${h} h`;
+  }
+  const mins = Math.round(seconds / 60);
+  return `${mins} min`;
+}
+
 export function generateHtmlReport(data: HtmlReportData): string {
   const { records, filter, unit, lang } = data;
   const isCs = lang === 'cs';
@@ -73,6 +85,10 @@ export function generateHtmlReport(data: HtmlReportData): string {
     '6+': isCs ? '6 a více kusů (Multi-item)' : '6+ items',
   };
 
+  const { highOverlapBoxes: high, mediumOverlapBoxes: med, lowOverlapBoxes: low, bracketComparisons } = synergyData.hypothesis;
+  const simDetailed = simulation.bracketResults.filter(b => b.bracket !== 'all');
+  const simAll = simulation.bracketResults.find(b => b.bracket === 'all') || simulation.bracketResults[simulation.bracketResults.length - 1];
+
   return `<!DOCTYPE html>
 <html lang="${isCs ? 'cs' : 'en'}">
 <head>
@@ -111,7 +127,7 @@ export function generateHtmlReport(data: HtmlReportData): string {
     }
 
     .container {
-      max-width: 1200px;
+      max-width: 1240px;
       margin: 0 auto;
       display: flex;
       flex-direction: column;
@@ -284,7 +300,7 @@ export function generateHtmlReport(data: HtmlReportData): string {
     table {
       width: 100%;
       border-collapse: collapse;
-      font-size: 13px;
+      font-size: 12px;
       text-align: left;
       margin-top: 12px;
     }
@@ -293,7 +309,7 @@ export function generateHtmlReport(data: HtmlReportData): string {
       background: rgba(15, 23, 42, 0.9);
       color: #94a3b8;
       font-weight: 600;
-      padding: 12px 14px;
+      padding: 10px 12px;
       border-bottom: 2px solid #334155;
       text-transform: uppercase;
       font-size: 11px;
@@ -301,7 +317,7 @@ export function generateHtmlReport(data: HtmlReportData): string {
     }
 
     td {
-      padding: 12px 14px;
+      padding: 10px 12px;
       border-bottom: 1px solid rgba(51, 65, 85, 0.6);
       color: #e2e8f0;
     }
@@ -312,11 +328,12 @@ export function generateHtmlReport(data: HtmlReportData): string {
 
     .text-right { text-align: right; }
     .text-center { text-align: center; }
+    .font-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
 
     /* Bracket Comparison Cards */
     .bracket-cards-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
       gap: 14px;
       margin-bottom: 20px;
     }
@@ -353,39 +370,89 @@ export function generateHtmlReport(data: HtmlReportData): string {
       margin-top: 2px;
     }
 
-    .badge-diff-good {
-      color: #34d399;
-      font-weight: 600;
-    }
-    .badge-diff-warn {
-      color: #fbbf24;
-      font-weight: 600;
+    /* Distribution bar */
+    .distribution-bar {
+      width: 100%;
+      height: 12px;
+      background: #1e293b;
+      border-radius: 9999px;
+      display: flex;
+      overflow: hidden;
+      margin: 10px 0;
+      border: 1px solid #334155;
     }
 
-    /* Simulation summary card */
-    .sim-card {
-      background: linear-gradient(135deg, rgba(30, 27, 75, 0.4), rgba(15, 23, 42, 0.8));
-      border: 1px solid rgba(99, 102, 241, 0.3);
+    .dist-bar-seg {
+      height: 100%;
+      transition: width 0.3s;
+    }
+
+    /* 3 Category Cards */
+    .category-cards-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+      margin: 16px 0;
+    }
+
+    .category-card {
+      background: rgba(15, 23, 42, 0.7);
+      border: 1px solid #334155;
       border-radius: 16px;
-      padding: 20px;
-      margin-bottom: 18px;
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    /* Simulation 4 KPI Grid */
+    .sim-kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 16px;
+      margin: 18px 0;
+    }
+
+    .sim-kpi-card {
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid #334155;
+      border-radius: 16px;
+      padding: 18px 20px;
+    }
+
+    .sim-kpi-card-highlight {
+      background: linear-gradient(135deg, rgba(6, 78, 59, 0.3), rgba(15, 23, 42, 0.9));
+      border: 1px solid rgba(16, 185, 129, 0.4);
+    }
+
+    /* Volumetric banner */
+    .volumetric-banner {
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid #334155;
+      border-radius: 16px;
+      padding: 14px 18px;
+      margin-bottom: 16px;
       display: flex;
       flex-wrap: wrap;
       align-items: center;
       justify-content: space-between;
-      gap: 16px;
+      gap: 12px;
+      font-size: 12px;
     }
 
-    .sim-metric {
+    /* Visual comparison chart bar */
+    .vis-row {
       display: flex;
-      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 8px;
+      font-size: 12px;
     }
-
-    .sim-metric-val {
-      font-size: 24px;
-      font-weight: 800;
-      color: #38bdf8;
-    }
+    .vis-label { width: 90px; font-weight: 600; color: #cbd5e1; }
+    .vis-bar-wrapper { flex: 1; height: 16px; background: #1e293b; border-radius: 8px; overflow: hidden; display: flex; }
+    .vis-bar-fill-base { height: 100%; background: #64748b; }
+    .vis-bar-fill-opt { height: 100%; background: #10b981; }
+    .vis-val { width: 90px; text-align: right; font-family: monospace; font-weight: 700; }
 
     .footer {
       text-align: center;
@@ -404,7 +471,7 @@ export function generateHtmlReport(data: HtmlReportData): string {
       }
       .btn-print { display: none !important; }
       .container { max-width: 100% !important; gap: 16px !important; }
-      .report-header, .filter-meta-bar, .content-box, .kpi-card, .sim-card {
+      .report-header, .filter-meta-bar, .content-box, .kpi-card, .category-card, .sim-kpi-card {
         background: #ffffff !important;
         border: 1px solid #cbd5e1 !important;
         box-shadow: none !important;
@@ -438,10 +505,10 @@ export function generateHtmlReport(data: HtmlReportData): string {
     <div>
       <div class="brand-title">
         <span>Warehouse Pick &amp; Pack Analytics</span>
-        <span class="brand-badge">${isCs ? 'Offline Export' : 'Offline Report'}</span>
+        <span class="brand-badge">${isCs ? 'Kompletní Offline Export' : 'Full Offline Report'}</span>
       </div>
       <div class="report-subtitle">
-        ${isCs ? 'Analytický a optimalizační report expedice skladu' : 'Warehouse fulfillment & optimization report'} • 
+        ${isCs ? 'Analytický a optimalizační report expedice skladu v identickém rozsahu jako v aplikaci' : 'Warehouse fulfillment & optimization report in full live dashboard scope'} • 
         ${isCs ? 'Vygenerováno' : 'Generated'}: <strong>${escapeHtml(formattedGenDate)}</strong>
       </div>
     </div>
@@ -543,7 +610,7 @@ export function generateHtmlReport(data: HtmlReportData): string {
             <td class="text-right font-mono" style="color: #34d399;">${formatTimeValue(b.avgPackPerItemSec, unit)}</td>
             <td class="text-right font-mono" style="color: #a5b4fc; font-weight: 700;">${formatTimeValue(b.avgTotalPerItemSec, unit)}</td>
             <td class="text-right font-mono">${formatTimeValue(b.medianTotalPerItemSec, unit)}</td>
-            <td class="text-right font-mono font-weight-bold">${formatTimeValue(b.avgPickTotalSec + b.avgPackTotalSec, unit)}</td>
+            <td class="text-right font-mono" style="font-weight: 700;">${formatTimeValue(b.avgPickTotalSec + b.avgPackTotalSec, unit)}</td>
           </tr>
         `).join('')}
       </tbody>
@@ -556,90 +623,165 @@ export function generateHtmlReport(data: HtmlReportData): string {
       <span>${isCs ? '2. Analýza shody produktů v boxech (Multipicking & Synergie)' : '2. Product Matches in Boxes & Multipicking Synergy'}</span>
     </div>
     <div class="section-subtitle">
-      ${isCs ? 'Ověření vlivu shody produktů (stejných EANů) ve sběrném boxu na rychlost pickování a balení.' : 'Verification of SKU overlap in collection totes on pick and pack speed.'}
+      ${isCs ? 'Ověření vlivu shody produktů (stejných EANů) ve sběrném boxu na rychlost pickování a balení se zobrazením procentuálního zastoupení ve vzorku.' : 'Verification of SKU overlap in collection totes on pick and pack speed with exact sample share.'}
     </div>
 
-    <div class="sim-card">
-      <div class="sim-metric">
-        <span class="filter-label">${isCs ? 'Zrychlení pickování při vysokém překryvu SKU:' : 'Picking speedup in high SKU overlap totes:'}</span>
-        <span class="sim-metric-val" style="color: #34d399;">+${synergyData.hypothesis.pickingSpeedupPct}%</span>
-        <span style="font-size: 11px; color: #94a3b8;">${isCs ? 'O tolik rychleji se vychystává 1 kus v boxech s vysokou shodou produktů.' : 'Faster picking per item in totes with shared SKUs.'}</span>
+    <!-- Sample percentage distribution bar -->
+    <div style="background: rgba(15, 23, 42, 0.8); border: 1px solid #334155; border-radius: 14px; padding: 14px 18px; margin-bottom: 18px;">
+      <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: 600; color: #ffffff; margin-bottom: 6px;">
+        <span>${isCs ? 'Zastoupení kategorií ve zkoumaném vzorku' : 'Category distribution in sample'}:</span>
+        <span class="font-mono" style="color: #94a3b8;">${synergyData.boxStats.length} ${isCs ? 'boxů' : 'totes'} (${((high.totalUnits || 0) + (med.totalUnits || 0) + (low.totalUnits || 0)).toLocaleString('cs-CZ')} ${isCs ? 'kusů' : 'units'})</span>
       </div>
-      <div class="sim-metric">
-        <span class="filter-label">${isCs ? 'Vliv na balení u 1-2 ks objednávek:' : 'Pack speedup for 1-2 item orders:'}</span>
-        <span class="sim-metric-val" style="color: #38bdf8;">+${synergyData.hypothesis.packingSpeedupPct}%</span>
-        <span style="font-size: 11px; color: #94a3b8;">${isCs ? 'Rychlejší zabalení díky jednoduché identifikaci stejných položek.' : 'Faster packing due to identical single/double SKUs.'}</span>
+      <div class="distribution-bar">
+        <div class="dist-bar-seg" style="width: ${Math.max(3, high.sharePct)}%; background: #10b981;" title="High: ${high.sharePct}%"></div>
+        <div class="dist-bar-seg" style="width: ${Math.max(3, med.sharePct)}%; background: #6366f1;" title="Medium: ${med.sharePct}%"></div>
+        <div class="dist-bar-seg" style="width: ${Math.max(3, low.sharePct)}%; background: #ef4444;" title="Low: ${low.sharePct}%"></div>
       </div>
-      <div class="sim-metric">
-        <span class="filter-label">${isCs ? 'Zpomalení balení u různorodých vícekusů:' : 'Packing slowdown for diverse multi-items:'}</span>
-        <span class="sim-metric-val" style="color: #fbbf24;">${synergyData.hypothesis.packingSlowdownInDiverseMultiItemPct}%</span>
-        <span style="font-size: 11px; color: #94a3b8;">${isCs ? 'Při míchání mnoha odlišných vícepoložkových objednávek v jednom boxu.' : 'When diverse multi-item orders are mixed in one tote.'}</span>
+      <div style="display: flex; flex-wrap: wrap; gap: 16px; font-size: 11px; color: #cbd5e1; margin-top: 8px;">
+        <span><strong style="color: #34d399;">● ${isCs ? 'Vysoká shoda' : 'High Overlap'}:</strong> ${high.sharePct}% ${isCs ? 'boxů' : 'totes'} (${high.unitSharePct}% ${isCs ? 'kusů' : 'units'})</span>
+        <span><strong style="color: #818cf8;">● ${isCs ? 'Střední shoda' : 'Medium Overlap'}:</strong> ${med.sharePct}% ${isCs ? 'boxů' : 'totes'} (${med.unitSharePct}% ${isCs ? 'kusů' : 'units'})</span>
+        <span><strong style="color: #f87171;">● ${isCs ? 'Vysoká diverzita' : 'High Diversity'}:</strong> ${low.sharePct}% ${isCs ? 'boxů' : 'totes'} (${low.unitSharePct}% ${isCs ? 'kusů' : 'units'})</span>
       </div>
     </div>
 
+    <!-- 3 Category Cards -->
+    <div class="category-cards-grid">
+      <!-- High Overlap -->
+      <div class="category-card" style="border-color: rgba(16, 185, 129, 0.4);">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+          <span style="font-weight: 700; font-size: 13px; color: #34d399;">${isCs ? 'Vysoká shoda (Silný multipick)' : 'High Overlap'}</span>
+          <span class="font-mono" style="font-weight: 700; color: #34d399; font-size: 13px;">${high.sharePct}% ${isCs ? 'vzorku' : 'of sample'}</span>
+        </div>
+        <div style="font-size: 11px; color: #94a3b8; font-family: monospace;">${high.count} ${isCs ? 'boxů' : 'totes'} • ${(high.totalUnits || 0).toLocaleString('cs-CZ')} ${isCs ? 'ks' : 'units'}</div>
+        <div style="font-size: 12px; line-height: 1.8; margin-top: 6px;">
+          <div>${isCs ? 'Průměr kusů na 1 EAN' : 'Avg units per EAN'}: <strong>${high.avgUnitsPerEan} ks/SKU</strong></div>
+          <div>${isCs ? 'Pickování na 1 ks' : 'Picking per unit'}: <strong style="color: #60a5fa;">${formatTimeValue(high.avgPickPerUnitSec, unit)}</strong></div>
+          <div>${isCs ? 'Balení na 1 ks' : 'Packing per unit'}: <strong style="color: #34d399;">${formatTimeValue(high.avgPackPerUnitSec, unit)}</strong></div>
+          <div style="border-top: 1px solid #334155; padding-top: 4px; font-weight: 700;">${isCs ? 'Celkem na 1 ks' : 'Total per unit'}: <span style="color: #a5b4fc;">${formatTimeValue(high.avgPickPerUnitSec + high.avgPackPerUnitSec, unit)}</span></div>
+        </div>
+      </div>
+
+      <!-- Medium Overlap -->
+      <div class="category-card" style="border-color: rgba(99, 102, 241, 0.4);">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+          <span style="font-weight: 700; font-size: 13px; color: #818cf8;">${isCs ? 'Střední shoda (Běžný mix)' : 'Medium Overlap'}</span>
+          <span class="font-mono" style="font-weight: 700; color: #818cf8; font-size: 13px;">${med.sharePct}% ${isCs ? 'vzorku' : 'of sample'}</span>
+        </div>
+        <div style="font-size: 11px; color: #94a3b8; font-family: monospace;">${med.count} ${isCs ? 'boxů' : 'totes'} • ${(med.totalUnits || 0).toLocaleString('cs-CZ')} ${isCs ? 'ks' : 'units'}</div>
+        <div style="font-size: 12px; line-height: 1.8; margin-top: 6px;">
+          <div>${isCs ? 'Průměr kusů na 1 EAN' : 'Avg units per EAN'}: <strong>${med.avgUnitsPerEan} ks/SKU</strong></div>
+          <div>${isCs ? 'Pickování na 1 ks' : 'Picking per unit'}: <strong style="color: #60a5fa;">${formatTimeValue(med.avgPickPerUnitSec, unit)}</strong></div>
+          <div>${isCs ? 'Balení na 1 ks' : 'Packing per unit'}: <strong style="color: #34d399;">${formatTimeValue(med.avgPackPerUnitSec, unit)}</strong></div>
+          <div style="border-top: 1px solid #334155; padding-top: 4px; font-weight: 700;">${isCs ? 'Celkem na 1 ks' : 'Total per unit'}: <span style="color: #a5b4fc;">${formatTimeValue(med.avgPickPerUnitSec + med.avgPackPerUnitSec, unit)}</span></div>
+        </div>
+      </div>
+
+      <!-- Low Overlap -->
+      <div class="category-card" style="border-color: rgba(239, 68, 68, 0.4);">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+          <span style="font-weight: 700; font-size: 13px; color: #f87171;">${isCs ? 'Vysoká diverzita (Každý kus jiný)' : 'High Diversity'}</span>
+          <span class="font-mono" style="font-weight: 700; color: #f87171; font-size: 13px;">${low.sharePct}% ${isCs ? 'vzorku' : 'of sample'}</span>
+        </div>
+        <div style="font-size: 11px; color: #94a3b8; font-family: monospace;">${low.count} ${isCs ? 'boxů' : 'totes'} • ${(low.totalUnits || 0).toLocaleString('cs-CZ')} ${isCs ? 'ks' : 'units'}</div>
+        <div style="font-size: 12px; line-height: 1.8; margin-top: 6px;">
+          <div>${isCs ? 'Průměr kusů na 1 EAN' : 'Avg units per EAN'}: <strong>${low.avgUnitsPerEan} ks/SKU</strong></div>
+          <div>${isCs ? 'Pickování na 1 ks' : 'Picking per unit'}: <strong style="color: #60a5fa;">${formatTimeValue(low.avgPickPerUnitSec, unit)}</strong></div>
+          <div>${isCs ? 'Balení na 1 ks' : 'Packing per unit'}: <strong style="color: #34d399;">${formatTimeValue(low.avgPackPerUnitSec, unit)}</strong></div>
+          <div style="border-top: 1px solid #334155; padding-top: 4px; font-weight: 700;">${isCs ? 'Celkem na 1 ks' : 'Total per unit'}: <span style="color: #a5b4fc;">${formatTimeValue(low.avgPickPerUnitSec + low.avgPackPerUnitSec, unit)}</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Category by category comparison table (1 až 6+ ks) -->
+    <div style="font-weight: 700; font-size: 13px; color: #ffffff; margin: 18px 0 6px;">
+      ${isCs ? 'Srovnání vlivu konsolidace boxů napříč všemi kategoriemi (Vysoká shoda vs. Diverzita):' : 'Consolidation Impact Across All Brackets (High Overlap vs Diversity):'}
+    </div>
     <table>
       <thead>
         <tr>
-          <th>${isCs ? 'Úroveň překryvu produktů v boxu' : 'Tote Overlap Tier'}</th>
-          <th class="text-right">${isCs ? 'Počet boxů' : 'Box Count'}</th>
-          <th class="text-right">${isCs ? 'Zásilek' : 'Orders'}</th>
-          <th class="text-right">${isCs ? 'Kusů' : 'Items'}</th>
-          <th class="text-right">${isCs ? 'Pick / 1ks' : 'Pick / Item'}</th>
-          <th class="text-right">${isCs ? 'Balení / 1ks' : 'Pack / Item'}</th>
-          <th class="text-right">${isCs ? 'Celkem / 1ks' : 'Total / Item'}</th>
+          <th>${isCs ? 'Kategorie' : 'Category'}</th>
+          <th class="text-right">${isCs ? 'Objednávky (Shoda / Diverzita)' : 'Orders (High / Low)'}</th>
+          <th class="text-right">${isCs ? 'Pick / 1ks (Shoda)' : 'Pick / Item (High)'}</th>
+          <th class="text-right">${isCs ? 'Pick / 1ks (Diverzita)' : 'Pick / Item (Low)'}</th>
+          <th class="text-right">${isCs ? 'Úspora Pick' : 'Pick Savings'}</th>
+          <th class="text-right">${isCs ? 'Balení / 1ks (Shoda)' : 'Pack / Item (High)'}</th>
+          <th class="text-right">${isCs ? 'Balení / 1ks (Diverzita)' : 'Pack / Item (Low)'}</th>
+          <th class="text-right">${isCs ? 'Úspora Balení' : 'Pack Savings'}</th>
+          <th class="text-right">${isCs ? 'Celková úspora / 1ks' : 'Total Savings'}</th>
         </tr>
       </thead>
       <tbody>
-        <tr>
-          <td><strong style="color: #34d399;">${isCs ? 'Vysoký překryv (více stejných EANů na box)' : 'High Overlap (multiple identical SKUs)'}</strong></td>
-          <td class="text-right font-mono">${synergyData.hypothesis.highOverlapBoxes.count}</td>
-          <td class="text-right font-mono">${(synergyData.hypothesis.highOverlapBoxes.categories['all']?.orderCount || 0).toLocaleString('cs-CZ')}</td>
-          <td class="text-right font-mono">${(synergyData.hypothesis.highOverlapBoxes.categories['all']?.itemCount || 0).toLocaleString('cs-CZ')}</td>
-          <td class="text-right font-mono" style="color: #60a5fa;">${formatTimeValue(synergyData.hypothesis.highOverlapBoxes.avgPickPerUnitSec, unit)}</td>
-          <td class="text-right font-mono" style="color: #34d399;">${formatTimeValue(synergyData.hypothesis.highOverlapBoxes.avgPackPerUnitSec, unit)}</td>
-          <td class="text-right font-mono" style="font-weight: 700; color: #ffffff;">${formatTimeValue(synergyData.hypothesis.highOverlapBoxes.avgPickPerUnitSec + synergyData.hypothesis.highOverlapBoxes.avgPackPerUnitSec, unit)}</td>
-        </tr>
-        <tr>
-          <td><strong style="color: #fbbf24;">${isCs ? 'Střední překryv (částečná shoda)' : 'Medium Overlap'}</strong></td>
-          <td class="text-right font-mono">${synergyData.hypothesis.mediumOverlapBoxes.count}</td>
-          <td class="text-right font-mono">${(synergyData.hypothesis.mediumOverlapBoxes.categories['all']?.orderCount || 0).toLocaleString('cs-CZ')}</td>
-          <td class="text-right font-mono">${(synergyData.hypothesis.mediumOverlapBoxes.categories['all']?.itemCount || 0).toLocaleString('cs-CZ')}</td>
-          <td class="text-right font-mono" style="color: #60a5fa;">${formatTimeValue(synergyData.hypothesis.mediumOverlapBoxes.avgPickPerUnitSec, unit)}</td>
-          <td class="text-right font-mono" style="color: #34d399;">${formatTimeValue(synergyData.hypothesis.mediumOverlapBoxes.avgPackPerUnitSec, unit)}</td>
-          <td class="text-right font-mono" style="font-weight: 700; color: #ffffff;">${formatTimeValue(synergyData.hypothesis.mediumOverlapBoxes.avgPickPerUnitSec + synergyData.hypothesis.mediumOverlapBoxes.avgPackPerUnitSec, unit)}</td>
-        </tr>
-        <tr>
-          <td><strong style="color: #f87171;">${isCs ? 'Nízký překryv (každý kus jiný EAN)' : 'Low Overlap (diverse unique SKUs)'}</strong></td>
-          <td class="text-right font-mono">${synergyData.hypothesis.lowOverlapBoxes.count}</td>
-          <td class="text-right font-mono">${(synergyData.hypothesis.lowOverlapBoxes.categories['all']?.orderCount || 0).toLocaleString('cs-CZ')}</td>
-          <td class="text-right font-mono">${(synergyData.hypothesis.lowOverlapBoxes.categories['all']?.itemCount || 0).toLocaleString('cs-CZ')}</td>
-          <td class="text-right font-mono" style="color: #60a5fa;">${formatTimeValue(synergyData.hypothesis.lowOverlapBoxes.avgPickPerUnitSec, unit)}</td>
-          <td class="text-right font-mono" style="color: #34d399;">${formatTimeValue(synergyData.hypothesis.lowOverlapBoxes.avgPackPerUnitSec, unit)}</td>
-          <td class="text-right font-mono" style="font-weight: 700; color: #ffffff;">${formatTimeValue(synergyData.hypothesis.lowOverlapBoxes.avgPickPerUnitSec + synergyData.hypothesis.lowOverlapBoxes.avgPackPerUnitSec, unit)}</td>
-        </tr>
+        ${bracketComparisons.map(b => `
+          <tr ${b.bracket === 'all' ? 'style="font-weight: 700; background: rgba(99, 102, 241, 0.1); border-top: 2px solid #6366f1;"' : ''}>
+            <td><strong>${escapeHtml(b.label)}</strong></td>
+            <td class="text-right font-mono">${b.highOrders.toLocaleString('cs-CZ')} / ${b.lowOrders.toLocaleString('cs-CZ')}</td>
+            <td class="text-right font-mono" style="color: #34d399;">${formatTimeValue(b.highPickSec, unit)}</td>
+            <td class="text-right font-mono" style="color: #f87171;">${formatTimeValue(b.lowPickSec, unit)}</td>
+            <td class="text-right font-mono" style="color: #34d399; font-weight: 700;">${b.pickSavingsPct > 0 ? `-${b.pickSavingsPct}%` : '–'}</td>
+            <td class="text-right font-mono" style="color: #34d399;">${formatTimeValue(b.highPackSec, unit)}</td>
+            <td class="text-right font-mono" style="color: #f87171;">${formatTimeValue(b.lowPackSec, unit)}</td>
+            <td class="text-right font-mono" style="color: #34d399; font-weight: 700;">${b.packSavingsPct > 0 ? `-${b.packSavingsPct}%` : '–'}</td>
+            <td class="text-right font-mono" style="color: #34d399; font-weight: 800; font-size: 13px;">${b.totalSavingsPct > 0 ? `-${b.totalSavingsPct}%` : '–'}</td>
+          </tr>
+        `).join('')}
       </tbody>
     </table>
   </section>
 
-  <!-- 3. Analýza dnů v týdnu & Časový vývoj -->
+  <!-- 3. Analýza dnů v týdnu & Časový vývoj + Pareto -->
   <section class="content-box">
     <div class="section-title">
-      <span>${isCs ? '3. Výkonnost podle dnů v týdnu (Pondělí až Neděle)' : '3. Day of Week Performance (Monday to Sunday)'}</span>
+      <span>${isCs ? '3. Vývoj výkonnosti v čase a Pareto analýza produktů (80/20)' : '3. Daily Performance & Product Pareto Analysis (80/20)'}</span>
     </div>
     <div class="section-subtitle">
-      ${isCs ? 'Přehled vytížení a průměrných časů podle jednotlivých pracovních dnů pro plánování směn a kapacit.' : 'Day-of-week workload and throughput distribution for shift planning.'}
+      ${isCs ? 'Detailní rozpis výkonnosti podle dnů v týdnu a jednotlivých kalendářních dnů včetně koncentrace 80 % expedovaného objemu.' : 'Breakdown by days of the week, calendar days, and 80/20 SKU volume concentration.'}
     </div>
 
+    <!-- Pareto 80/20 Summary Card -->
+    <div style="background: rgba(15, 23, 42, 0.85); border: 1px solid #334155; border-radius: 16px; padding: 16px 20px; margin-bottom: 18px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px;">
+      <div>
+        <div style="font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 600;">${isCs ? '80 % expedovaného objemu skladu' : '80% of Shipped Volume'}</div>
+        <div style="font-size: 20px; font-weight: 800; color: #10b981; margin-top: 4px;">
+          ${dailyReport.overallPareto.top80ProductsCount.toLocaleString('cs-CZ')} SKU <span style="font-size: 13px; font-weight: normal; color: #94a3b8;">(${dailyReport.overallPareto.top80ProductsSharePct}% ${isCs ? 'sortimentu' : 'of SKUs'})</span>
+        </div>
+        <div style="font-size: 11px; color: #cbd5e1; margin-top: 2px;">
+          ${dailyReport.overallPareto.top80Units.toLocaleString('cs-CZ')} ${isCs ? 'kusů generuje 80 % veškeré produkce' : 'units generated by top core SKUs'}
+        </div>
+      </div>
+      <div>
+        <div style="font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 600;">${isCs ? 'Zbylých 20 % objemu (Dlouhý chvost)' : 'Remaining 20% Volume (Long Tail)'}</div>
+        <div style="font-size: 20px; font-weight: 800; color: #f59e0b; margin-top: 4px;">
+          ${dailyReport.overallPareto.remaining20ProductsCount.toLocaleString('cs-CZ')} SKU <span style="font-size: 13px; font-weight: normal; color: #94a3b8;">(${dailyReport.overallPareto.remaining20ProductsSharePct}% ${isCs ? 'sortimentu' : 'of SKUs'})</span>
+        </div>
+        <div style="font-size: 11px; color: #cbd5e1; margin-top: 2px;">
+          ${dailyReport.overallPareto.remaining20Units.toLocaleString('cs-CZ')} ${isCs ? 'kusů v nízkoobrátkových položkách' : 'units across long tail items'}
+        </div>
+      </div>
+      <div>
+        <div style="font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 600;">${isCs ? 'Celkem unikátních SKU' : 'Total Unique SKUs'}</div>
+        <div style="font-size: 20px; font-weight: 800; color: #ffffff; margin-top: 4px;">
+          ${dailyReport.overallPareto.totalUniqueProducts.toLocaleString('cs-CZ')} SKU
+        </div>
+        <div style="font-size: 11px; color: #cbd5e1; margin-top: 2px;">
+          ${dailyReport.overallPareto.totalUnits.toLocaleString('cs-CZ')} ${isCs ? 'celkem zpracovaných kusů' : 'total processed units'}
+        </div>
+      </div>
+    </div>
+
+    <!-- Dny v týdnu -->
+    <div style="font-weight: 700; font-size: 13px; color: #ffffff; margin-bottom: 6px;">
+      ${isCs ? 'Souhrn podle dnů v týdnu (Pondělí až Neděle):' : 'Day of Week Performance (Monday to Sunday):'}
+    </div>
     <table>
       <thead>
         <tr>
           <th>${isCs ? 'Den v týdnu' : 'Day of Week'}</th>
-          <th class="text-right">${isCs ? 'Počet zásilek' : 'Orders'}</th>
-          <th class="text-right">${isCs ? 'Počet kusů' : 'Units'}</th>
+          <th class="text-right">${isCs ? 'Zásilek' : 'Orders'}</th>
+          <th class="text-right">${isCs ? 'Kusů' : 'Units'}</th>
           <th class="text-right">${isCs ? 'Pick / 1ks' : 'Pick / Item'}</th>
           <th class="text-right">${isCs ? 'Balení / 1ks' : 'Pack / Item'}</th>
           <th class="text-right">${isCs ? 'Celkem / 1ks' : 'Total / Item'}</th>
-          <th class="text-right">${isCs ? 'Celkem na objednávku' : 'Total / Order'}</th>
+          <th class="text-right">${isCs ? 'Celkem na zakázku' : 'Total / Order'}</th>
         </tr>
       </thead>
       <tbody>
@@ -651,56 +793,260 @@ export function generateHtmlReport(data: HtmlReportData): string {
             <td class="text-right font-mono" style="color: #60a5fa;">${formatTimeValue(d.avgPickPerItemSec, unit)}</td>
             <td class="text-right font-mono" style="color: #34d399;">${formatTimeValue(d.avgPackPerItemSec, unit)}</td>
             <td class="text-right font-mono" style="color: #a5b4fc; font-weight: 700;">${formatTimeValue(d.avgTotalPerItemSec, unit)}</td>
-            <td class="text-right font-mono font-weight-bold">${formatTimeValue(d.avgTotalPerOrderSec, unit)}</td>
+            <td class="text-right font-mono" style="font-weight: 700;">${formatTimeValue(d.avgTotalPerOrderSec, unit)}</td>
           </tr>
         `).join('')}
       </tbody>
     </table>
+
+    <!-- Kalendářní dny -->
+    ${dailyReport.dailyStats.length > 0 ? `
+      <div style="font-weight: 700; font-size: 13px; color: #ffffff; margin: 20px 0 6px;">
+        ${isCs ? 'Jednotlivé kalendářní dny (vytížení a průměrné časy):' : 'Calendar Days Breakdown:'}
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>${isCs ? 'Datum' : 'Date'}</th>
+            <th class="text-right">${isCs ? 'Zásilek' : 'Shipments'}</th>
+            <th class="text-right">${isCs ? 'Kusů' : 'Units'}</th>
+            <th class="text-right">${isCs ? 'Pick / 1ks' : 'Pick / Item'}</th>
+            <th class="text-right">${isCs ? 'Balení / 1ks' : 'Pack / Item'}</th>
+            <th class="text-right">${isCs ? 'Celkem / 1ks' : 'Total / Item'}</th>
+            <th class="text-right">${isCs ? '80 % objemu (Top SKU)' : '80% Volume (Top SKUs)'}</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${dailyReport.dailyStats.slice(0, 15).map(ds => `
+            <tr>
+              <td><strong>${escapeHtml(ds.dayLabel || ds.date)}</strong></td>
+              <td class="text-right font-mono">${ds.totalShipments.toLocaleString('cs-CZ')}</td>
+              <td class="text-right font-mono">${ds.totalItems.toLocaleString('cs-CZ')}</td>
+              <td class="text-right font-mono" style="color: #60a5fa;">${formatTimeValue(ds.avgPickPerItemSec, unit)}</td>
+              <td class="text-right font-mono" style="color: #34d399;">${formatTimeValue(ds.avgPackPerItemSec, unit)}</td>
+              <td class="text-right font-mono" style="color: #a5b4fc; font-weight: 700;">${formatTimeValue(ds.avgTotalPerItemSec, unit)}</td>
+              <td class="text-right font-mono" style="color: #10b981;">${ds.pareto.top80ProductsCount} SKU (${ds.pareto.top80Units} ks)</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    ` : ''}
   </section>
 
-  <!-- 4. Simulace a doporučení optimalizace (2h vlny & Multipicking) -->
+  <!-- 4. Kompletní simulace optimalizace: Přeskupení do sběrných boxů (Multipicking ve 2h slotech) -->
   <section class="content-box">
     <div class="section-title">
-      <span>${isCs ? '4. Simulace optimalizace: Sdružování do 2h slotů (Multipicking)' : '4. Optimization Simulation: 2-Hour Batching (Multipicking)'}</span>
+      <span>${isCs ? '4. Simulace optimalizace: Přeskupení do sběrných boxů (Multipicking ve 2h slotech)' : '4. Optimization Simulation: 2-Hour Batching (Multipicking)'}</span>
     </div>
     <div class="section-subtitle">
-      ${isCs ? 'Predikce úspor při zavedení sdruženého vychystávání a přesného párování objednávek se stejnými SKU.' : 'Projected savings from 2-hour grouping into dedicated high-synergy waves.'}
+      ${isCs ? 'Vyhodnocení, kolik času ušetří sklad při inteligentním shlukování objednávek se shodnými produkty do stejných sběrných boxů v rámci 2hodinových časových oken, se striktním dodržením fyzické kapacity boxu a objemů produktů.' : 'Complete evaluation of operational savings from intelligent 2-hour order clustering adhering to volume and box limits.'}
     </div>
 
-    <div class="sim-card">
-      <div class="sim-metric">
-        <span class="filter-label">${isCs ? 'Predikovaná celková úspora času:' : 'Projected Total Time Savings:'}</span>
-        <span class="sim-metric-val" style="color: #34d399;">${simulation.totalSavedHours} ${isCs ? 'člověkohodin' : 'man-hours'}</span>
-        <span style="font-size: 11px; color: #94a3b8;">${isCs ? 'Odhadovaná kumulativní úspora na analyzovaném objemu' : 'Cumulative savings across analyzed dataset'}</span>
+    <!-- Volumetric SKU Profile Header -->
+    <div class="volumetric-banner">
+      <div>
+        <div style="font-weight: 700; color: #ffffff; display: flex; align-items: center; gap: 8px;">
+          <span>${isCs ? 'Objemový limit sběrného boxu:' : 'Tote Capacity Limit:'}</span>
+          <span class="font-mono" style="color: #fbbf24; background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.3); padding: 2px 8px; border-radius: 6px;">
+            max ${simulation.boxCapacityLimit} ${isCs ? 'kusů / box' : 'units / tote'}
+          </span>
+        </div>
+        <div style="font-size: 11px; color: #94a3b8; margin-top: 4px;">
+          ${isCs ? 'Odvozeno z reálných dat várek' : 'Derived from wave data'}: max ${simulation.maxObservedUnitsInBox} ks, 95. percentil ${simulation.p95ObservedUnitsInBox} ks, průměr = ${simulation.avgObservedUnitsInBox} ks.
+        </div>
       </div>
-      <div class="sim-metric">
-        <span class="filter-label">${isCs ? 'Procentuální úspora expedice:' : 'Percentage operational savings:'}</span>
-        <span class="sim-metric-val" style="color: #38bdf8;">${simulation.overallSavingsPct}%</span>
-        <span style="font-size: 11px; color: #94a3b8;">${isCs ? 'Zkrácení celkového času pickování i balení' : 'Total duration reduction'}</span>
+      ${simulation.volumetricSummary ? `
+        <div style="display: flex; flex-wrap: wrap; gap: 8px; font-size: 11px;">
+          <span style="background: #1e293b; padding: 4px 10px; border-radius: 8px; border: 1px solid #334155;">
+            ${isCs ? 'Drobný sortiment' : 'Small'}: <strong style="color: #34d399;">${simulation.volumetricSummary.smallSkusCount} SKU</strong> (~60-100 ks)
+          </span>
+          <span style="background: #1e293b; padding: 4px 10px; border-radius: 8px; border: 1px solid #334155;">
+            ${isCs ? 'Střední sortiment' : 'Medium'}: <strong style="color: #38bdf8;">${simulation.volumetricSummary.mediumSkusCount} SKU</strong> (~25-50 ks)
+          </span>
+          <span style="background: #1e293b; padding: 4px 10px; border-radius: 8px; border: 1px solid #334155;">
+            ${isCs ? 'Objemný sortiment' : 'Bulky'}: <strong style="color: #fbbf24;">${simulation.volumetricSummary.bulkySkusCount} SKU</strong> (~8-20 ks)
+          </span>
+        </div>
+      ` : ''}
+    </div>
+
+    <!-- 4 Main KPI Cards matching the Application View -->
+    <div class="sim-kpi-grid">
+      <!-- Card 1: Total Saved Hours -->
+      <div class="sim-kpi-card sim-kpi-card-highlight">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 11px; text-transform: uppercase; font-weight: 700; color: #34d399;">${isCs ? 'Celková úspora času' : 'Total Saved Time'}</span>
+          <span class="font-mono" style="font-size: 11px; font-weight: 800; color: #34d399; background: rgba(16, 185, 129, 0.2); padding: 2px 6px; border-radius: 6px;">
+            -${simulation.overallSavingsPct}%
+          </span>
+        </div>
+        <div class="font-mono" style="font-size: 26px; font-weight: 800; color: #ffffff; margin-top: 6px;">
+          -${formatHoursOrMins(simulation.totalSavedSeconds)}
+        </div>
+        <div style="font-size: 11px; color: #cbd5e1; margin-top: 4px;">
+          ${isCs ? 'Pickování' : 'Picking'}: <strong style="color: #818cf8;">-${formatHoursOrMins(simAll?.pickSavingsSec || 0)}</strong> • ${isCs ? 'Balení' : 'Packing'}: <strong style="color: #34d399;">-${formatHoursOrMins(simAll?.packSavingsSec || 0)}</strong>
+        </div>
       </div>
-      <div class="sim-metric">
-        <span class="filter-label">${isCs ? 'Optimální kapacita boxu:' : 'Optimal tote capacity:'}</span>
-        <span class="sim-metric-val" style="color: #f59e0b;">${simulation.boxCapacityLimit} ${isCs ? 'kusů / box' : 'units / tote'}</span>
-        <span style="font-size: 11px; color: #94a3b8;">${isCs ? 'Doporučená velikost pro maximální efektivitu' : 'Recommended target size'}</span>
+
+      <!-- Card 2: Total Labor Reduction -->
+      <div class="sim-kpi-card">
+        <div style="font-size: 11px; text-transform: uppercase; font-weight: 600; color: #94a3b8;">${isCs ? 'Celková pracnost skladu' : 'Total Labor Hours'}</div>
+        <div class="font-mono" style="display: flex; align-items: baseline; gap: 8px; margin-top: 6px;">
+          <span style="font-size: 16px; color: #94a3b8; text-decoration: line-through;">${formatHoursOrMins(simAll?.baselineTotalSec || 0)}</span>
+          <span style="color: #94a3b8;">→</span>
+          <span style="font-size: 24px; font-weight: 800; color: #34d399;">${formatHoursOrMins(simAll?.optimizedTotalSec || 0)}</span>
+        </div>
+        <div style="font-size: 11px; color: #94a3b8; margin-top: 4px;">
+          ${isCs ? 'Snížení zátěže operátorů o' : 'Operator workload reduction by'} <strong style="color: #ffffff;">${simulation.totalSavedHours} ${isCs ? 'člověko-hodin' : 'man-hours'}</strong>.
+        </div>
+      </div>
+
+      <!-- Card 3: Multipicking Rate Boost -->
+      <div class="sim-kpi-card">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 11px; text-transform: uppercase; font-weight: 600; color: #94a3b8;">${isCs ? 'Míra multipickingu' : 'Multipicking Rate'}</span>
+          <span class="font-mono" style="font-size: 11px; font-weight: 700; color: #c084fc;">
+            +${simulation.simulatedMultipickRatioPct - simulation.baselineMultipickRatioPct}%
+          </span>
+        </div>
+        <div class="font-mono" style="display: flex; align-items: baseline; gap: 8px; margin-top: 6px;">
+          <span style="font-size: 16px; color: #94a3b8;">${simulation.baselineMultipickRatioPct}%</span>
+          <span style="color: #c084fc;">→</span>
+          <span style="font-size: 24px; font-weight: 800; color: #c084fc;">${simulation.simulatedMultipickRatioPct}%</span>
+        </div>
+        <div style="font-size: 11px; color: #94a3b8; margin-top: 4px;">
+          ${isCs ? 'Podíl kusů vychystaných v konsolidovaných dávkách více objednávek najednou.' : 'Share of items picked in multi-order consolidation waves.'}
+        </div>
+      </div>
+
+      <!-- Card 4: Constraints & Windows Analyzed -->
+      <div class="sim-kpi-card">
+        <div style="font-size: 11px; text-transform: uppercase; font-weight: 600; color: #94a3b8;">${isCs ? 'Časová okna & Boxy' : 'Time Slots & Totes'}</div>
+        <div class="font-mono" style="font-size: 26px; font-weight: 800; color: #ffffff; margin-top: 6px;">
+          ${simulation.totalTwoHourSlots} <span style="font-size: 13px; font-weight: normal; color: #94a3b8;">${isCs ? 'slotů (2h)' : 'slots (2h)'}</span>
+        </div>
+        <div style="font-size: 11px; color: #94a3b8; margin-top: 4px;">
+          ${isCs ? 'Simulováno boxů' : 'Simulated totes'}: <strong style="color: #ffffff;">${simulation.totalBoxesSimulated}</strong> (${isCs ? 'aktuálně v datech' : 'currently in data'} ${simulation.totalBoxesCurrent}).
+        </div>
       </div>
     </div>
 
-    <!-- Recommendations list -->
-    <div style="margin-top: 14px; background: rgba(15, 23, 42, 0.6); border: 1px solid #334155; border-radius: 12px; padding: 16px;">
-      <div style="font-weight: 700; font-size: 13px; color: #ffffff; margin-bottom: 8px;">
-        ${isCs ? 'Klíčová doporučení pro provoz:' : 'Key Operational Recommendations:'}
+    <!-- Complete Category-by-Category Savings Table (1, 2, 3, 4, 5, 6+ ks and Celkem) -->
+    <div style="font-weight: 700; font-size: 13px; color: #ffffff; margin: 24px 0 6px;">
+      ${isCs ? 'Rozvržení úspor pro všechny kategorie zásilek (1 až 6+ kusů):' : 'Savings Breakdown Across All Order Brackets (1 to 6+ items):'}
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>${isCs ? 'Kategorie' : 'Category'}</th>
+          <th class="text-right">${isCs ? 'Zásilky' : 'Orders'}</th>
+          <th class="text-right">${isCs ? 'Kusy' : 'Items'}</th>
+          <th class="text-right" style="color: #60a5fa; border-left: 1px solid #334155;">${isCs ? 'Stávající: Pick' : 'Current Pick'}</th>
+          <th class="text-right" style="color: #34d399;">${isCs ? 'Stávající: Balení' : 'Current Pack'}</th>
+          <th class="text-right" style="color: #a5b4fc;">${isCs ? 'Stávající: Celkem' : 'Current Total'}</th>
+          <th class="text-right" style="color: #60a5fa; background: rgba(99, 102, 241, 0.1); border-left: 1px solid #334155;">${isCs ? 'Multipick: Pick' : 'Optimized Pick'}</th>
+          <th class="text-right" style="color: #34d399; background: rgba(16, 185, 129, 0.1);">${isCs ? 'Multipick: Balení' : 'Optimized Pack'}</th>
+          <th class="text-right" style="color: #c084fc; background: rgba(168, 85, 247, 0.1); font-weight: 700;">${isCs ? 'Multipick: Celkem' : 'Optimized Total'}</th>
+          <th class="text-right" style="color: #34d399; font-weight: 700; border-left: 1px solid #334155;">${isCs ? 'Úspora Pick' : 'Pick Save'}</th>
+          <th class="text-right" style="color: #34d399; font-weight: 700;">${isCs ? 'Úspora Balení' : 'Pack Save'}</th>
+          <th class="text-right" style="color: #34d399; font-weight: 800; font-size: 13px;">${isCs ? 'Celková úspora' : 'Total Savings'}</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${simDetailed.map(b => `
+          <tr>
+            <td><strong>${escapeHtml(b.label)}</strong></td>
+            <td class="text-right font-mono">${b.orderCount.toLocaleString('cs-CZ')}</td>
+            <td class="text-right font-mono">${b.itemCount.toLocaleString('cs-CZ')}</td>
+            <td class="text-right font-mono" style="color: #60a5fa; border-left: 1px solid #334155;">${formatHoursOrMins(b.baselinePickSec)}</td>
+            <td class="text-right font-mono" style="color: #34d399;">${formatHoursOrMins(b.baselinePackSec)}</td>
+            <td class="text-right font-mono" style="color: #a5b4fc; font-weight: 600;">${formatHoursOrMins(b.baselineTotalSec)}</td>
+            <td class="text-right font-mono" style="color: #60a5fa; background: rgba(99, 102, 241, 0.05); border-left: 1px solid #334155;">${formatHoursOrMins(b.optimizedPickSec)}</td>
+            <td class="text-right font-mono" style="color: #34d399; background: rgba(16, 185, 129, 0.05);">${formatHoursOrMins(b.optimizedPackSec)}</td>
+            <td class="text-right font-mono" style="color: #c084fc; background: rgba(168, 85, 247, 0.05); font-weight: 700;">${formatHoursOrMins(b.optimizedTotalSec)}</td>
+            <td class="text-right font-mono" style="color: #34d399; border-left: 1px solid #334155;">-${b.pickSavingsPct}%</td>
+            <td class="text-right font-mono" style="color: #34d399;">-${b.packSavingsPct}%</td>
+            <td class="text-right font-mono" style="color: #34d399; font-weight: 800; font-size: 13px;">
+              -${b.totalSavingsPct}% <span style="font-size: 11px; font-weight: normal; color: #a5b4fc;">(-${formatHoursOrMins(b.totalSavingsSec)})</span>
+            </td>
+          </tr>
+        `).join('')}
+        ${simAll ? `
+          <tr style="font-weight: 800; background: rgba(99, 102, 241, 0.15); border-top: 2px solid #6366f1; border-bottom: 2px solid #6366f1;">
+            <td><strong style="color: #ffffff;">${isCs ? 'Celkem za všechny kategorie' : 'Total Across All Brackets'}</strong></td>
+            <td class="text-right font-mono">${simAll.orderCount.toLocaleString('cs-CZ')}</td>
+            <td class="text-right font-mono">${simAll.itemCount.toLocaleString('cs-CZ')}</td>
+            <td class="text-right font-mono" style="color: #60a5fa; border-left: 1px solid #334155;">${formatHoursOrMins(simAll.baselinePickSec)}</td>
+            <td class="text-right font-mono" style="color: #34d399;">${formatHoursOrMins(simAll.baselinePackSec)}</td>
+            <td class="text-right font-mono" style="color: #a5b4fc;">${formatHoursOrMins(simAll.baselineTotalSec)}</td>
+            <td class="text-right font-mono" style="color: #60a5fa; border-left: 1px solid #334155;">${formatHoursOrMins(simAll.optimizedPickSec)}</td>
+            <td class="text-right font-mono" style="color: #34d399;">${formatHoursOrMins(simAll.optimizedPackSec)}</td>
+            <td class="text-right font-mono" style="color: #c084fc;">${formatHoursOrMins(simAll.optimizedTotalSec)}</td>
+            <td class="text-right font-mono" style="color: #34d399; border-left: 1px solid #334155;">-${simAll.pickSavingsPct}%</td>
+            <td class="text-right font-mono" style="color: #34d399;">-${simAll.packSavingsPct}%</td>
+            <td class="text-right font-mono" style="color: #34d399; font-size: 14px;">
+              -${simAll.totalSavingsPct}% <span style="font-size: 11px; font-weight: normal; color: #a5b4fc;">(-${formatHoursOrMins(simAll.totalSavingsSec)})</span>
+            </td>
+          </tr>
+        ` : ''}
+      </tbody>
+    </table>
+
+    <!-- Visual Bars Comparison -->
+    <div style="font-weight: 700; font-size: 13px; color: #ffffff; margin: 24px 0 10px;">
+      ${isCs ? 'Grafické srovnání úspor: Původní čas vs. Po optimalizaci multipickingu:' : 'Visual Comparison: Baseline Duration vs Optimized Multipicking:'}
+    </div>
+    <div style="background: rgba(15, 23, 42, 0.85); border: 1px solid #334155; border-radius: 16px; padding: 18px 20px;">
+      ${simDetailed.map(b => {
+        const maxTime = Math.max(...simDetailed.map(x => x.baselineTotalSec));
+        const baseWidth = maxTime > 0 ? (b.baselineTotalSec / maxTime) * 100 : 0;
+        const optWidth = maxTime > 0 ? (b.optimizedTotalSec / maxTime) * 100 : 0;
+        return `
+          <div style="margin-bottom: 14px;">
+            <div style="display: flex; justify-content: space-between; font-size: 11px; color: #cbd5e1; margin-bottom: 4px;">
+              <span><strong>${escapeHtml(b.label)}</strong></span>
+              <span class="font-mono"><strong style="color: #94a3b8;">${formatHoursOrMins(b.baselineTotalSec)}</strong> → <strong style="color: #34d399;">${formatHoursOrMins(b.optimizedTotalSec)}</strong> (-${b.totalSavingsPct}%)</span>
+            </div>
+            <div style="width: 100%; height: 10px; background: #1e293b; border-radius: 6px; overflow: hidden; margin-bottom: 3px;">
+              <div style="width: ${baseWidth}%; height: 100%; background: #64748b;"></div>
+            </div>
+            <div style="width: 100%; height: 10px; background: #1e293b; border-radius: 6px; overflow: hidden;">
+              <div style="width: ${optWidth}%; height: 100%; background: #10b981;"></div>
+            </div>
+          </div>
+        `;
+      }).join('')}
+      <div style="display: flex; gap: 20px; font-size: 11px; color: #94a3b8; margin-top: 10px; border-top: 1px solid #334155; padding-top: 8px;">
+        <span style="display: flex; align-items: center; gap: 6px;"><span style="width: 10px; height: 10px; background: #64748b; border-radius: 2px; display: inline-block;"></span> ${isCs ? 'Stávající čas' : 'Baseline time'}</span>
+        <span style="display: flex; align-items: center; gap: 6px;"><span style="width: 10px; height: 10px; background: #10b981; border-radius: 2px; display: inline-block;"></span> ${isCs ? 'Optimalizovaný čas' : 'Optimized time'}</span>
       </div>
-      <ul style="font-size: 12px; color: #cbd5e1; padding-left: 20px; line-height: 1.8;">
-        <li>${isCs ? 'Zavést 2hodinové pickovací vlny: akumulovat objednávky před vygenerováním picklistů namísto okamžitého pickování po jedné.' : 'Introduce 2-hour picking waves: accumulate orders before generating picking waves rather than picking single orders ad-hoc.'}</li>
-        <li>${isCs ? 'Dělit sběrné boxy na Single-item (1ks) a Multi-item (2+ ks): nemíchat složité vícekusové objednávky do stejných boxů se single-item zakázkami.' : 'Separate collection totes into Single-item (1 pc) and Multi-item (2+ pcs): avoid mixing complex multi-item orders with single items.'}</li>
-        <li>${isCs ? 'Prioritizovat společné SKU ve stejné zóně pro snížení počtu kroků skladníka v regálových uličkách.' : 'Prioritize shared SKUs in the same warehouse zone to minimize picker travel distance.'}</li>
-      </ul>
+    </div>
+
+    <!-- Recommendations / Principles -->
+    <div style="margin-top: 24px; background: rgba(15, 23, 42, 0.7); border: 1px solid #334155; border-radius: 16px; padding: 20px;">
+      <div style="font-weight: 700; font-size: 13px; color: #ffffff; margin-bottom: 12px;">
+        ${isCs ? 'Jak tento model funguje v praxi fulfillmentu skladu:' : 'How This Optimization Model Works in Practice:'}
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; font-size: 12px; color: #cbd5e1; line-height: 1.6;">
+        <div style="background: rgba(30, 41, 59, 0.4); border: 1px solid #334155; border-radius: 12px; padding: 14px;">
+          <strong style="color: #818cf8; display: block; margin-bottom: 4px;">1. 2hodinové časové sloty</strong>
+          ${isCs ? 'Objednávky se neakumulují celý den (což by zpozdilo expedici), ale v plynulých 2h vlnách. Picker tak dostává dávky se zvýšeným průnikem shodných SKU v daném okně.' : 'Orders are clustered in rolling 2-hour waves to preserve SLA while maximizing SKU overlap.'}
+        </div>
+        <div style="background: rgba(30, 41, 59, 0.4); border: 1px solid #334155; border-radius: 12px; padding: 14px;">
+          <strong style="color: #fbbf24; display: block; margin-bottom: 4px;">2. Fyzický limit a objem boxu</strong>
+          ${isCs ? 'Algoritmus nepřetěžuje přepravky. Každý EAN má aproximovaný prostorový objem a přepravka se automaticky uzavře při dosažení cílové kapacity (typicky 25 až 50 ks).' : 'Boxes strictly adhere to SKU physical volume fractions and safety ergonomic item limits.'}
+        </div>
+        <div style="background: rgba(30, 41, 59, 0.4); border: 1px solid #334155; border-radius: 12px; padding: 14px;">
+          <strong style="color: #34d399; display: block; margin-bottom: 4px;">3. Úspora balení i pickování</strong>
+          ${isCs ? 'Vychystání na 1 zastavení v regálu eliminuje kroky. Balič navíc díky menší diverzitě zboží v přepravce netráví čas přebíráním položek.' : 'Concentrated SKUs eliminate aisle backtracking for pickers and searching delays for packers.'}
+        </div>
+      </div>
     </div>
   </section>
 
   <!-- Footer -->
   <footer class="footer">
-    <p>Warehouse Pick &amp; Pack Analytics • ${isCs ? 'Tento report je offline HTML soubor, který můžete kdykoliv otevřít nebo přeposlat dalším kolegům.' : 'This report is a standalone offline HTML document ready to open or forward.'}</p>
+    <p>Warehouse Pick &amp; Pack Analytics • ${isCs ? 'Tento soubor je kompletní samostatný offline HTML report se všemi daty, tabulkami i grafy pro tisk, archivaci a sdílení.' : 'Complete standalone offline report containing all operational analytics and tables.'}</p>
   </footer>
 </div>
 

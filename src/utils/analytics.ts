@@ -613,16 +613,25 @@ export function computeBoxSynergyAndHypothesis(records: MovementRecord[]): {
 
   const allBrackets: (ItemBracket | 'all')[] = ['1', '2', '3', '4', '5', '6+', 'all'];
 
+  const totalOverallBoxes = Math.max(1, boxStats.length);
+  const totalOverallUnits = Math.max(1, records.reduce((s, r) => s + (r.pocet_produktu || 1), 0));
+  const totalOverallOrders = Math.max(1, records.length);
+
   // Aggregate by category for hypothesis evaluation
   const calcCategoryAverages = (cat: 'high_overlap' | 'medium_overlap' | 'low_overlap') => {
     const list = boxStats.filter(b => b.category === cat);
     const tierRecords = tierBoxRecords[cat];
     const count = list.length;
+    const sharePct = Number(((count / totalOverallBoxes) * 100).toFixed(1));
+    const totalUnits = tierRecords.reduce((s, r) => s + (r.pocet_produktu || 1), 0);
+    const unitSharePct = Number(((totalUnits / totalOverallUnits) * 100).toFixed(1));
+    const totalOrders = tierRecords.length;
+    const orderSharePct = Number(((totalOrders / totalOverallOrders) * 100).toFixed(1));
+
     const avgUnitsPerEan = count > 0
       ? Number((list.reduce((s, b) => s + b.units_per_ean_ratio, 0) / count).toFixed(2))
       : 0;
 
-    const totalUnits = tierRecords.reduce((s, r) => s + (r.pocet_produktu || 1), 0);
     const totalPick = tierRecords.reduce((s, r) => s + r.pick_duration_s, 0);
     const totalPack = tierRecords.reduce((s, r) => s + r.pack_duration_s, 0);
 
@@ -672,6 +681,11 @@ export function computeBoxSynergyAndHypothesis(records: MovementRecord[]): {
 
     return {
       count,
+      sharePct,
+      totalUnits,
+      unitSharePct,
+      totalOrders,
+      orderSharePct,
       avgUnitsPerEan,
       avgPickPerUnitSec,
       avgPackPerUnitSec,

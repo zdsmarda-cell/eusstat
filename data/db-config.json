@@ -1,0 +1,8 @@
+{
+  "host": "db.mobilgroup.cz",
+  "port": 3306,
+  "user": "fhb_crm",
+  "password": "",
+  "database": "fhb_crm",
+  "ssl": false
+}

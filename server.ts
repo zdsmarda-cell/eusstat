@@ -35,7 +35,7 @@ process.on('unhandledRejection', (reason: any) => {
 });
 
 const app = express();
-const PORT = Number(process.env.APP_PORT || process.env.API_PORT || process.env.PORT) || 3030;
+const PORT = Number(process.env.PORT || process.env.APP_PORT || process.env.API_PORT) || 3000;
 
 // CORS middleware allowing cross-origin requests (e.g. from port 443 to port 3030)
 app.use((req, res, next) => {
