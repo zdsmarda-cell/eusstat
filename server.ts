@@ -289,6 +289,53 @@ app.get('/api/analytics/summary', async (req, res) => {
     const svjBypassAnalysis = warehouse === 'ruse' ? null : computeSvjSortingBypassAnalysis(svjRecords.length > 0 ? svjRecords : activeRecords);
     const simulation = runMultipickSlotSimulation(activeRecords);
 
+    // Pokud počítáme warehouse='all', rovnou vytvoříme i čisté souhrny pro jednotlivé sklady
+    // Tím zajistíme, že Ruse nikdy nedostane data SVJ a naopak!
+    let ruseSummary: any = null;
+    let svjSummary: any = null;
+
+    if (warehouse === 'all') {
+      ruseSummary = {
+        warehouse: 'ruse',
+        filters: filterObj,
+        recordCount: ruseRecords.length,
+        ruseCount: ruseRecords.length,
+        svjCount: 0,
+        bracketStats: computeBracketStatistics(ruseRecords),
+        dailyStats: computeDailyStatistics(ruseRecords),
+        dailyReport: computeDailyPerformanceReport(ruseRecords),
+        synergyData: computeBoxSynergyAndHypothesis(ruseRecords),
+        periodSummary: computePeriodSummary(ruseRecords),
+        comparison: null,
+        svjSorting: null,
+        svjBypassAnalysis: null,
+        simulation: runMultipickSlotSimulation(ruseRecords),
+        updatedAt: new Date().toISOString(),
+      };
+
+      svjSummary = {
+        warehouse: 'svj',
+        filters: filterObj,
+        recordCount: svjRecords.length,
+        ruseCount: 0,
+        svjCount: svjRecords.length,
+        bracketStats: computeBracketStatistics(svjRecords),
+        dailyStats: computeDailyStatistics(svjRecords),
+        dailyReport: computeDailyPerformanceReport(svjRecords),
+        synergyData: computeBoxSynergyAndHypothesis(svjRecords),
+        periodSummary: computePeriodSummary(svjRecords),
+        comparison: null,
+        svjSorting: computeSvjSortingStatistics(svjRecords),
+        svjBypassAnalysis: computeSvjSortingBypassAnalysis(svjRecords),
+        simulation: runMultipickSlotSimulation(svjRecords),
+        updatedAt: new Date().toISOString(),
+      };
+
+      // Uložíme i dílčí sklady do mezipaměti
+      saveCachedStats(`summary_ruse${filterSuffix}`, 'ruse', ruseRecords.length, ruseSummary).catch(() => {});
+      saveCachedStats(`summary_svj${filterSuffix}`, 'svj', svjRecords.length, svjSummary).catch(() => {});
+    }
+
     const payload = {
       warehouse,
       filters: filterObj,
@@ -304,6 +351,8 @@ app.get('/api/analytics/summary', async (req, res) => {
       svjSorting,
       svjBypassAnalysis,
       simulation,
+      ruseSummary,
+      svjSummary,
       updatedAt: new Date().toISOString(),
     };
 

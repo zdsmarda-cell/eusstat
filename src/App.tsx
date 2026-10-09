@@ -63,7 +63,17 @@ function Dashboard() {
   const isCs = lang === 'cs';
 
   const [records, setRecords] = useState<MovementRecord[]>([]);
-  const [activeTab, setActiveTab] = useState<WarehouseTab>('ruse');
+  const [activeTab, setActiveTab] = useState<WarehouseTab>(() => {
+    try {
+      const saved = localStorage.getItem('active_warehouse_tab') as WarehouseTab;
+      if (saved === 'ruse' || saved === 'svj' || saved === 'summary') {
+        return saved;
+      }
+    } catch {
+      // ignore
+    }
+    return 'ruse';
+  });
   const [dbStatus, setDbStatus] = useState<DbStatus>({
     connected: false,
     type: 'memory',
@@ -133,8 +143,10 @@ function Dashboard() {
   const fetchData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [statusRes, summaryRes, movementsRes] = await Promise.all([
+      const activeWh = activeTab === 'summary' ? 'all' : activeTab;
+      const [statusRes, activeWhSummaryRes, allSummaryRes, movementsRes] = await Promise.all([
         authFetch(apiUrl('/api/db/status')),
+        authFetch(apiUrl(`/api/analytics/summary?warehouse=${activeWh}`)),
         authFetch(apiUrl('/api/analytics/summary?warehouse=all')),
         authFetch(apiUrl('/api/movements?limit=1000')),
       ]);
@@ -150,20 +162,37 @@ function Dashboard() {
         }
       }
 
-      if (summaryRes.ok) {
+      const newAnalytics: Record<string, CachedAnalyticsSummary> = {};
+
+      if (allSummaryRes.ok) {
         try {
-          const sumData = await summaryRes.json();
+          const sumData = await allSummaryRes.json();
           if (sumData.success) {
-            setServerAnalytics(prev => ({
-              ...prev,
-              all: sumData,
-              ...(sumData.warehouse === 'all' ? { ruse: { ...sumData, warehouse: 'ruse' }, svj: { ...sumData, warehouse: 'svj' } } : {}),
-            }));
+            newAnalytics.all = sumData;
+            // Použijeme skutečně oddělené souhrny ze serveru, NIKDY nepřepisujeme Ruse daty ze SVJ!
+            if (sumData.ruseSummary) newAnalytics.ruse = sumData.ruseSummary;
+            if (sumData.svjSummary) newAnalytics.svj = sumData.svjSummary;
           }
         } catch {
           // ignore
         }
       }
+
+      if (activeWhSummaryRes.ok) {
+        try {
+          const activeData = await activeWhSummaryRes.json();
+          if (activeData.success) {
+            newAnalytics[activeWh] = activeData;
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      setServerAnalytics(prev => ({
+        ...prev,
+        ...newAnalytics,
+      }));
 
       if (movementsRes.ok) {
         try {
@@ -181,7 +210,7 @@ function Dashboard() {
     } finally {
       setIsLoading(false);
     }
-  }, [isCs]);
+  }, [activeTab, isCs]);
 
   useEffect(() => {
     fetchData();
@@ -272,6 +301,11 @@ function Dashboard() {
   // Tab switching handler with spinner
   const handleTabChange = useCallback(async (tab: WarehouseTab) => {
     if (tab === activeTab) return;
+    try {
+      localStorage.setItem('active_warehouse_tab', tab);
+    } catch {
+      // ignore
+    }
     setIsTabSwitching(true);
     try {
       const targetWh = tab === 'summary' ? 'all' : tab;
@@ -295,7 +329,8 @@ function Dashboard() {
       });
   }, [activeTab, fetchAnalyticsSummary]);
 
-  const currentServerAnalytics = serverAnalytics[activeTab === 'summary' ? 'all' : activeTab] || serverAnalytics.all;
+  // VŽDY přesně odpovídá aktivní záložce – NIKDY nepadá do serverAnalytics.all pro Ruse nebo SVJ!
+  const currentServerAnalytics = serverAnalytics[activeTab === 'summary' ? 'all' : activeTab];
 
   // Compute or read stats for active tab dataset – VŽDY preferujeme data přímo z databáze
   const bracketStats = useMemo(() => {
@@ -327,9 +362,10 @@ function Dashboard() {
     return computePeriodSummary(activeTabRecords);
   }, [currentServerAnalytics, activeTabRecords]);
 
-  // Export HTML report
+  // Export HTML report – VŽDY předáváme kompletní databázovou mezipaměť a aktivní sklad
   const handleExportHtml = () => {
-    if (activeTabRecords.length === 0) {
+    const totalCount = currentServerAnalytics?.recordCount ?? activeTabRecords.length;
+    if (totalCount === 0 && activeTabRecords.length === 0) {
       showToast(
         isCs ? 'Není k dispozici žádný záznam k exportu.' : 'No records available to export.',
         'error'
@@ -342,11 +378,13 @@ function Dashboard() {
         filter,
         unit: filter.unit,
         lang,
+        warehouse: activeTab,
+        cachedAnalytics: currentServerAnalytics,
       });
       showToast(
         isCs
-          ? `Kompletní HTML report (${activeTabRecords.length.toLocaleString('cs-CZ')} záznamů) byl úspěšně vygenerován a stažen!`
-          : `Complete HTML report (${activeTabRecords.length.toLocaleString()} records) generated & downloaded!`,
+          ? `Kompletní databázový HTML report (${totalCount.toLocaleString('cs-CZ')} záznamů) byl úspěšně vygenerován a stažen!`
+          : `Complete database HTML report (${totalCount.toLocaleString()} records) generated & downloaded!`,
         'success'
       );
     } catch (err: any) {

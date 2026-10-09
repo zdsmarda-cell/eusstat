@@ -1,4 +1,13 @@
-import { MovementRecord, FilterState, ItemBracket } from '../types.js';
+import {
+  MovementRecord,
+  FilterState,
+  ItemBracket,
+  BracketStat,
+  DailyPerformanceReport,
+  MultipickSimulationReport,
+  SimulationBracketResult,
+  PeriodSummary,
+} from '../types.js';
 import {
   computeBracketStatistics,
   computeDailyPerformanceReport,
@@ -15,6 +24,8 @@ export interface HtmlReportData {
   filter: FilterState;
   unit: 'sec' | 'min';
   lang: 'cs' | 'en';
+  warehouse?: string;
+  cachedAnalytics?: any;
 }
 
 function escapeHtml(str: string): string {
@@ -39,22 +50,46 @@ function formatHoursOrMins(seconds: number): string {
 }
 
 export function generateHtmlReport(data: HtmlReportData): string {
-  const { records, filter, unit, lang } = data;
+  const { records, filter, unit, lang, warehouse, cachedAnalytics } = data;
   const isCs = lang === 'cs';
 
-  const bracketStats = computeBracketStatistics(records);
-  const synergyData = computeBoxSynergyAndHypothesis(records);
-  const dailyReport = computeDailyPerformanceReport(records);
-  const simulation = runMultipickSlotSimulation(records);
-  const periodSummary = computePeriodSummary(records);
+  // VŽDY prioritně používáme data přímo z databázové mezipaměti / serveru, pokud jsou k dispozici
+  const bracketStats: BracketStat[] = cachedAnalytics?.bracketStats?.length
+    ? cachedAnalytics.bracketStats
+    : computeBracketStatistics(records);
+  const synergyData: any = cachedAnalytics?.synergyData
+    ? cachedAnalytics.synergyData
+    : computeBoxSynergyAndHypothesis(records);
+  const dailyReport: DailyPerformanceReport = cachedAnalytics?.dailyReport
+    ? cachedAnalytics.dailyReport
+    : computeDailyPerformanceReport(records);
+  const simulation: MultipickSimulationReport = cachedAnalytics?.simulation
+    ? cachedAnalytics.simulation
+    : runMultipickSlotSimulation(records);
+  const periodSummary: PeriodSummary = cachedAnalytics?.periodSummary
+    ? cachedAnalytics.periodSummary
+    : computePeriodSummary(records);
+  const svjSorting = cachedAnalytics?.svjSorting || null;
+  const svjBypassAnalysis = cachedAnalytics?.svjBypassAnalysis || null;
 
-  const totalOrders = records.length;
-  const totalUnits = records.reduce((sum, r) => sum + (r.pocet_produktu || 1), 0);
-  const totalPickSec = records.reduce((sum, r) => sum + r.pick_duration_s, 0);
-  const totalPackSec = records.reduce((sum, r) => sum + r.pack_duration_s, 0);
-  const avgPickPerItem = totalUnits > 0 ? totalPickSec / totalUnits : 0;
-  const avgPackPerItem = totalUnits > 0 ? totalPackSec / totalUnits : 0;
+  const allStat = bracketStats.find((b: BracketStat) => b.bracket === 'all') || bracketStats[0];
+
+  const totalOrders = periodSummary?.totalOrders || cachedAnalytics?.recordCount || allStat?.shipmentCount || records.length;
+  const totalUnits = periodSummary?.totalUnits || cachedAnalytics?.totalUnits || allStat?.itemCount || records.reduce((sum, r) => sum + (r.pocet_produktu || 1), 0);
+  const avgPickPerItem = allStat?.avgPickPerItemSec || (records.length > 0 ? records.reduce((sum, r) => sum + r.pick_duration_s, 0) / Math.max(1, totalUnits) : 0);
+  const avgPackPerItem = allStat?.avgPackPerItemSec || (records.length > 0 ? records.reduce((sum, r) => sum + r.pack_duration_s, 0) / Math.max(1, totalUnits) : 0);
+  const totalPickSec = Math.round(avgPickPerItem * totalUnits);
+  const totalPackSec = Math.round(avgPackPerItem * totalUnits);
+
+  const medianPickPerItem = allStat?.medianPickPerItemSec || avgPickPerItem;
+  const medianPackPerItem = allStat?.medianPackPerItemSec || avgPackPerItem;
   const avgTotalPerItem = avgPickPerItem + avgPackPerItem;
+
+  const warehouseTitle = warehouse === 'ruse'
+    ? (isCs ? 'Sklad Ruse' : 'Ruse Warehouse')
+    : warehouse === 'svj'
+    ? (isCs ? 'Sklad SVJ' : 'SVJ Warehouse')
+    : (isCs ? 'Všechny sklady (Souhrn)' : 'All Warehouses (Summary)');
 
   const generatedDate = new Date();
   const formattedGenDate = generatedDate.toLocaleString('cs-CZ', {
@@ -88,8 +123,8 @@ export function generateHtmlReport(data: HtmlReportData): string {
   };
 
   const { highOverlapBoxes: high, mediumOverlapBoxes: med, lowOverlapBoxes: low, bracketComparisons } = synergyData.hypothesis;
-  const simDetailed = simulation.bracketResults.filter(b => b.bracket !== 'all');
-  const simAll = simulation.bracketResults.find(b => b.bracket === 'all') || simulation.bracketResults[simulation.bracketResults.length - 1];
+  const simDetailed: SimulationBracketResult[] = simulation.bracketResults.filter((b: SimulationBracketResult) => b.bracket !== 'all');
+  const simAll: SimulationBracketResult = simulation.bracketResults.find((b: SimulationBracketResult) => b.bracket === 'all') || simulation.bracketResults[simulation.bracketResults.length - 1];
 
   return `<!DOCTYPE html>
 <html lang="${isCs ? 'cs' : 'en'}">
@@ -507,10 +542,11 @@ export function generateHtmlReport(data: HtmlReportData): string {
     <div>
       <div class="brand-title">
         <span>Warehouse Pick &amp; Pack Analytics</span>
-        <span class="brand-badge">${isCs ? 'Kompletní Offline Export' : 'Full Offline Report'}</span>
+        <span class="brand-badge">${escapeHtml(warehouseTitle)}</span>
+        <span class="brand-badge" style="background: rgba(16, 185, 129, 0.2); color: #34d399; border-color: rgba(16, 185, 129, 0.3);">${isCs ? 'Databázový Export' : 'Database Export'}</span>
       </div>
       <div class="report-subtitle">
-        ${isCs ? 'Analytický a optimalizační report expedice skladu v identickém rozsahu jako v aplikaci' : 'Warehouse fulfillment & optimization report in full live dashboard scope'} • 
+        ${isCs ? 'Analytický a optimalizační report expedice skladu načtený přímo z databáze' : 'Warehouse fulfillment & optimization report loaded directly from database'} • 
         ${isCs ? 'Vygenerováno' : 'Generated'}: <strong>${escapeHtml(formattedGenDate)}</strong>
       </div>
     </div>
@@ -525,6 +561,7 @@ export function generateHtmlReport(data: HtmlReportData): string {
   <!-- Filter & Metadata Info -->
   <div class="filter-meta-bar">
     <span class="filter-label">${isCs ? 'Aplikované filtry:' : 'Active filters:'}</span>
+    <span class="meta-tag" style="background: rgba(99, 102, 241, 0.2); border-color: rgba(99, 102, 241, 0.4); color: #a5b4fc;">${isCs ? 'Sklad' : 'Warehouse'}: <strong>${escapeHtml(warehouseTitle)}</strong></span>
     <span class="meta-tag">${isCs ? 'Období' : 'Period'}: <strong>${escapeHtml(periodLabelMap[filter.datePreset] || filter.datePreset)}</strong></span>
     <span class="meta-tag">${isCs ? 'Velikost' : 'Size'}: <strong>${escapeHtml(bracketLabelMap[filter.bracket] || filter.bracket)}</strong></span>
     <span class="meta-tag">${isCs ? 'Jednotka' : 'Unit'}: <strong>${unit === 'sec' ? (isCs ? 'Sekundy (s)' : 'Seconds') : (isCs ? 'Minuty (min)' : 'Minutes')}</strong></span>
@@ -624,7 +661,7 @@ export function generateHtmlReport(data: HtmlReportData): string {
 
     <!-- Quick Bracket summary tiles -->
     <div class="bracket-cards-grid">
-      ${bracketStats.map(b => `
+      ${bracketStats.map((b: BracketStat) => `
         <div class="bracket-tile">
           <div class="bracket-tile-badge">${escapeHtml(getBracketLabel(b.bracket))}</div>
           <div class="bracket-tile-val">${formatTimeValue(b.avgTotalPerItemSec, unit)}</div>
@@ -652,7 +689,7 @@ export function generateHtmlReport(data: HtmlReportData): string {
         </tr>
       </thead>
       <tbody>
-        ${bracketStats.map(b => `
+        ${bracketStats.map((b: BracketStat) => `
           <tr>
             <td><strong>${escapeHtml(getBracketLabel(b.bracket))}</strong></td>
             <td class="text-right font-mono">${b.shipmentCount.toLocaleString('cs-CZ')}</td>
@@ -763,7 +800,7 @@ export function generateHtmlReport(data: HtmlReportData): string {
         </tr>
       </thead>
       <tbody>
-        ${bracketComparisons.map(b => `
+        ${bracketComparisons.map((b: any) => `
           <tr ${b.bracket === 'all' ? 'style="font-weight: 700; background: rgba(99, 102, 241, 0.1); border-top: 2px solid #6366f1;"' : ''}>
             <td><strong>${escapeHtml(b.label)}</strong></td>
             <td class="text-right font-mono">${b.highOrders.toLocaleString('cs-CZ')} / ${b.lowOrders.toLocaleString('cs-CZ')}</td>
@@ -837,7 +874,7 @@ export function generateHtmlReport(data: HtmlReportData): string {
         </tr>
       </thead>
       <tbody>
-        ${dailyReport.dayOfWeekStats.map(d => `
+        ${dailyReport.dayOfWeekStats.map((d: any) => `
           <tr>
             <td><strong>${isCs ? d.dayNameCs : d.dayNameEn}</strong></td>
             <td class="text-right font-mono">${d.totalOrders.toLocaleString('cs-CZ')}</td>
@@ -869,7 +906,7 @@ export function generateHtmlReport(data: HtmlReportData): string {
           </tr>
         </thead>
         <tbody>
-          ${dailyReport.dailyStats.slice(0, 15).map(ds => `
+          ${dailyReport.dailyStats.slice(0, 15).map((ds: any) => `
             <tr>
               <td><strong>${escapeHtml(ds.dayLabel || ds.date)}</strong></td>
               <td class="text-right font-mono">${ds.totalShipments.toLocaleString('cs-CZ')}</td>
@@ -1005,7 +1042,7 @@ export function generateHtmlReport(data: HtmlReportData): string {
         </tr>
       </thead>
       <tbody>
-        ${simDetailed.map(b => `
+        ${simDetailed.map((b: SimulationBracketResult) => `
           <tr>
             <td><strong>${escapeHtml(b.label)}</strong></td>
             <td class="text-right font-mono">${b.orderCount.toLocaleString('cs-CZ')}</td>
@@ -1049,8 +1086,8 @@ export function generateHtmlReport(data: HtmlReportData): string {
       ${isCs ? 'Grafické srovnání úspor: Původní čas vs. Po optimalizaci multipickingu:' : 'Visual Comparison: Baseline Duration vs Optimized Multipicking:'}
     </div>
     <div style="background: rgba(15, 23, 42, 0.85); border: 1px solid #334155; border-radius: 16px; padding: 18px 20px;">
-      ${simDetailed.map(b => {
-        const maxTime = Math.max(...simDetailed.map(x => x.baselineTotalSec));
+      ${simDetailed.map((b: SimulationBracketResult) => {
+        const maxTime = Math.max(...simDetailed.map((x: SimulationBracketResult) => x.baselineTotalSec));
         const baseWidth = maxTime > 0 ? (b.baselineTotalSec / maxTime) * 100 : 0;
         const optWidth = maxTime > 0 ? (b.optimizedTotalSec / maxTime) * 100 : 0;
         return `
@@ -1115,8 +1152,9 @@ export function downloadHtmlReport(data: HtmlReportData): void {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   const dateStr = new Date().toISOString().slice(0, 10);
+  const whSlug = data.warehouse ? `_${data.warehouse}` : '';
   link.href = url;
-  link.setAttribute('download', `skladovy_report_pick_pack_${dateStr}.html`);
+  link.setAttribute('download', `skladovy_report${whSlug}_${dateStr}.html`);
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
