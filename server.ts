@@ -22,6 +22,7 @@ import {
   revokeRefreshToken,
 } from './src/server/auth.js';
 import { generateSampleWarehouseData } from './src/server/sampleData.js';
+import { generateSampleSvjData } from './src/server/sampleDataSvj.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -84,9 +85,10 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
     }
 
     if (process.env.NODE_ENV !== 'production' && !process.env.DB_HOST && !process.env.MARIADB_HOST && status.totalRows === 0) {
-      console.log('Generuji ukázková data skladu pro vývojové prostředí...');
-      const samples = generateSampleWarehouseData(14, 380);
-      await insertMovements(samples);
+      console.log('Generuji ukázková data pro sklady Ruse a SVJ pro vývojové prostředí...');
+      const ruseSamples = generateSampleWarehouseData(14, 380);
+      const svjSamples = generateSampleSvjData(14, 35);
+      await insertMovements([...ruseSamples, ...svjSamples]);
     }
   } catch (err: any) {
     console.error('Chyba při inicializaci DB:', err?.message || err);
@@ -216,8 +218,9 @@ app.post('/api/db/save', async (req, res) => {
 // Movements Endpoints
 app.get('/api/movements', async (req, res) => {
   try {
-    const { dateFrom, dateTo, bracket, box, query, limit, offset } = req.query;
+    const { warehouse, dateFrom, dateTo, bracket, box, query, limit, offset } = req.query;
     const result = await getMovements({
+      warehouse: warehouse as string,
       dateFrom: dateFrom as string,
       dateTo: dateTo as string,
       bracket: bracket as string,
@@ -251,27 +254,60 @@ app.post('/api/movements/import', async (req, res) => {
   }
 });
 
+// Seed sample data for Ruse
 app.post('/api/movements/seed-sample', async (req, res) => {
   try {
     const count = Number(req.body.count) || 400;
     const days = Number(req.body.days) || 14;
-    await clearMovements();
+    const clearOnlyThis = req.body.clearOnlyThis !== false;
+    if (clearOnlyThis) {
+      await clearMovements('ruse');
+    } else {
+      await clearMovements();
+    }
     const records = generateSampleWarehouseData(days, count);
     const result = await insertMovements(records);
     res.json({
       success: true,
       importedCount: result.count,
-      message: `Vygenerováno a vloženo ${result.count} ukázkových záznamů za ${days} dní.`,
+      message: `Vygenerováno a vloženo ${result.count} ukázkových záznamů pro sklad Ruse.`,
     });
   } catch (err: any) {
-    res.status(500).json({ error: err?.message || 'Chyba při generování vzorových dat' });
+    res.status(500).json({ error: err?.message || 'Chyba při generování vzorových dat Ruse' });
+  }
+});
+
+// Seed sample data for SVJ (Picking + Sorting + Manual Packing)
+app.post('/api/movements/seed-svj', async (req, res) => {
+  try {
+    const boxesCount = Number(req.body.boxes) || 35;
+    const days = Number(req.body.days) || 14;
+    const clearOnlyThis = req.body.clearOnlyThis !== false;
+    if (clearOnlyThis) {
+      await clearMovements('svj');
+    }
+    const records = generateSampleSvjData(days, boxesCount);
+    const result = await insertMovements(records);
+    res.json({
+      success: true,
+      importedCount: result.count,
+      message: `Vygenerováno a vloženo ${result.count} ukázkových záznamů pro sklad SVJ (včetně operace sortingu).`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Chyba při generování vzorových dat SVJ' });
   }
 });
 
 app.delete('/api/movements', async (req, res) => {
   try {
-    await clearMovements();
-    res.json({ success: true, message: 'Všechna data o pohybech byla promazána.' });
+    const warehouse = (req.query.warehouse || req.body?.warehouse) as string | undefined;
+    await clearMovements(warehouse);
+    res.json({
+      success: true,
+      message: warehouse && warehouse !== 'all'
+        ? `Data o pohybech pro sklad '${warehouse}' byla promazána.`
+        : 'Všechna data o pohybech byla promazána.',
+    });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Chyba při mazání dat' });
   }

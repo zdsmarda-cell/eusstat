@@ -203,25 +203,37 @@ export async function initMariaDbSchema(p: mysql.Pool): Promise<void> {
   const createTableSql = `
     CREATE TABLE IF NOT EXISTS warehouse_movements (
       id INT AUTO_INCREMENT PRIMARY KEY,
+      warehouse VARCHAR(50) NOT NULL DEFAULT 'ruse',
       box_id VARCHAR(100) NULL,
       sberny_box VARCHAR(100) NOT NULL,
+      cycle_no INT NULL DEFAULT 1,
       obsah_objednavek VARCHAR(100) NOT NULL,
       pocet_produktu INT NOT NULL,
       ean_produktu VARCHAR(100) NOT NULL,
       pocet_ks INT NOT NULL DEFAULT 1,
       zacatek_pickovani DATETIME NOT NULL,
       konec_pickovani DATETIME NOT NULL,
+      zacatek_sortingu DATETIME NULL,
+      konec_sortingu DATETIME NULL,
       zacatek_baleni DATETIME NOT NULL,
       konec_baleni DATETIME NOT NULL,
       pick_duration_s DECIMAL(10,2) NOT NULL,
+      sort_duration_s DECIMAL(10,2) NULL DEFAULT 0,
       pack_duration_s DECIMAL(10,2) NOT NULL,
       pick_per_item_s DECIMAL(10,2) NOT NULL,
+      sort_per_item_s DECIMAL(10,2) NULL DEFAULT 0,
       pack_per_item_s DECIMAL(10,2) NOT NULL,
       bracket VARCHAR(10) NOT NULL,
-      packer VARCHAR(50) NULL,
+      packer VARCHAR(100) NULL,
+      station VARCHAR(50) NULL,
       sec_per_scan DECIMAL(10,2) NULL,
+      wait_after_picking_min DECIMAL(10,2) NULL,
+      wait_sort_to_pack_min DECIMAL(10,2) NULL,
       wait_pick_to_pack_min DECIMAL(10,2) NULL,
+      is_sorted TINYINT(1) DEFAULT 1,
+      is_packed TINYINT(1) DEFAULT 1,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_warehouse (warehouse),
       INDEX idx_box (sberny_box),
       INDEX idx_box_id (box_id),
       INDEX idx_order (obsah_objednavek),
@@ -233,10 +245,19 @@ export async function initMariaDbSchema(p: mysql.Pool): Promise<void> {
 
   // Soft migration for existing tables if columns are missing
   try {
-    await p.query('ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS box_id VARCHAR(100) NULL AFTER id');
-    await p.query('ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS packer VARCHAR(50) NULL AFTER bracket');
-    await p.query('ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS sec_per_scan DECIMAL(10,2) NULL AFTER packer');
-    await p.query('ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS wait_pick_to_pack_min DECIMAL(10,2) NULL AFTER sec_per_scan');
+    await p.query("ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS warehouse VARCHAR(50) NOT NULL DEFAULT 'ruse' AFTER id");
+    await p.query('ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS box_id VARCHAR(100) NULL AFTER warehouse');
+    await p.query('ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS cycle_no INT NULL DEFAULT 1 AFTER sberny_box');
+    await p.query('ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS zacatek_sortingu DATETIME NULL AFTER konec_pickovani');
+    await p.query('ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS konec_sortingu DATETIME NULL AFTER zacatek_sortingu');
+    await p.query('ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS sort_duration_s DECIMAL(10,2) NULL DEFAULT 0 AFTER pick_duration_s');
+    await p.query('ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS sort_per_item_s DECIMAL(10,2) NULL DEFAULT 0 AFTER pick_per_item_s');
+    await p.query('ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS station VARCHAR(50) NULL AFTER packer');
+    await p.query('ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS wait_after_picking_min DECIMAL(10,2) NULL AFTER sec_per_scan');
+    await p.query('ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS wait_sort_to_pack_min DECIMAL(10,2) NULL AFTER wait_after_picking_min');
+    await p.query('ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS wait_pick_to_pack_min DECIMAL(10,2) NULL AFTER wait_sort_to_pack_min');
+    await p.query('ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS is_sorted TINYINT(1) DEFAULT 1 AFTER wait_pick_to_pack_min');
+    await p.query('ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS is_packed TINYINT(1) DEFAULT 1 AFTER is_sorted');
   } catch {
     // Column might already exist
   }
@@ -380,32 +401,44 @@ async function insertMovementsDirect(p: mysql.Pool, records: MovementRecord[]): 
 
   const insertSql = `
     INSERT INTO warehouse_movements (
-      box_id, sberny_box, obsah_objednavek, pocet_produktu, ean_produktu, pocet_ks,
-      zacatek_pickovani, konec_pickovani, zacatek_baleni, konec_baleni,
-      pick_duration_s, pack_duration_s, pick_per_item_s, pack_per_item_s, bracket,
-      packer, sec_per_scan, wait_pick_to_pack_min
+      warehouse, box_id, sberny_box, cycle_no, obsah_objednavek, pocet_produktu, ean_produktu, pocet_ks,
+      zacatek_pickovani, konec_pickovani, zacatek_sortingu, konec_sortingu, zacatek_baleni, konec_baleni,
+      pick_duration_s, sort_duration_s, pack_duration_s, pick_per_item_s, sort_per_item_s, pack_per_item_s,
+      bracket, packer, station, sec_per_scan, wait_after_picking_min, wait_sort_to_pack_min, wait_pick_to_pack_min,
+      is_sorted, is_packed
     ) VALUES ?
   `;
 
   const values = records.map(r => [
+    r.warehouse || 'ruse',
     r.box_id ? String(r.box_id) : null,
     r.sberny_box,
+    r.cycle_no || 1,
     r.obsah_objednavek,
     r.pocet_produktu,
     r.ean_produktu,
     r.pocet_ks || 1,
     safeDate(r.zacatek_pickovani),
     safeDate(r.konec_pickovani),
+    r.zacatek_sortingu ? safeDate(r.zacatek_sortingu) : null,
+    r.konec_sortingu ? safeDate(r.konec_sortingu) : null,
     safeDate(r.zacatek_baleni),
     safeDate(r.konec_baleni),
     r.pick_duration_s || 0,
+    r.sort_duration_s || 0,
     r.pack_duration_s || 0,
     r.pick_per_item_s || 0,
+    r.sort_per_item_s || 0,
     r.pack_per_item_s || 0,
     r.bracket || '1',
     r.packer || null,
+    r.station || null,
     r.sec_per_scan !== undefined ? r.sec_per_scan : null,
+    r.wait_after_picking_min !== undefined ? r.wait_after_picking_min : null,
+    r.wait_sort_to_pack_min !== undefined ? r.wait_sort_to_pack_min : null,
     r.wait_pick_to_pack_min !== undefined ? r.wait_pick_to_pack_min : null,
+    r.is_sorted !== undefined ? (r.is_sorted ? 1 : 0) : 1,
+    r.is_packed !== undefined ? (r.is_packed ? 1 : 0) : 1,
   ]);
 
   const chunkSize = 500;
@@ -441,6 +474,7 @@ export async function insertMovements(records: MovementRecord[]): Promise<{ coun
 }
 
 export async function getMovements(params: {
+  warehouse?: string;
   dateFrom?: string;
   dateTo?: string;
   bracket?: string;
@@ -456,6 +490,10 @@ export async function getMovements(params: {
       let conditions: string[] = [];
       let queryParams: any[] = [];
 
+      if (params.warehouse && params.warehouse !== 'all') {
+        conditions.push('warehouse = ?');
+        queryParams.push(params.warehouse);
+      }
       if (params.dateFrom) {
         conditions.push('zacatek_pickovani >= ?');
         queryParams.push(`${params.dateFrom} 00:00:00`);
@@ -491,20 +529,29 @@ export async function getMovements(params: {
 
       const [rows]: any = await p.query(
         `SELECT 
-          id, box_id, sberny_box, obsah_objednavek, pocet_produktu, ean_produktu, pocet_ks,
+          id, warehouse, box_id, sberny_box, cycle_no, obsah_objednavek, pocet_produktu, ean_produktu, pocet_ks,
           DATE_FORMAT(zacatek_pickovani, '%Y-%m-%dT%H:%i:%s') as zacatek_pickovani,
           DATE_FORMAT(konec_pickovani, '%Y-%m-%dT%H:%i:%s') as konec_pickovani,
+          DATE_FORMAT(zacatek_sortingu, '%Y-%m-%dT%H:%i:%s') as zacatek_sortingu,
+          DATE_FORMAT(konec_sortingu, '%Y-%m-%dT%H:%i:%s') as konec_sortingu,
           DATE_FORMAT(zacatek_baleni, '%Y-%m-%dT%H:%i:%s') as zacatek_baleni,
           DATE_FORMAT(konec_baleni, '%Y-%m-%dT%H:%i:%s') as konec_baleni,
           CAST(pick_duration_s AS DOUBLE) as pick_duration_s,
+          CAST(sort_duration_s AS DOUBLE) as sort_duration_s,
           CAST(pack_duration_s AS DOUBLE) as pack_duration_s,
           CAST(pick_per_item_s AS DOUBLE) as pick_per_item_s,
+          CAST(sort_per_item_s AS DOUBLE) as sort_per_item_s,
           CAST(pack_per_item_s AS DOUBLE) as pack_per_item_s,
-          ROUND(CAST(pick_per_item_s AS DOUBLE) + CAST(pack_per_item_s AS DOUBLE), 2) as total_per_item_s,
+          ROUND(CAST(pick_per_item_s AS DOUBLE) + CAST(sort_per_item_s AS DOUBLE) + CAST(pack_per_item_s AS DOUBLE), 2) as total_per_item_s,
           bracket,
           packer,
+          station,
           CAST(sec_per_scan AS DOUBLE) as sec_per_scan,
+          CAST(wait_after_picking_min AS DOUBLE) as wait_after_picking_min,
+          CAST(wait_sort_to_pack_min AS DOUBLE) as wait_sort_to_pack_min,
           CAST(wait_pick_to_pack_min AS DOUBLE) as wait_pick_to_pack_min,
+          is_sorted,
+          is_packed,
           created_at
         FROM warehouse_movements ${whereClause}
         ORDER BY zacatek_pickovani DESC
@@ -526,6 +573,9 @@ export async function getMovements(params: {
   // Fallback to disk-persisted store
   let filtered = [...memoryMovements];
 
+  if (params.warehouse && params.warehouse !== 'all') {
+    filtered = filtered.filter(r => (r.warehouse || 'ruse') === params.warehouse);
+  }
   if (params.dateFrom) {
     const fromTime = new Date(`${params.dateFrom}T00:00:00`).getTime();
     filtered = filtered.filter(r => new Date(r.zacatek_pickovani).getTime() >= fromTime);
@@ -562,14 +612,22 @@ export async function getMovements(params: {
   };
 }
 
-export async function clearMovements(): Promise<void> {
-  memoryMovements = [];
+export async function clearMovements(warehouse?: string): Promise<void> {
+  if (warehouse && warehouse !== 'all') {
+    memoryMovements = memoryMovements.filter(r => (r.warehouse || 'ruse') !== warehouse);
+  } else {
+    memoryMovements = [];
+  }
   saveMovementsToDisk();
 
   const p = await getPool();
   if (p) {
     try {
-      await p.query('TRUNCATE TABLE warehouse_movements');
+      if (warehouse && warehouse !== 'all') {
+        await p.query('DELETE FROM warehouse_movements WHERE warehouse = ?', [warehouse]);
+      } else {
+        await p.query('TRUNCATE TABLE warehouse_movements');
+      }
     } catch {
       // ignore
     }

@@ -145,6 +145,7 @@ export function generateSampleWarehouseData(daysBack: number = 14, totalRecords:
 
     records.push({
       id: i + 1,
+      warehouse: 'ruse',
       box_id: currentBoxId,
       sberny_box: randomBoxCode,
       obsah_objednavek: orderId,

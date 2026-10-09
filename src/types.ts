@@ -21,30 +21,43 @@ export interface DbStatus {
   lastError?: string;
 }
 
+export type WarehouseId = 'ruse' | 'svj';
+
 export interface MovementRecord {
   id?: string | number;
+  warehouse?: WarehouseId; // 'ruse' | 'svj'
   box_id?: string | number;
-  sberny_box: string; // box_code e.g. L1Z2-TR-0252
-  obsah_objednavek: string; // order_id e.g. 8385399
+  sberny_box: string; // box_code e.g. L1Z2-TR-0252 or 0140933
+  cycle_no?: number;
+  obsah_objednavek: string; // order_id / order_uid e.g. 4406312851
   pocet_produktu: number; // total units in order
   ean_produktu: string; // ean or sample ean
   pocet_ks: number; // units of this ean
   zacatek_pickovani: string; // ISO string
   konec_pickovani: string;   // ISO string
+  zacatek_sortingu?: string;  // ISO string (SVJ)
+  konec_sortingu?: string;    // ISO string (SVJ)
   zacatek_baleni: string;      // ISO string
   konec_baleni: string;        // ISO string
   pick_duration_s: number;
-  pack_duration_s: number;
+  sort_duration_s?: number;    // SVJ sorting duration in seconds
+  pack_duration_s: number;     // manual packing duration in seconds
   pick_per_item_s: number;
+  sort_per_item_s?: number;    // SVJ sorting per item in seconds
   pack_per_item_s: number;
   total_per_item_s: number;
   bracket: ItemBracket;
   packer?: string;
+  station?: string;            // pack station e.g. (javi-4)
   sec_per_scan?: number;
-  wait_pick_to_pack_min?: number;
+  wait_after_picking_min?: number; // wait between picking and sorting in minutes (SVJ)
+  wait_sort_to_pack_min?: number;  // wait between sorting and packing in minutes (SVJ)
+  wait_pick_to_pack_min?: number;  // total buffer time between picking and packing in minutes
   box_unique_eans?: number; // count of unique EANs in the parent box
   box_total_units?: number; // total units in the parent box
   box_shared_skus_count?: number; // count of SKUs that appear in >1 order in this box
+  is_sorted?: boolean; // flag if order was sorted
+  is_packed?: boolean; // flag if order was packed
   created_at?: string;
 }
 
@@ -299,4 +312,59 @@ export interface FilterState {
   searchQuery: string;
   excludeOutliers: boolean; // filter duration > 1800s (30 mins)
   unit: 'sec' | 'min';
+}
+
+export interface SvjTriFileParseResult {
+  records: MovementRecord[];
+  pickingRowsCount: number;
+  sortingRowsCount: number;
+  packingRowsCount: number;
+  uniqueOrdersPicked: number;
+  uniqueOrdersSorted: number;
+  uniqueOrdersPacked: number;
+  matchedCompleteOrders: number;
+  droppedUnsortedOrders: number;
+  droppedUnpackedOrders: number;
+  errors: string[];
+}
+
+export interface WarehouseComparisonBracket {
+  bracket: ItemBracket | 'all';
+  label: string;
+  ruseOrders: number;
+  svjOrders: number;
+  ruseAvgPickPerItemSec: number;
+  svjAvgPickPerItemSec: number;
+  ruseAvgPackPerItemSec: number;
+  svjAvgPackPerItemSec: number;
+  svjAvgSortPerItemSec: number;
+  ruseTotalPerItemSec: number;
+  svjTotalPerItemSec: number;
+  pickDiffPct: number;
+  packDiffPct: number;
+}
+
+export interface WarehouseComparisonReport {
+  periodDays: number;
+  ruseTotalOrders: number;
+  svjTotalOrders: number;
+  ruseTotalUnits: number;
+  svjTotalUnits: number;
+  ruseTotalSkus: number;
+  svjTotalSkus: number;
+  ruseAvgUnitsPerOrder: number;
+  svjAvgUnitsPerOrder: number;
+  ruseMedianOrdersPerBox: number;
+  svjMedianOrdersPerBox: number;
+  ruseAvgPickPerItemSec: number;
+  svjAvgPickPerItemSec: number;
+  ruseAvgPackPerItemSec: number;
+  svjAvgPackPerItemSec: number;
+  svjAvgSortPerItemSec: number;
+  ruseAvgWaitPickToPackMin: number;
+  svjAvgWaitPickToSortMin: number;
+  svjAvgWaitSortToPackMin: number;
+  ruseAvgTotalLeadTimeMin: number;
+  svjAvgTotalLeadTimeMin: number;
+  bracketComparisons: WarehouseComparisonBracket[];
 }
