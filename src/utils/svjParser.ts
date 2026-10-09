@@ -279,6 +279,7 @@ export function joinSvjTriFiles(files: SvjInputFile[]): SvjTriFileParseResult {
     uniqueOrdersPickedCount += ordersInBox;
 
     // Parsování seznamu produktů v boxu (např. "NBC001490 x1, NBC028765 x1, NBC052867 x2")
+    // Každé SKU v seznamu odděleném čárkou má tvar: <SKU_prefix> x<počet_ks>
     const prodCodesRaw = String((kProdCodes ? row[kProdCodes] : '') || '');
     const productItems: { ean: string; qty: number }[] = [];
     if (prodCodesRaw) {
@@ -286,17 +287,24 @@ export function joinSvjTriFiles(files: SvjInputFile[]): SvjTriFileParseResult {
       for (const p of parts) {
         const trimmed = p.trim();
         if (!trimmed) continue;
-        const match = trimmed.match(/^([a-zA-Z0-9_\-]+)(?:\s*[xX*]\s*(\d+))?/);
+        // Hledáme suffix xN nebo *N na konci, prefix před tím je čisté SKU
+        const match = trimmed.match(/^(.*?)(?:\s*[xX*]\s*(\d+))\s*$/);
         if (match) {
-          productItems.push({
-            ean: match[1],
-            qty: match[2] ? parseInt(match[2], 10) : 1,
-          });
+          const sku = match[1].trim();
+          const qty = parseInt(match[2], 10) || 1;
+          if (sku) {
+            productItems.push({ ean: sku, qty });
+          }
         } else {
+          // Pokud xN na konci chybí, vezmeme celý kód
           productItems.push({ ean: trimmed, qty: 1 });
         }
       }
     }
+
+    const prodCodesUnitsSum = productItems.reduce((sum, item) => sum + item.qty, 0);
+    // Pokud sloupec units v CSV chyběl nebo byl 1, ale v product_codes je součet kusů vyšší, použijeme reálný součet
+    const effectiveUnits = totalUnits > 1 ? totalUnits : (prodCodesUnitsSum > 0 ? prodCodesUnitsSum : totalUnits);
 
     const uniqueEansCount = Math.max(1, new Set(productItems.map(p => p.ean)).size);
     const defaultEan = productItems[0]?.ean || 'SVJ_PROD_01';
@@ -325,13 +333,13 @@ export function joinSvjTriFiles(files: SvjInputFile[]): SvjTriFileParseResult {
         droppedUnpackedCount += 1;
       }
 
-      // Přesný počet kusů pro pickování (ze souboru pickingu) a sortingu (ze souboru sortingu):
+      // Přesný počet kusů pro pickování (ze souboru pickingu nebo ze součtu product_codes) a sortingu:
       let orderPickedUnits = 1;
-      if (totalUnits <= ordersInBox) {
+      if (effectiveUnits <= ordersInBox) {
         orderPickedUnits = 1;
       } else {
-        const base = Math.floor(totalUnits / ordersInBox);
-        const remainder = totalUnits % ordersInBox;
+        const base = Math.floor(effectiveUnits / ordersInBox);
+        const remainder = effectiveUnits % ordersInBox;
         orderPickedUnits = base + (idx < remainder ? 1 : 0);
       }
 
@@ -348,12 +356,13 @@ export function joinSvjTriFiles(files: SvjInputFile[]): SvjTriFileParseResult {
       }
 
       const orderUnits = orderPickedUnits;
-      const assignedEan = productItems[idx % Math.max(1, productItems.length)]?.ean || defaultEan;
+      const assignedItem = productItems[idx % Math.max(1, productItems.length)];
+      const assignedEan = assignedItem?.ean || defaultEan;
       const bracket = getBracket(orderUnits);
 
       // Alokace časů picku
-      const orderPickSec = totalUnits > 0
-        ? Number(((boxPickSec / totalUnits) * orderUnits).toFixed(1))
+      const orderPickSec = effectiveUnits > 0
+        ? Number(((boxPickSec / effectiveUnits) * orderUnits).toFixed(1))
         : Number((boxPickSec / ordersInBox).toFixed(1));
       const pickPerItemSec = orderUnits > 0 ? Number((orderPickSec / orderUnits).toFixed(1)) : orderPickSec;
 
