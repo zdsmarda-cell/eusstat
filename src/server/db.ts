@@ -215,14 +215,14 @@ export async function initMariaDbSchema(p: mysql.Pool): Promise<void> {
       konec_pickovani DATETIME NOT NULL,
       zacatek_sortingu DATETIME NULL,
       konec_sortingu DATETIME NULL,
-      zacatek_baleni DATETIME NOT NULL,
-      konec_baleni DATETIME NOT NULL,
+      zacatek_baleni DATETIME NULL,
+      konec_baleni DATETIME NULL,
       pick_duration_s DECIMAL(10,2) NOT NULL,
       sort_duration_s DECIMAL(10,2) NULL DEFAULT 0,
-      pack_duration_s DECIMAL(10,2) NOT NULL,
+      pack_duration_s DECIMAL(10,2) NULL DEFAULT 0,
       pick_per_item_s DECIMAL(10,2) NOT NULL,
       sort_per_item_s DECIMAL(10,2) NULL DEFAULT 0,
-      pack_per_item_s DECIMAL(10,2) NOT NULL,
+      pack_per_item_s DECIMAL(10,2) NULL DEFAULT 0,
       bracket VARCHAR(10) NOT NULL,
       packer VARCHAR(100) NULL,
       station VARCHAR(50) NULL,
@@ -258,6 +258,10 @@ export async function initMariaDbSchema(p: mysql.Pool): Promise<void> {
     await p.query('ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS wait_pick_to_pack_min DECIMAL(10,2) NULL AFTER wait_sort_to_pack_min');
     await p.query('ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS is_sorted TINYINT(1) DEFAULT 1 AFTER wait_pick_to_pack_min');
     await p.query('ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS is_packed TINYINT(1) DEFAULT 1 AFTER is_sorted');
+    await p.query('ALTER TABLE warehouse_movements MODIFY COLUMN zacatek_baleni DATETIME NULL');
+    await p.query('ALTER TABLE warehouse_movements MODIFY COLUMN konec_baleni DATETIME NULL');
+    await p.query('ALTER TABLE warehouse_movements MODIFY COLUMN pack_duration_s DECIMAL(10,2) NULL DEFAULT 0');
+    await p.query('ALTER TABLE warehouse_movements MODIFY COLUMN pack_per_item_s DECIMAL(10,2) NULL DEFAULT 0');
   } catch {
     // Column might already exist
   }
@@ -377,6 +381,51 @@ function safeDate(val: any): Date {
   return isNaN(d.getTime()) ? new Date() : d;
 }
 
+function safeDateNullable(val: any): Date | null {
+  if (!val) return null;
+  const d = new Date(val);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+let saveDiskTimeout: NodeJS.Timeout | null = null;
+let isSavingDisk = false;
+let pendingSaveDisk = false;
+
+async function saveMovementsToDiskAsync(): Promise<void> {
+  if (isSavingDisk) {
+    pendingSaveDisk = true;
+    return;
+  }
+  isSavingDisk = true;
+  pendingSaveDisk = false;
+  try {
+    const jsonStr = JSON.stringify(memoryMovements);
+    await fs.promises.writeFile(PERSISTENT_DATA_PATH, jsonStr, 'utf-8');
+  } catch (err) {
+    console.error('Failed to save movements to disk:', err);
+  } finally {
+    isSavingDisk = false;
+    if (pendingSaveDisk) {
+      saveMovementsToDiskAsync();
+    }
+  }
+}
+
+export function scheduleSaveMovementsToDisk(delayMs = 2000): void {
+  if (saveDiskTimeout) clearTimeout(saveDiskTimeout);
+  saveDiskTimeout = setTimeout(() => {
+    saveMovementsToDiskAsync();
+  }, delayMs);
+}
+
+export async function flushMovementsToDisk(): Promise<void> {
+  if (saveDiskTimeout) {
+    clearTimeout(saveDiskTimeout);
+    saveDiskTimeout = null;
+  }
+  await saveMovementsToDiskAsync();
+}
+
 /**
  * Automatická migrace záznamů z diskového úložiště do MariaDB,
  * pokud se právě připojila prázdná databáze.
@@ -420,10 +469,10 @@ async function insertMovementsDirect(p: mysql.Pool, records: MovementRecord[]): 
     r.pocet_ks || 1,
     safeDate(r.zacatek_pickovani),
     safeDate(r.konec_pickovani),
-    r.zacatek_sortingu ? safeDate(r.zacatek_sortingu) : null,
-    r.konec_sortingu ? safeDate(r.konec_sortingu) : null,
-    safeDate(r.zacatek_baleni),
-    safeDate(r.konec_baleni),
+    r.zacatek_sortingu ? safeDateNullable(r.zacatek_sortingu) : null,
+    r.konec_sortingu ? safeDateNullable(r.konec_sortingu) : null,
+    r.zacatek_baleni ? safeDateNullable(r.zacatek_baleni) : null,
+    r.konec_baleni ? safeDateNullable(r.konec_baleni) : null,
     r.pick_duration_s || 0,
     r.sort_duration_s || 0,
     r.pack_duration_s || 0,
@@ -441,7 +490,8 @@ async function insertMovementsDirect(p: mysql.Pool, records: MovementRecord[]): 
     r.is_packed !== undefined ? (r.is_packed ? 1 : 0) : 1,
   ]);
 
-  const chunkSize = 500;
+  // Větší chunk size 2500 pro radikálně rychlejší MariaDB import
+  const chunkSize = 2500;
   for (let i = 0; i < values.length; i += chunkSize) {
     const chunk = values.slice(i, i + chunkSize);
     await p.query(insertSql, [chunk]);
@@ -455,11 +505,7 @@ export async function insertMovements(records: MovementRecord[]): Promise<{ coun
   if (p) {
     try {
       await insertMovementsDirect(p, records);
-
-      // Keep cache synced
-      memoryMovements = [...records, ...memoryMovements];
-      saveMovementsToDisk();
-
+      // MariaDB je primární úložiště; neblokujeme event loop zápisem stovek tisíc záznamů do RAM ani na disk
       return { count: records.length, destination: 'mariadb' };
     } catch (err: any) {
       console.error('❌ Chyba při vkládání do MariaDB, ukládám do lokálního perzistentního úložiště:', err?.message || err);
@@ -467,9 +513,9 @@ export async function insertMovements(records: MovementRecord[]): Promise<{ coun
     }
   }
 
-  // Fallback to disk-persisted store
+  // Fallback do diskového úložiště – asynchronně a debouncovaně, aby Express nezamrzal
   memoryMovements = [...records, ...memoryMovements];
-  saveMovementsToDisk();
+  scheduleSaveMovementsToDisk(1500);
   return { count: records.length, destination: 'memory' };
 }
 
@@ -618,7 +664,7 @@ export async function clearMovements(warehouse?: string): Promise<void> {
   } else {
     memoryMovements = [];
   }
-  saveMovementsToDisk();
+  scheduleSaveMovementsToDisk(500);
 
   const p = await getPool();
   if (p) {

@@ -315,30 +315,51 @@ function Dashboard() {
       }
     }
 
-    const BATCH_SIZE = 2500;
+    // Optimal batch size 10 000 záznamů pro bleskurychlý import bez timeoutu
+    const BATCH_SIZE = 10000;
     const total = newRecords.length;
     let saved = 0;
 
     for (let i = 0; i < total; i += BATCH_SIZE) {
       const batch = newRecords.slice(i, i + BATCH_SIZE);
-      const res = await authFetch(apiUrl('/api/movements/import'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ records: batch }),
-      });
 
-      const responseText = await res.text();
-      let data: any;
-      try {
-        data = JSON.parse(responseText);
-      } catch {
-        throw new Error(
-          `Server returned invalid response (${res.status}): ${responseText.slice(0, 100)}`
-        );
+      let success = false;
+      let lastErr: any = null;
+
+      // Robustní retry mechanismus pro případ síťového výkyvu
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const res = await authFetch(apiUrl('/api/movements/import'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ records: batch }),
+          });
+
+          if (!res.ok) {
+            const responseText = await res.text();
+            let errMsg = `Chyba serveru (${res.status})`;
+            try {
+              const data = JSON.parse(responseText);
+              if (data?.error) errMsg = data.error;
+            } catch {
+              // ignore
+            }
+            throw new Error(errMsg);
+          }
+
+          success = true;
+          break;
+        } catch (err: any) {
+          lastErr = err;
+          if (attempt < 3) {
+            // Pauza před opakováním
+            await new Promise(r => setTimeout(r, 1000 * attempt));
+          }
+        }
       }
 
-      if (!res.ok) {
-        throw new Error(data?.error || `Error saving records (${res.status})`);
+      if (!success) {
+        throw new Error(lastErr?.message || (isCs ? 'Chyba při odesílání dávky do databáze' : 'Error sending batch to database'));
       }
 
       saved += batch.length;
@@ -347,11 +368,37 @@ function Dashboard() {
       }
     }
 
-    await fetchData();
+    // Zajistit uložení dat na serveru
+    try {
+      await authFetch(apiUrl('/api/movements/flush'), { method: 'POST' });
+    } catch {
+      // ignore
+    }
+
+    // Aktualizovat lokální stav okamžitě bez nutnosti stahovat 300k záznamů zpět přes síť
+    setRecords(prev => {
+      if (replaceExisting) {
+        const others = prev.filter(r => (r.warehouse || 'ruse') !== targetWarehouse);
+        return [...newRecords, ...others];
+      }
+      return [...newRecords, ...prev];
+    });
+
+    // Aktualizovat stav DB
+    try {
+      const statusRes = await authFetch(apiUrl('/api/db/status'));
+      if (statusRes.ok) {
+        const sData = await statusRes.json();
+        setDbStatus(sData);
+      }
+    } catch {
+      // ignore
+    }
+
     showToast(
       isCs
-        ? `Úspěšně importováno ${total} záznamů pro sklad ${targetWarehouse.toUpperCase()}!`
-        : `Successfully imported ${total} records for ${targetWarehouse.toUpperCase()}!`,
+        ? `Úspěšně importováno všech ${total.toLocaleString('cs-CZ')} záznamů pro sklad ${targetWarehouse.toUpperCase()}!`
+        : `Successfully imported all ${total.toLocaleString()} records for ${targetWarehouse.toUpperCase()}!`,
       'success'
     );
   };

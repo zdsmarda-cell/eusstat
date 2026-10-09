@@ -477,7 +477,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
               <span>{isCs ? 'Přehled připravených dat k importu:' : 'Prepared import data:'}</span>
               <span className="text-emerald-400 font-mono">
                 {targetWarehouse === 'svj'
-                  ? `${svjParseResult?.matchedCompleteOrders.toLocaleString('cs-CZ')} spárovaných zakázek`
+                  ? `${svjParseResult?.records.length.toLocaleString('cs-CZ')} objednávek (vše připraveno k importu)`
                   : `${parseResult?.records.length.toLocaleString('cs-CZ')} zakázek`}
               </span>
             </div>
@@ -485,24 +485,22 @@ export const ImportModal: React.FC<ImportModalProps> = ({
             {targetWarehouse === 'svj' && svjParseResult && (
               <div className="text-[11px] text-slate-400 space-y-1">
                 <div className="flex items-center justify-between">
-                  <span>{isCs ? 'Vypickováno v boxech:' : 'Picked in totes:'}</span>
-                  <span className="font-mono text-slate-300">{svjParseResult.uniqueOrdersPicked} obj.</span>
+                  <span>{isCs ? 'Celkem vypickováno v boxech (k importu do DB):' : 'Total picked in boxes (to DB import):'}</span>
+                  <span className="font-mono text-emerald-400 font-bold">{svjParseResult.uniqueOrdersPicked.toLocaleString('cs-CZ')} obj.</span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span>{isCs ? 'Z toho prošlo sortingem:' : 'Processed via sorting:'}</span>
-                  <span className="font-mono text-purple-300">{svjParseResult.uniqueOrdersSorted} obj.</span>
+                  <span>{isCs ? 'Z toho prošlo procesem sortingu:' : 'Processed via sorting:'}</span>
+                  <span className="font-mono text-purple-300">{svjParseResult.uniqueOrdersSorted.toLocaleString('cs-CZ')} obj.</span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span>{isCs ? 'Z toho prošlo ručním balením:' : 'Processed via manual packing:'}</span>
-                  <span className="font-mono text-emerald-300 font-bold">{svjParseResult.matchedCompleteOrders} obj. (100% spárováno)</span>
+                  <span>{isCs ? 'Z toho ověřené ruční balení (vstup pro packing KPI):' : 'Manual packing (input for packing KPI):'}</span>
+                  <span className="font-mono text-indigo-300 font-bold">{svjParseResult.uniqueOrdersPacked.toLocaleString('cs-CZ')} obj.</span>
                 </div>
-                {svjParseResult.droppedUnpackedOrders > 0 && (
-                  <div className="text-[10px] text-slate-500 pt-1">
-                    ℹ️ {isCs
-                      ? `${svjParseResult.droppedUnpackedOrders} vypickovaných zakázek nemá záznam v ručním balení (vynecháno pro přesné srovnání).`
-                      : `${svjParseResult.droppedUnpackedOrders} orders were not in manual pack log and were omitted.`}
-                  </div>
-                )}
+                <div className="text-[10px] text-slate-400 pt-1.5 border-t border-slate-800/80">
+                  ℹ️ {isCs
+                    ? `Do měsíčních statistik se naimportuje všech ${svjParseResult.records.length.toLocaleString('cs-CZ')} objednávek (pro celkové KPI, počty kusů a pick). Statistiky rychlosti balení se vyhodnocují výhradně z ${svjParseResult.uniqueOrdersPacked.toLocaleString('cs-CZ')} ručně balených zakázek.`
+                    : `All ${svjParseResult.records.length.toLocaleString()} orders are imported for monthly totals & picking. Packing speed KPIs will evaluate exclusively ${svjParseResult.uniqueOrdersPacked.toLocaleString()} manual packed orders.`}
+                </div>
               </div>
             )}
           </div>

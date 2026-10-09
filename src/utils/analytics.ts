@@ -196,22 +196,23 @@ export function computeBracketStatistics(records: MovementRecord[]): BracketStat
       : 0;
 
     const pickTotals = subset.map(r => r.pick_duration_s);
-    const packTotals = subset.map(r => r.pack_duration_s);
-
     const pickPerItems = subset.map(r => r.pick_per_item_s);
-    const packPerItems = subset.map(r => r.pack_per_item_s);
-    const totalPerItems = subset.map(r => r.total_per_item_s);
-
     const sumPickDuration = subset.reduce((acc, r) => acc + r.pick_duration_s, 0);
-    const sumPackDuration = subset.reduce((acc, r) => acc + r.pack_duration_s, 0);
 
     const avgPickTotalSec = sumPickDuration / shipmentCount;
-    const avgPackTotalSec = sumPackDuration / shipmentCount;
-
-    // Weighted average per item: Total Pick Time / Total Items
     const avgPickPerItemSec = totalItems > 0 ? sumPickDuration / totalItems : 0;
-    const avgPackPerItemSec = totalItems > 0 ? sumPackDuration / totalItems : 0;
+
+    // Statistika balení se počítá VÝHRADNĚ ze zásilek, které prošly ručním balením
+    const packedSubset = subset.filter(r => r.is_packed !== false && (r.pack_duration_s > 0 || (r.warehouse || 'ruse') === 'ruse'));
+    const packedShipmentCount = packedSubset.length;
+    const packedTotalItems = packedSubset.reduce((acc, r) => acc + (r.pocet_produktu || 1), 0);
+    const sumPackDuration = packedSubset.reduce((acc, r) => acc + r.pack_duration_s, 0);
+    const packPerItems = packedSubset.map(r => r.pack_per_item_s);
+
+    const avgPackTotalSec = packedShipmentCount > 0 ? sumPackDuration / packedShipmentCount : 0;
+    const avgPackPerItemSec = packedTotalItems > 0 ? sumPackDuration / packedTotalItems : 0;
     const avgTotalPerItemSec = avgPickPerItemSec + avgPackPerItemSec;
+    const totalPerItems = subset.map(r => r.total_per_item_s);
 
     statsMap.set(b, {
       bracket: b,

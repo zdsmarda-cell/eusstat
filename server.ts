@@ -1,4 +1,5 @@
 import express from 'express';
+import compression from 'compression';
 import http from 'http';
 import https from 'https';
 import tls from 'tls';
@@ -14,6 +15,7 @@ import {
   insertMovements,
   getMovements,
   clearMovements,
+  flushMovementsToDisk,
 } from './src/server/db.js';
 import {
   requireAuth,
@@ -57,6 +59,7 @@ if (process.env.APP_PORT) {
 }
 
 app.disable('x-powered-by');
+app.use(compression());
 
 // Security & CORS middleware
 app.use((req, res, next) => {
@@ -71,8 +74,8 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
 // Initial database connection check and schema verification
 (async () => {
@@ -251,6 +254,15 @@ app.post('/api/movements/import', async (req, res) => {
     });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Chyba při ukládání záznamů' });
+  }
+});
+
+app.post('/api/movements/flush', async (_req, res) => {
+  try {
+    await flushMovementsToDisk();
+    res.json({ success: true, message: 'Data byla zapsána na disk.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Chyba při zápisu na disk' });
   }
 });
 

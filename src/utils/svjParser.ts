@@ -302,27 +302,25 @@ export function joinSvjTriFiles(files: SvjInputFile[]): SvjTriFileParseResult {
     const sortInfo = sortMap.get(boxCode);
     const isBoxSorted = Boolean(sortInfo);
 
-    if (!isBoxSorted) {
+    if (isBoxSorted) {
+      uniqueOrdersSortedCount += ordersInBox;
+    } else {
       droppedUnsortedCount += ordersInBox;
-      continue; // Musí být sorted!
     }
 
-    uniqueOrdersSortedCount += ordersInBox;
-
-    // Nyní procházíme objednávky v daném boxu
+    // Nyní procházíme VŠECHNY objednávky v daném boxu – importují se všechny pro měsíční statistiky!
     for (let idx = 0; idx < orderList.length; idx++) {
       const orderUid = orderList[idx];
 
-      // Ověření ručního balení
+      // Ověření ručního balení (podmínka: musí projít sortingem i ručním balením)
       const packInfo = packMap.get(orderUid);
-      const isOrderPacked = Boolean(packInfo);
+      const isOrderPacked = isBoxSorted && Boolean(packInfo);
 
-      if (!isOrderPacked) {
+      if (isOrderPacked) {
+        uniqueOrdersPackedCount += 1;
+      } else {
         droppedUnpackedCount += 1;
-        continue; // Musí být i packed!
       }
-
-      uniqueOrdersPackedCount += 1;
 
       // Odhad počtu kusů na tuto objednávku
       let orderUnits = 1;
@@ -341,32 +339,32 @@ export function joinSvjTriFiles(files: SvjInputFile[]): SvjTriFileParseResult {
       const assignedEan = productItems[idx % Math.max(1, productItems.length)]?.ean || defaultEan;
       const bracket = getBracket(orderUnits);
 
-      // Alokace časů picku a sortingu na tuto objednávku
+      // Alokace časů picku
       const orderPickSec = totalUnits > 0
         ? Number(((boxPickSec / totalUnits) * orderUnits).toFixed(1))
         : Number((boxPickSec / ordersInBox).toFixed(1));
       const pickPerItemSec = orderUnits > 0 ? Number((orderPickSec / orderUnits).toFixed(1)) : orderPickSec;
 
-      const orderSortSec = sortInfo!.units_sorted > 0
-        ? Number(((sortInfo!.sort_sec / sortInfo!.units_sorted) * orderUnits).toFixed(1))
+      // Alokace časů sortingu (pouze pokud byl box vysortován)
+      const orderSortSec = (isBoxSorted && sortInfo && sortInfo.units_sorted > 0)
+        ? Number(((sortInfo.sort_sec / sortInfo.units_sorted) * orderUnits).toFixed(1))
         : 0;
-      const sortPerItemSec = orderUnits > 0 ? Number((orderSortSec / orderUnits).toFixed(1)) : 0;
+      const sortPerItemSec = (isBoxSorted && orderUnits > 0) ? Number((orderSortSec / orderUnits).toFixed(1)) : 0;
 
-      const orderPackSec = packInfo!.pack_sec;
-      const packPerItemSec = orderUnits > 0 ? Number((orderPackSec / orderUnits).toFixed(1)) : orderPackSec;
+      // Alokace balení (výhradně z ručního balení a po sortingu)
+      const orderPackSec = (isOrderPacked && packInfo) ? packInfo.pack_sec : 0;
+      const packPerItemSec = (isOrderPacked && packInfo && orderUnits > 0) ? Number((orderPackSec / orderUnits).toFixed(1)) : 0;
 
       const totalPerItemSec = Number((pickPerItemSec + sortPerItemSec + packPerItemSec).toFixed(1));
 
       // Čekací doby v procesních bufferech (SVJ)
-      const waitAfterPickMin = sortInfo!.wait_after_picking_min || 0;
-      const waitSortToPackMin = Math.max(
-        0,
-        Number(((packInfo!.pack_open.getTime() - sortInfo!.sort_end.getTime()) / (60 * 1000)).toFixed(1))
-      );
-      const waitPickToPackMin = Math.max(
-        0,
-        Number(((packInfo!.pack_open.getTime() - pickEnd.getTime()) / (60 * 1000)).toFixed(1))
-      );
+      const waitAfterPickMin = (isBoxSorted && sortInfo) ? (sortInfo.wait_after_picking_min || 0) : 0;
+      const waitSortToPackMin = (isOrderPacked && sortInfo && packInfo)
+        ? Math.max(0, Number(((packInfo.pack_open.getTime() - sortInfo.sort_end.getTime()) / (60 * 1000)).toFixed(1)))
+        : 0;
+      const waitPickToPackMin = (isOrderPacked && packInfo)
+        ? Math.max(0, Number(((packInfo.pack_open.getTime() - pickEnd.getTime()) / (60 * 1000)).toFixed(1)))
+        : 0;
 
       records.push({
         warehouse: 'svj',
@@ -378,10 +376,10 @@ export function joinSvjTriFiles(files: SvjInputFile[]): SvjTriFileParseResult {
         pocet_ks: orderUnits,
         zacatek_pickovani: formatLocalIso(pickStart),
         konec_pickovani: formatLocalIso(pickEnd),
-        zacatek_sortingu: formatLocalIso(sortInfo!.sort_start),
-        konec_sortingu: formatLocalIso(sortInfo!.sort_end),
-        zacatek_baleni: formatLocalIso(packInfo!.pack_open),
-        konec_baleni: formatLocalIso(packInfo!.packed),
+        zacatek_sortingu: isBoxSorted && sortInfo ? formatLocalIso(sortInfo.sort_start) : '',
+        konec_sortingu: isBoxSorted && sortInfo ? formatLocalIso(sortInfo.sort_end) : '',
+        zacatek_baleni: isOrderPacked && packInfo ? formatLocalIso(packInfo.pack_open) : '',
+        konec_baleni: isOrderPacked && packInfo ? formatLocalIso(packInfo.packed) : '',
         pick_duration_s: orderPickSec,
         sort_duration_s: orderSortSec,
         pack_duration_s: orderPackSec,
@@ -390,16 +388,16 @@ export function joinSvjTriFiles(files: SvjInputFile[]): SvjTriFileParseResult {
         pack_per_item_s: packPerItemSec,
         total_per_item_s: totalPerItemSec,
         bracket,
-        packer: packInfo!.packer,
-        station: packInfo!.station,
+        packer: isOrderPacked && packInfo ? packInfo.packer : '',
+        station: isOrderPacked && packInfo ? packInfo.station : '',
         wait_after_picking_min: waitAfterPickMin,
         wait_sort_to_pack_min: waitSortToPackMin,
         wait_pick_to_pack_min: waitPickToPackMin,
         box_unique_eans: uniqueEansCount,
         box_total_units: totalUnits,
         box_shared_skus_count: Math.max(0, uniqueEansCount - 1),
-        is_sorted: true,
-        is_packed: true,
+        is_sorted: isBoxSorted,
+        is_packed: isOrderPacked,
       });
     }
   }
@@ -412,7 +410,7 @@ export function joinSvjTriFiles(files: SvjInputFile[]): SvjTriFileParseResult {
     uniqueOrdersPicked: uniqueOrdersPickedCount,
     uniqueOrdersSorted: uniqueOrdersSortedCount,
     uniqueOrdersPacked: uniqueOrdersPackedCount,
-    matchedCompleteOrders: records.length,
+    matchedCompleteOrders: uniqueOrdersPackedCount,
     droppedUnsortedOrders: droppedUnsortedCount,
     droppedUnpackedOrders: droppedUnpackedCount,
     errors,
