@@ -60,6 +60,8 @@ export interface MovementRecord {
   box_units_sorted?: number; // total units_sorted in parent box (SVJ)
   is_sorted?: boolean; // flag if order was sorted
   is_packed?: boolean; // flag if order was packed
+  is_mono_sku?: boolean; // flag if order consists of multiple units of the same SKU
+  product_codes?: string; // raw product codes with quantities e.g. "NBC053020 x2"
   created_at?: string;
 }
 
@@ -424,3 +426,81 @@ export interface WarehouseComparisonReport {
   ruseTopProducts?: { ean: string; units: number; sharePct: number }[];
   svjTopProducts?: { ean: string; units: number; sharePct: number }[];
 }
+
+export type SvjBypassCategoryKey =
+  | 'bracket_1'
+  | 'bracket_2_mono'
+  | 'bracket_2_hetero'
+  | 'bracket_3'
+  | 'bracket_4_5'
+  | 'bracket_6_plus';
+
+export interface SvjBypassCategoryResult {
+  categoryKey: SvjBypassCategoryKey;
+  labelCs: string;
+  labelEn: string;
+  descriptionCs: string;
+  bracket: string;
+  orderCount: number;
+  itemCount: number;
+  orderSharePct: number;
+  itemSharePct: number;
+  avgItemsPerOrder: number;
+  ordersPerBox: number;
+  unitsPerBox: number;
+  totalBoxesNeeded: number;
+  volumetricFillPct: number;
+
+  baselinePickPerItemSec: number;
+  baselineSortPerItemSec: number;
+  baselinePackPerItemSec: number;
+  baselineTotalPerItemSec: number;
+
+  sortSavedPerItemSec: number;
+  pickPenaltyPerItemSec: number;
+  packPenaltyPerItemSec: number;
+  netDiffPerItemSec: number;
+
+  totalSortSavedHours: number;
+  totalPickLostHours: number;
+  totalPackLostHours: number;
+  totalNetSavedHours: number;
+  netSavingsPct: number;
+
+  recommendation: 'ALREADY_BYPASSING' | 'HIGHLY_RECOMMENDED' | 'RECOMMENDED' | 'CONDITIONAL' | 'NOT_RECOMMENDED' | 'STRONGLY_REJECTED';
+  recommendationReasonCs: string;
+  recommendationReasonEn: string;
+}
+
+export interface SvjSortingBypassReport {
+  totalSvjOrders: number;
+  totalSvjUnits: number;
+  boxCapacityUnits: number;
+  categories: SvjBypassCategoryResult[];
+  recommendedSet: {
+    nameCs: string;
+    nameEn: string;
+    criteriaCs: string;
+    ordersCount: number;
+    unitsCount: number;
+    ordersSharePct: number;
+    unitsSharePct: number;
+    avgOrdersPerBox: number;
+    totalBoxesNeeded: number;
+
+    sortSavedHours: number;
+    pickLostHours: number;
+    packLostHours: number;
+    netSavedHours: number;
+    netSavedPerItemSec: number;
+
+    sorterCapacityReliefPct: number;
+    leadTimeReductionMinutes: number;
+    fteSavedEquivalent: number;
+  };
+  baselineTotalHours: number;
+  simulatedTotalHours: number;
+  grandTotalNetHours: number;
+  grandLeadTimeSavedMin: number;
+}
+

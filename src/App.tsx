@@ -52,6 +52,7 @@ interface CachedAnalyticsSummary {
   periodSummary: any;
   comparison: any;
   svjSorting?: any;
+  svjBypassAnalysis?: any;
   simulation?: any;
   source?: 'cache' | 'computed';
   updatedAt?: string;
@@ -888,6 +889,7 @@ function Dashboard() {
                 records={activeTabRecords}
                 unit={filter.unit}
                 cachedStats={currentServerAnalytics?.svjSorting || serverAnalytics.svj?.svjSorting}
+                cachedBypassReport={currentServerAnalytics?.svjBypassAnalysis || serverAnalytics.svj?.svjBypassAnalysis}
               />
             )}
 

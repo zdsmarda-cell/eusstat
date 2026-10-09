@@ -29,6 +29,7 @@ import {
   computePeriodSummary,
   computeWarehouseComparison,
   computeSvjSortingStatistics,
+  computeSvjSortingBypassAnalysis,
   runMultipickSlotSimulation,
 } from './src/utils/analytics.js';
 import {
@@ -285,6 +286,7 @@ app.get('/api/analytics/summary', async (req, res) => {
     const periodSummary = computePeriodSummary(activeRecords);
     const comparison = computeWarehouseComparison(ruseRecords, svjRecords);
     const svjSorting = warehouse === 'ruse' ? null : computeSvjSortingStatistics(svjRecords.length > 0 ? svjRecords : activeRecords);
+    const svjBypassAnalysis = warehouse === 'ruse' ? null : computeSvjSortingBypassAnalysis(svjRecords.length > 0 ? svjRecords : activeRecords);
     const simulation = runMultipickSlotSimulation(activeRecords);
 
     const payload = {
@@ -300,6 +302,7 @@ app.get('/api/analytics/summary', async (req, res) => {
       periodSummary,
       comparison,
       svjSorting,
+      svjBypassAnalysis,
       simulation,
       updatedAt: new Date().toISOString(),
     };
