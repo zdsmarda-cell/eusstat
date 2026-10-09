@@ -490,7 +490,14 @@ export const ImportModal: React.FC<ImportModalProps> = ({
                 </div>
                 <div className="flex items-center justify-between">
                   <span>{isCs ? 'Z toho prošlo procesem sortingu:' : 'Processed via sorting:'}</span>
-                  <span className="font-mono text-purple-300">{svjParseResult.uniqueOrdersSorted.toLocaleString('cs-CZ')} obj.</span>
+                  <span className="font-mono text-purple-300">
+                    {svjParseResult.uniqueOrdersSorted.toLocaleString('cs-CZ')} obj.
+                    {svjParseResult.totalUnitsSorted !== undefined && (
+                      <span className="text-purple-400 font-semibold ml-1.5">
+                        ({svjParseResult.totalUnitsSorted.toLocaleString('cs-CZ')} ks)
+                      </span>
+                    )}
+                  </span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span>{isCs ? 'Z toho ověřené ruční balení (vstup pro packing KPI):' : 'Manual packing (input for packing KPI):'}</span>

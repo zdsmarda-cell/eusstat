@@ -15,6 +15,9 @@ import {
   BarChart3,
   Scale,
   Minus,
+  Sparkles,
+  Tag,
+  Zap,
 } from 'lucide-react';
 import { MovementRecord, WarehouseComparisonReport } from '../types.js';
 import { computeWarehouseComparison, formatTimeValue } from '../utils/analytics.js';
@@ -24,17 +27,19 @@ interface WarehouseComparisonSummaryProps {
   ruseRecords: MovementRecord[];
   svjRecords: MovementRecord[];
   unit: 'sec' | 'min';
+  cachedReport?: WarehouseComparisonReport | null;
 }
 
 export const WarehouseComparisonSummary: React.FC<WarehouseComparisonSummaryProps> = ({
   ruseRecords,
   svjRecords,
   unit,
+  cachedReport,
 }) => {
   const { lang } = useLanguage();
   const isCs = lang === 'cs';
 
-  const report: WarehouseComparisonReport = computeWarehouseComparison(ruseRecords, svjRecords);
+  const report: WarehouseComparisonReport = cachedReport || computeWarehouseComparison(ruseRecords, svjRecords);
 
   const formatDelta = (valRuse: number, valSvj: number, unitLabel: string = '') => {
     const diff = valSvj - valRuse;
@@ -235,6 +240,94 @@ export const WarehouseComparisonSummary: React.FC<WarehouseComparisonSummaryProp
               {isCs ? `SVJ má 2 meziskladové fronty: ~${report.svjAvgWaitPickToSortMin} min a ~${report.svjAvgWaitSortToPackMin} min` : `SVJ has 2 queue buffers: ~${report.svjAvgWaitPickToSortMin} min and ~${report.svjAvgWaitSortToPackMin} min`}
             </div>
           </div>
+
+          {/* 7. Profil SKU & Pareto 80/20 */}
+          <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-4.5">
+            <div className="flex items-center justify-between text-xs text-slate-400">
+              <span className="font-bold uppercase tracking-wider">{isCs ? 'Sortiment SKU & Pareto 80 %' : 'SKU Profile & Pareto 80%'}</span>
+              <Tag className="w-4 h-4 text-amber-400" />
+            </div>
+            <div className="mt-3 grid grid-cols-3 gap-2.5 border-b border-slate-800/80 pb-3">
+              <div>
+                <span className="text-[11px] font-semibold text-blue-400 block">Ruse</span>
+                <span className="text-lg font-bold text-white font-mono">{report.ruseTotalSkus.toLocaleString('cs-CZ')} SKU</span>
+                <span className="text-[10px] text-amber-300 font-semibold block mt-0.5">
+                  80%: {report.ruseTop80SkusCount.toLocaleString('cs-CZ')}
+                </span>
+                <span className="text-[10px] text-slate-400 block">({report.ruseTop80SkusSharePct}%)</span>
+              </div>
+              <div>
+                <span className="text-[11px] font-semibold text-purple-400 block">SVJ</span>
+                <span className="text-lg font-bold text-white font-mono">{report.svjTotalSkus.toLocaleString('cs-CZ')} SKU</span>
+                <span className="text-[10px] text-amber-300 font-semibold block mt-0.5">
+                  80%: {report.svjTop80SkusCount.toLocaleString('cs-CZ')}
+                </span>
+                <span className="text-[10px] text-slate-400 block">({report.svjTop80SkusSharePct}%)</span>
+              </div>
+              <div className="border-l border-slate-800 pl-2">
+                <span className="text-[11px] font-semibold text-emerald-400 block">{isCs ? 'Celkem' : 'Total'}</span>
+                <span className="text-lg font-bold text-emerald-300 font-mono">
+                  {(report.totalCombinedSkus || (report.ruseTotalSkus + report.svjTotalSkus)).toLocaleString('cs-CZ')} SKU
+                </span>
+                <span className="text-[10px] text-amber-300 font-semibold block mt-0.5">
+                  80%: {(report.totalCombinedTop80SkusCount || (report.ruseTop80SkusCount + report.svjTop80SkusCount)).toLocaleString('cs-CZ')}
+                </span>
+                <span className="text-[10px] text-slate-400 block">
+                  ({report.totalCombinedTop80SkusSharePct || Math.round(((report.ruseTop80SkusCount + report.svjTop80SkusCount) / Math.max(1, report.ruseTotalSkus + report.svjTotalSkus)) * 100)}%)
+                </span>
+              </div>
+            </div>
+            <div className="mt-2.5 text-xs text-slate-400 flex items-center justify-between">
+              <span>{isCs ? 'Koncentrace sortimentu (Pareto):' : 'Catalog concentration:'}</span>
+              <span className="font-mono text-slate-300 font-semibold">
+                {report.ruseTop80SkusSharePct < report.svjTop80SkusSharePct
+                  ? (isCs ? 'Užší portfolio v Ruse' : 'Narrower in Ruse')
+                  : (isCs ? 'Užší portfolio v SVJ' : 'Narrower in SVJ')}
+              </span>
+            </div>
+          </div>
+
+          {/* 8. Multipicking - Potenciál optimalizace */}
+          <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-4.5">
+            <div className="flex items-center justify-between text-xs text-slate-400">
+              <span className="font-bold uppercase tracking-wider">{isCs ? 'Potenciál Multipickingu' : 'Multipick Potential'}</span>
+              <Zap className="w-4 h-4 text-emerald-400" />
+            </div>
+            <div className="mt-3 grid grid-cols-3 gap-2.5 border-b border-slate-800/80 pb-3">
+              <div>
+                <span className="text-[11px] font-semibold text-blue-400 block">Ruse úspora</span>
+                <span className="text-lg font-bold text-emerald-400 font-mono">
+                  {report.ruseMultipickSavedHours > 0 ? `~${report.ruseMultipickSavedHours} h` : '0 h'}
+                </span>
+                <span className="text-[10px] text-slate-300 block font-mono">
+                  ({report.ruseMultipickSavingsPct} %)
+                </span>
+              </div>
+              <div>
+                <span className="text-[11px] font-semibold text-purple-400 block">SVJ úspora</span>
+                <span className="text-lg font-bold text-emerald-400 font-mono">
+                  {report.svjMultipickSavedHours > 0 ? `~${report.svjMultipickSavedHours} h` : '0 h'}
+                </span>
+                <span className="text-[10px] text-slate-300 block font-mono">
+                  ({report.svjMultipickSavingsPct} %)
+                </span>
+              </div>
+              <div className="border-l border-slate-800 pl-2">
+                <span className="text-[11px] font-semibold text-emerald-400 block">{isCs ? 'Celkem oba' : 'Combined'}</span>
+                <span className="text-lg font-bold text-emerald-300 font-mono">
+                  ~{(report.totalCombinedMultipickSavedHours !== undefined ? report.totalCombinedMultipickSavedHours : Number((report.ruseMultipickSavedHours + report.svjMultipickSavedHours).toFixed(1)))} h
+                </span>
+                <span className="text-[10px] text-slate-300 block font-mono">
+                  ({report.totalCombinedMultipickSavingsPct !== undefined ? report.totalCombinedMultipickSavingsPct : Math.round((report.ruseMultipickSavingsPct + report.svjMultipickSavingsPct) / 2)} %)
+                </span>
+              </div>
+            </div>
+            <div className="mt-2.5 text-xs text-slate-400">
+              {isCs
+                ? `Simulace 2h slotů zvýší multipick: Ruse (${report.ruseBaselineMultipickRatioPct}% → ${report.ruseSimulatedMultipickRatioPct}%), SVJ (${report.svjBaselineMultipickRatioPct}% → ${report.svjSimulatedMultipickRatioPct}%)`
+                : `2h slots increase multipick ratio: Ruse (${report.ruseBaselineMultipickRatioPct}% → ${report.ruseSimulatedMultipickRatioPct}%), SVJ (${report.svjBaselineMultipickRatioPct}% → ${report.svjSimulatedMultipickRatioPct}%)`}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -306,6 +399,274 @@ export const WarehouseComparisonSummary: React.FC<WarehouseComparisonSummaryProp
               })}
             </tbody>
           </table>
+        </div>
+      </div>
+
+      {/* Section 2b: Srovnání potenciálu optimalizace Multipickingu (2h časové sloty) */}
+      <div className="bg-slate-900/80 border border-emerald-500/30 rounded-3xl p-6 shadow-xl space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
+          <div>
+            <h3 className="text-base font-bold text-white flex items-center space-x-2">
+              <Zap className="w-5 h-5 text-emerald-400" />
+              <span>{isCs ? 'Srovnání optimalizace z multipickingu (přeskupení do 2h slotů)' : 'Multipicking Optimization Potential (2-hour Slot Simulation)'}</span>
+            </h3>
+            <p className="text-xs text-slate-400 mt-1">
+              {isCs
+                ? 'Porovnání potenciálních časových úspor při shlukování stejných SKU do společných sběrných boxů přes 2h vlnové sloty.'
+                : 'Comparison of potential time and labor savings when batching shared SKUs into 2-hour collection waves.'}
+            </p>
+          </div>
+          <span className="px-3 py-1 bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-bold text-xs rounded-xl self-start sm:self-auto">
+            {isCs ? 'Model úspor' : 'Savings Model'}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+          {/* Ruse Multipicking Card */}
+          <div className="p-4 bg-slate-950/70 border border-blue-500/30 rounded-2xl space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="font-bold text-blue-400 flex items-center space-x-1.5">
+                <Building2 className="w-4 h-4" />
+                <span>{isCs ? 'Sklad Ruse — Multipicking' : 'Ruse Warehouse — Multipicking'}</span>
+              </span>
+              <span className="font-mono text-emerald-400 font-bold">
+                ~{report.ruseMultipickSavedHours} h úspora ({report.ruseMultipickSavingsPct} %)
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-2 font-mono">
+              <div className="p-2.5 bg-slate-900/80 rounded-xl border border-slate-800">
+                <span className="text-[10px] text-slate-400 block font-sans">{isCs ? 'Stávající multipick:' : 'Baseline multipick:'}</span>
+                <span className="text-sm font-bold text-white">{report.ruseBaselineMultipickRatioPct} %</span>
+              </div>
+              <div className="p-2.5 bg-slate-900/80 rounded-xl border border-slate-800">
+                <span className="text-[10px] text-emerald-400 block font-sans">{isCs ? 'Simulovaný multipick:' : 'Simulated multipick:'}</span>
+                <span className="text-sm font-bold text-emerald-400">{report.ruseSimulatedMultipickRatioPct} %</span>
+              </div>
+            </div>
+            <p className="text-[11px] text-slate-400">
+              {isCs
+                ? `V Ruse umožňuje přeskupení do 2h slotů ušetřit ~${report.ruseMultipickSavedHours} hodin práce pickování díky přímému sběru stejných položek do boxu.`
+                : `In Ruse, wave clustering into 2h slots can save ~${report.ruseMultipickSavedHours} hours of picking labor.`}
+            </p>
+          </div>
+
+          {/* SVJ Multipicking Card */}
+          <div className="p-4 bg-slate-950/70 border border-purple-500/30 rounded-2xl space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="font-bold text-purple-400 flex items-center space-x-1.5">
+                <Shuffle className="w-4 h-4" />
+                <span>{isCs ? 'Sklad SVJ — Multipicking' : 'SVJ Warehouse — Multipicking'}</span>
+              </span>
+              <span className="font-mono text-emerald-400 font-bold">
+                ~{report.svjMultipickSavedHours} h úspora ({report.svjMultipickSavingsPct} %)
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-2 font-mono">
+              <div className="p-2.5 bg-slate-900/80 rounded-xl border border-slate-800">
+                <span className="text-[10px] text-slate-400 block font-sans">{isCs ? 'Stávající multipick:' : 'Baseline multipick:'}</span>
+                <span className="text-sm font-bold text-white">{report.svjBaselineMultipickRatioPct} %</span>
+              </div>
+              <div className="p-2.5 bg-slate-900/80 rounded-xl border border-slate-800">
+                <span className="text-[10px] text-emerald-400 block font-sans">{isCs ? 'Simulovaný multipick:' : 'Simulated multipick:'}</span>
+                <span className="text-sm font-bold text-emerald-400">{report.svjSimulatedMultipickRatioPct} %</span>
+              </div>
+            </div>
+            <p className="text-[11px] text-slate-400">
+              {isCs
+                ? `V SVJ je potenciál úspory ~${report.svjMultipickSavedHours} hodin. Vzhledem k následnému sortingu je synergický efekt v pickování maximalizován.`
+                : `In SVJ, the savings potential is ~${report.svjMultipickSavedHours} hours with automated downstream sorting.`}
+            </p>
+          </div>
+
+          {/* Combined Total Savings Card */}
+          <div className="p-4 bg-slate-950/70 border border-emerald-500/40 rounded-2xl space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="font-bold text-emerald-400 flex items-center space-x-1.5">
+                <Scale className="w-4 h-4" />
+                <span>{isCs ? 'Celková úspora (oba sklady)' : 'Combined Savings (Both Sites)'}</span>
+              </span>
+              <span className="font-mono text-emerald-300 font-bold">
+                ~{(report.totalCombinedMultipickSavedHours !== undefined ? report.totalCombinedMultipickSavedHours : Number((report.ruseMultipickSavedHours + report.svjMultipickSavedHours).toFixed(1)))} h
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-2 font-mono">
+              <div className="p-2.5 bg-slate-900/80 rounded-xl border border-slate-800">
+                <span className="text-[10px] text-slate-400 block font-sans">{isCs ? 'Průměrná úspora času:' : 'Avg time savings:'}</span>
+                <span className="text-sm font-bold text-emerald-400">
+                  {report.totalCombinedMultipickSavingsPct !== undefined ? report.totalCombinedMultipickSavingsPct : Math.round((report.ruseMultipickSavingsPct + report.svjMultipickSavingsPct) / 2)} %
+                </span>
+              </div>
+              <div className="p-2.5 bg-slate-900/80 rounded-xl border border-slate-800">
+                <span className="text-[10px] text-slate-400 block font-sans">{isCs ? 'Simulovaný cíl:' : 'Simulated goal:'}</span>
+                <span className="text-sm font-bold text-white">75–80 % multi</span>
+              </div>
+            </div>
+            <p className="text-[11px] text-slate-400">
+              {isCs
+                ? `Celkový potenciál obou provozů činí ~${(report.totalCombinedMultipickSavedHours !== undefined ? report.totalCombinedMultipickSavedHours : Number((report.ruseMultipickSavedHours + report.svjMultipickSavedHours).toFixed(1)))} hodin ušetřeného personálního času při zavedení 2h vlnových oken.`
+                : `Total potential across both operations amounts to ~${(report.totalCombinedMultipickSavedHours !== undefined ? report.totalCombinedMultipickSavedHours : Number((report.ruseMultipickSavedHours + report.svjMultipickSavedHours).toFixed(1)))} labor hours saved with 2h wave dispatching.`}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Section 2c: Detailní analýza sortimentu SKU & Pareto 80/20 za dané období */}
+      <div className="bg-slate-900/80 border border-amber-500/30 rounded-3xl p-6 shadow-xl space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
+          <div>
+            <div className="flex items-center space-x-2.5">
+              <span className="p-2 rounded-xl bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                <Tag className="w-5 h-5" />
+              </span>
+              <h3 className="text-base font-bold text-white">
+                {isCs ? 'Sortiment SKU & Analýza Pareto (80/20) za dané období' : 'SKU Assortment & Pareto (80/20) Analysis for Period'}
+              </h3>
+            </div>
+            <p className="text-xs text-slate-400 mt-1 pl-10.5">
+              {isCs
+                ? 'Srovnání celkového počtu unikátních položek (SKU), podílu klíčových 80 % sortimentu tvořících drtivou většinu expedice a long-tail produktů.'
+                : 'Comparison of total distinct SKUs, core 80% volume items driving the fulfillment volume, and long-tail products.'}
+            </p>
+          </div>
+          <span className="px-3 py-1 bg-amber-500/15 border border-amber-500/30 text-amber-300 font-bold text-xs rounded-xl self-start sm:self-auto">
+            {isCs ? 'Pareto 80/20 bilance' : 'Pareto 80/20 Balance'}
+          </span>
+        </div>
+
+        {/* Srovnávací tabulka SKU parametrů */}
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs border-collapse font-sans">
+            <thead>
+              <tr className="border-b border-slate-800 text-slate-400 bg-slate-950/50">
+                <th className="py-3 px-4 font-bold uppercase tracking-wider">{isCs ? 'Metrika sortimentu' : 'Assortment Metric'}</th>
+                <th className="py-3 px-4 font-bold uppercase tracking-wider text-right text-blue-400">{isCs ? 'Sklad Ruse' : 'Ruse Warehouse'}</th>
+                <th className="py-3 px-4 font-bold uppercase tracking-wider text-right text-purple-400">{isCs ? 'Sklad SVJ' : 'SVJ Warehouse'}</th>
+                <th className="py-3 px-4 font-bold uppercase tracking-wider text-right text-emerald-400">{isCs ? 'Celkem oba sklady' : 'Combined Total'}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/60 font-mono">
+              <tr className="hover:bg-slate-800/30">
+                <td className="py-3 px-4 font-sans font-semibold text-white">
+                  {isCs ? 'Celkový počet unikátních SKU za období' : 'Total unique SKUs in period'}
+                </td>
+                <td className="py-3 px-4 text-right text-blue-300 font-bold">{report.ruseTotalSkus.toLocaleString('cs-CZ')} SKU</td>
+                <td className="py-3 px-4 text-right text-purple-300 font-bold">{report.svjTotalSkus.toLocaleString('cs-CZ')} SKU</td>
+                <td className="py-3 px-4 text-right text-emerald-300 font-bold">
+                  {(report.totalCombinedSkus || (report.ruseTotalSkus + report.svjTotalSkus)).toLocaleString('cs-CZ')} SKU
+                </td>
+              </tr>
+              <tr className="hover:bg-slate-800/30 bg-amber-950/15">
+                <td className="py-3 px-4 font-sans font-semibold text-amber-200">
+                  {isCs ? 'Počet SKU dělající 80 % veškerého objemu' : 'SKU count generating 80% of volume'}
+                </td>
+                <td className="py-3 px-4 text-right text-amber-300 font-bold">
+                  {report.ruseTop80SkusCount.toLocaleString('cs-CZ')} SKU
+                </td>
+                <td className="py-3 px-4 text-right text-amber-300 font-bold">
+                  {report.svjTop80SkusCount.toLocaleString('cs-CZ')} SKU
+                </td>
+                <td className="py-3 px-4 text-right text-amber-300 font-bold">
+                  {(report.totalCombinedTop80SkusCount || (report.ruseTop80SkusCount + report.svjTop80SkusCount)).toLocaleString('cs-CZ')} SKU
+                </td>
+              </tr>
+              <tr className="hover:bg-slate-800/30">
+                <td className="py-3 px-4 font-sans text-slate-300">
+                  {isCs ? 'Podíl 80 % SKU na celkovém sortimentu (%)' : 'Share of 80% SKUs on total assortment (%)'}
+                </td>
+                <td className="py-3 px-4 text-right text-slate-200">{report.ruseTop80SkusSharePct} %</td>
+                <td className="py-3 px-4 text-right text-slate-200">{report.svjTop80SkusSharePct} %</td>
+                <td className="py-3 px-4 text-right text-emerald-400 font-semibold">
+                  {report.totalCombinedTop80SkusSharePct || Math.round(((report.ruseTop80SkusCount + report.svjTop80SkusCount) / Math.max(1, report.ruseTotalSkus + report.svjTotalSkus)) * 100)} %
+                </td>
+              </tr>
+              <tr className="hover:bg-slate-800/30">
+                <td className="py-3 px-4 font-sans text-slate-300">
+                  {isCs ? 'Zbývajících 20 % objemu (Long tail SKU)' : 'Remaining 20% volume (Long-tail SKUs)'}
+                </td>
+                <td className="py-3 px-4 text-right text-slate-400">
+                  {Math.max(0, report.ruseTotalSkus - report.ruseTop80SkusCount).toLocaleString('cs-CZ')} SKU
+                </td>
+                <td className="py-3 px-4 text-right text-slate-400">
+                  {Math.max(0, report.svjTotalSkus - report.svjTop80SkusCount).toLocaleString('cs-CZ')} SKU
+                </td>
+                <td className="py-3 px-4 text-right text-slate-400">
+                  {Math.max(0, (report.totalCombinedSkus || (report.ruseTotalSkus + report.svjTotalSkus)) - (report.totalCombinedTop80SkusCount || (report.ruseTop80SkusCount + report.svjTop80SkusCount))).toLocaleString('cs-CZ')} SKU
+                </td>
+              </tr>
+              <tr className="hover:bg-slate-800/30">
+                <td className="py-3 px-4 font-sans text-slate-300">
+                  {isCs ? 'Průměrný počet kusů na 1 SKU za období' : 'Avg units per SKU in period'}
+                </td>
+                <td className="py-3 px-4 text-right text-slate-200">
+                  {(report.ruseTotalUnits / Math.max(1, report.ruseTotalSkus)).toFixed(1)} ks/SKU
+                </td>
+                <td className="py-3 px-4 text-right text-slate-200">
+                  {(report.svjTotalUnits / Math.max(1, report.svjTotalSkus)).toFixed(1)} ks/SKU
+                </td>
+                <td className="py-3 px-4 text-right text-emerald-400 font-semibold">
+                  {((report.ruseTotalUnits + report.svjTotalUnits) / Math.max(1, report.totalCombinedSkus || (report.ruseTotalSkus + report.svjTotalSkus))).toFixed(1)} ks/SKU
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        {/* Top 5 Products Comparison */}
+        {(report.ruseTopProducts && report.ruseTopProducts.length > 0 || report.svjTopProducts && report.svjTopProducts.length > 0) && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+            {/* Ruse Top 5 */}
+            {report.ruseTopProducts && report.ruseTopProducts.length > 0 && (
+              <div className="p-4 bg-slate-950/60 border border-blue-500/20 rounded-2xl space-y-2.5">
+                <span className="text-xs font-bold text-blue-400 block uppercase tracking-wider">
+                  {isCs ? 'Sklad Ruse — TOP 5 nejexpedovanějších SKU' : 'Ruse — TOP 5 Dispatched SKUs'}
+                </span>
+                <div className="space-y-1.5 text-xs font-mono">
+                  {report.ruseTopProducts.map((p, i) => (
+                    <div key={p.ean} className="flex items-center justify-between p-2 bg-slate-900/80 rounded-xl border border-slate-800">
+                      <div className="flex items-center space-x-2">
+                        <span className="text-slate-500 font-sans text-[11px]">#{i + 1}</span>
+                        <span className="text-white font-semibold">{p.ean}</span>
+                      </div>
+                      <div className="flex items-center space-x-2">
+                        <span className="text-blue-300 font-bold">{p.units.toLocaleString('cs-CZ')} ks</span>
+                        <span className="text-slate-400 text-[11px]">({p.sharePct} %)</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* SVJ Top 5 */}
+            {report.svjTopProducts && report.svjTopProducts.length > 0 && (
+              <div className="p-4 bg-slate-950/60 border border-purple-500/20 rounded-2xl space-y-2.5">
+                <span className="text-xs font-bold text-purple-400 block uppercase tracking-wider">
+                  {isCs ? 'Sklad SVJ — TOP 5 nejexpedovanějších SKU' : 'SVJ — TOP 5 Dispatched SKUs'}
+                </span>
+                <div className="space-y-1.5 text-xs font-mono">
+                  {report.svjTopProducts.map((p, i) => (
+                    <div key={p.ean} className="flex items-center justify-between p-2 bg-slate-900/80 rounded-xl border border-slate-800">
+                      <div className="flex items-center space-x-2">
+                        <span className="text-slate-500 font-sans text-[11px]">#{i + 1}</span>
+                        <span className="text-white font-semibold">{p.ean}</span>
+                      </div>
+                      <div className="flex items-center space-x-2">
+                        <span className="text-purple-300 font-bold">{p.units.toLocaleString('cs-CZ')} ks</span>
+                        <span className="text-slate-400 text-[11px]">({p.sharePct} %)</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="p-3.5 bg-amber-950/20 border border-amber-500/25 rounded-2xl text-xs text-amber-200/90 leading-relaxed">
+          <strong>{isCs ? 'Strategické doporučení pro skladování (ABC Analýza):' : 'Warehouse Storage Recommendation (ABC Analysis):'}</strong>{' '}
+          {isCs
+            ? `Položky tvořící 80 % objemu (${report.ruseTop80SkusCount} SKU v Ruse a ${report.svjTop80SkusCount} SKU v SVJ) doporučujeme umístit do "Zlaté zóny" (A-lokací) v nejnižších regálech nejblíže konsolidačnímu uzlu a sorteru. To zkrátí trasu pickera o dalších 25–35 % při sběru objednávek.`
+            : `The 80% volume items (${report.ruseTop80SkusCount} SKUs in Ruse and ${report.svjTop80SkusCount} SKUs in SVJ) should be designated as Grade-A fast-movers located near packing and sorting nodes to reduce picker walking distance by 25–35%.`}
         </div>
       </div>
 

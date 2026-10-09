@@ -134,6 +134,8 @@ export function computePeriodSummary(records: MovementRecord[]): PeriodSummary {
   const minOrdersPerBox = ordersPerBoxList.length > 0 ? Math.min(...ordersPerBoxList) : 0;
   const maxOrdersPerBox = ordersPerBoxList.length > 0 ? Math.max(...ordersPerBoxList) : 0;
 
+  const pareto = computeProductPareto(records);
+
   return {
     dateFrom,
     dateTo,
@@ -141,6 +143,8 @@ export function computePeriodSummary(records: MovementRecord[]): PeriodSummary {
     totalOrders,
     totalSkus,
     totalUnits,
+    top80SkusCount: pareto.top80ProductsCount,
+    top80SkusSharePct: pareto.top80ProductsSharePct,
     avgUnitsPerOrder,
     medianOrdersPerBox,
     avgOrdersPerBox,
@@ -1349,6 +1353,21 @@ export function computeWarehouseComparison(
     });
   }
 
+  // Pareto 80/20 SKU distribution
+  const rusePareto = computeProductPareto(ruseRecords);
+  const svjPareto = computeProductPareto(svjRecords);
+  const combinedRecords = [...ruseRecords, ...svjRecords];
+  const combinedPareto = computeProductPareto(combinedRecords);
+
+  // Multipicking 2h slot batching potential
+  const ruseSim = runMultipickSlotSimulation(ruseRecords);
+  const svjSim = runMultipickSlotSimulation(svjRecords);
+  const totalCombinedSavedHours = Number((ruseSim.totalSavedHours + svjSim.totalSavedHours).toFixed(1));
+  const totalCombinedBaselineHours = ruseSim.totalBaselineHours + svjSim.totalBaselineHours;
+  const totalCombinedSavingsPct = totalCombinedBaselineHours > 0
+    ? Number(((totalCombinedSavedHours / totalCombinedBaselineHours) * 100).toFixed(1))
+    : 0;
+
   return {
     periodDays: Math.max(ruseSummary.daysCount, svjSummary.daysCount) || 14,
     ruseTotalOrders: ruseSummary.totalOrders,
@@ -1357,6 +1376,10 @@ export function computeWarehouseComparison(
     svjTotalUnits: svjSummary.totalUnits,
     ruseTotalSkus: ruseSummary.totalSkus,
     svjTotalSkus: svjSummary.totalSkus,
+    ruseTop80SkusCount: rusePareto.top80ProductsCount,
+    ruseTop80SkusSharePct: rusePareto.top80ProductsSharePct,
+    svjTop80SkusCount: svjPareto.top80ProductsCount,
+    svjTop80SkusSharePct: svjPareto.top80ProductsSharePct,
     ruseAvgUnitsPerOrder: ruseSummary.avgUnitsPerOrder,
     svjAvgUnitsPerOrder: svjSummary.avgUnitsPerOrder,
     ruseMedianOrdersPerBox: ruseSummary.medianOrdersPerBox,
@@ -1372,6 +1395,24 @@ export function computeWarehouseComparison(
     ruseAvgTotalLeadTimeMin: ruseLeadTimeMin,
     svjAvgTotalLeadTimeMin: svjLeadTimeMin,
     bracketComparisons,
+
+    ruseMultipickSavedHours: ruseSim.totalSavedHours,
+    ruseMultipickSavingsPct: ruseSim.overallSavingsPct,
+    ruseBaselineMultipickRatioPct: ruseSim.baselineMultipickRatioPct,
+    ruseSimulatedMultipickRatioPct: ruseSim.simulatedMultipickRatioPct,
+
+    svjMultipickSavedHours: svjSim.totalSavedHours,
+    svjMultipickSavingsPct: svjSim.overallSavingsPct,
+    svjBaselineMultipickRatioPct: svjSim.baselineMultipickRatioPct,
+    svjSimulatedMultipickRatioPct: svjSim.simulatedMultipickRatioPct,
+
+    totalCombinedSkus: combinedPareto.totalUniqueProducts,
+    totalCombinedTop80SkusCount: combinedPareto.top80ProductsCount,
+    totalCombinedTop80SkusSharePct: combinedPareto.top80ProductsSharePct,
+    totalCombinedMultipickSavedHours: totalCombinedSavedHours,
+    totalCombinedMultipickSavingsPct: totalCombinedSavingsPct,
+    ruseTopProducts: rusePareto.topProducts,
+    svjTopProducts: svjPareto.topProducts,
   };
 }
 
@@ -1390,7 +1431,27 @@ export interface SvjSortingOverview {
 export function computeSvjSortingStatistics(records: MovementRecord[]): SvjSortingOverview {
   const svjRecords = records.filter(r => (r.warehouse || 'ruse') === 'svj' && r.is_sorted);
   const totalOrdersSorted = svjRecords.length;
-  const totalUnitsSorted = svjRecords.reduce((sum, r) => sum + (r.pocet_produktu || 1), 0);
+
+  // Skutečný počet vysortovaných kusů:
+  // 1. Primárně ze sloupce units_sorted u jednotlivých záznamů
+  // 2. Záložní agregace unikátních sběrných boxů (aby se nezapočítával počet kusů z boxu opakovaně pro každou objednávku)
+  const hasExplicitUnitsSorted = svjRecords.some(r => r.units_sorted !== undefined && r.units_sorted > 0);
+  let totalUnitsSorted = 0;
+  if (hasExplicitUnitsSorted) {
+    totalUnitsSorted = svjRecords.reduce((sum, r) => sum + (r.units_sorted || 0), 0);
+  } else {
+    const boxMap = new Map<string, number>();
+    for (const r of svjRecords) {
+      if (!boxMap.has(r.sberny_box)) {
+        const val = (r.box_units_sorted && r.box_units_sorted > 0)
+          ? r.box_units_sorted
+          : ((r.box_total_units && r.box_total_units > 0) ? r.box_total_units : (r.pocet_produktu || 1));
+        boxMap.set(r.sberny_box, val);
+      }
+    }
+    totalUnitsSorted = Array.from(boxMap.values()).reduce((sum, val) => sum + val, 0);
+  }
+
   const totalSortSec = svjRecords.reduce((sum, r) => sum + (r.sort_duration_s || 0), 0);
 
   const boxSet = new Set(svjRecords.map(r => r.sberny_box));

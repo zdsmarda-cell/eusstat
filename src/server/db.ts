@@ -232,16 +232,33 @@ export async function initMariaDbSchema(p: mysql.Pool): Promise<void> {
       wait_pick_to_pack_min DECIMAL(10,2) NULL,
       is_sorted TINYINT(1) DEFAULT 1,
       is_packed TINYINT(1) DEFAULT 1,
+      units_sorted INT DEFAULT 0,
+      box_units_sorted INT DEFAULT 0,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       INDEX idx_warehouse (warehouse),
       INDEX idx_box (sberny_box),
       INDEX idx_box_id (box_id),
       INDEX idx_order (obsah_objednavek),
       INDEX idx_pick_start (zacatek_pickovani),
-      INDEX idx_bracket (bracket)
+      INDEX idx_bracket (bracket),
+      INDEX idx_wh_pick (warehouse, zacatek_pickovani)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
   `;
   await p.query(createTableSql);
+
+  // Helper/cache table for precalculated aggregations and query results
+  const createCacheTableSql = `
+    CREATE TABLE IF NOT EXISTS warehouse_stats_cache (
+      cache_key VARCHAR(100) NOT NULL PRIMARY KEY,
+      warehouse VARCHAR(50) NOT NULL,
+      record_count INT NOT NULL DEFAULT 0,
+      stats_json LONGTEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_cache_wh (warehouse)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `;
+  await p.query(createCacheTableSql);
 
   // Soft migration for existing tables if columns are missing
   try {
@@ -258,12 +275,15 @@ export async function initMariaDbSchema(p: mysql.Pool): Promise<void> {
     await p.query('ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS wait_pick_to_pack_min DECIMAL(10,2) NULL AFTER wait_sort_to_pack_min');
     await p.query('ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS is_sorted TINYINT(1) DEFAULT 1 AFTER wait_pick_to_pack_min');
     await p.query('ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS is_packed TINYINT(1) DEFAULT 1 AFTER is_sorted');
+    await p.query('ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS units_sorted INT DEFAULT 0 AFTER is_packed');
+    await p.query('ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS box_units_sorted INT DEFAULT 0 AFTER units_sorted');
     await p.query('ALTER TABLE warehouse_movements MODIFY COLUMN zacatek_baleni DATETIME NULL');
     await p.query('ALTER TABLE warehouse_movements MODIFY COLUMN konec_baleni DATETIME NULL');
     await p.query('ALTER TABLE warehouse_movements MODIFY COLUMN pack_duration_s DECIMAL(10,2) NULL DEFAULT 0');
     await p.query('ALTER TABLE warehouse_movements MODIFY COLUMN pack_per_item_s DECIMAL(10,2) NULL DEFAULT 0');
+    await p.query('ALTER TABLE warehouse_movements ADD INDEX IF NOT EXISTS idx_wh_pick (warehouse, zacatek_pickovani)');
   } catch {
-    // Column might already exist
+    // Column or index might already exist
   }
 }
 
@@ -454,7 +474,7 @@ async function insertMovementsDirect(p: mysql.Pool, records: MovementRecord[]): 
       zacatek_pickovani, konec_pickovani, zacatek_sortingu, konec_sortingu, zacatek_baleni, konec_baleni,
       pick_duration_s, sort_duration_s, pack_duration_s, pick_per_item_s, sort_per_item_s, pack_per_item_s,
       bracket, packer, station, sec_per_scan, wait_after_picking_min, wait_sort_to_pack_min, wait_pick_to_pack_min,
-      is_sorted, is_packed
+      is_sorted, is_packed, units_sorted, box_units_sorted
     ) VALUES ?
   `;
 
@@ -488,6 +508,8 @@ async function insertMovementsDirect(p: mysql.Pool, records: MovementRecord[]): 
     r.wait_pick_to_pack_min !== undefined ? r.wait_pick_to_pack_min : null,
     r.is_sorted !== undefined ? (r.is_sorted ? 1 : 0) : 1,
     r.is_packed !== undefined ? (r.is_packed ? 1 : 0) : 1,
+    r.units_sorted !== undefined ? Number(r.units_sorted) : 0,
+    r.box_units_sorted !== undefined ? Number(r.box_units_sorted) : 0,
   ]);
 
   // Větší chunk size 2500 pro radikálně rychlejší MariaDB import
@@ -506,6 +528,7 @@ export async function insertMovements(records: MovementRecord[]): Promise<{ coun
     try {
       await insertMovementsDirect(p, records);
       // MariaDB je primární úložiště; neblokujeme event loop zápisem stovek tisíc záznamů do RAM ani na disk
+      await clearStatsCache(records[0]?.warehouse);
       return { count: records.length, destination: 'mariadb' };
     } catch (err: any) {
       console.error('❌ Chyba při vkládání do MariaDB, ukládám do lokálního perzistentního úložiště:', err?.message || err);
@@ -516,6 +539,7 @@ export async function insertMovements(records: MovementRecord[]): Promise<{ coun
   // Fallback do diskového úložiště – asynchronně a debouncovaně, aby Express nezamrzal
   memoryMovements = [...records, ...memoryMovements];
   scheduleSaveMovementsToDisk(1500);
+  await clearStatsCache(records[0]?.warehouse);
   return { count: records.length, destination: 'memory' };
 }
 
@@ -598,6 +622,8 @@ export async function getMovements(params: {
           CAST(wait_pick_to_pack_min AS DOUBLE) as wait_pick_to_pack_min,
           is_sorted,
           is_packed,
+          units_sorted,
+          box_units_sorted,
           created_at
         FROM warehouse_movements ${whereClause}
         ORDER BY zacatek_pickovani DESC
@@ -665,6 +691,7 @@ export async function clearMovements(warehouse?: string): Promise<void> {
     memoryMovements = [];
   }
   scheduleSaveMovementsToDisk(500);
+  await clearStatsCache(warehouse);
 
   const p = await getPool();
   if (p) {
@@ -678,4 +705,141 @@ export async function clearMovements(warehouse?: string): Promise<void> {
       // ignore
     }
   }
+}
+
+// In-memory cache for ultra-fast analytics serving (< 5ms)
+const statsMemoryCache = new Map<string, { data: any; count: number; savedAt: number }>();
+
+export async function getCachedStats(cacheKey: string, expectedCount?: number): Promise<any | null> {
+  // 1. Check RAM cache
+  const mem = statsMemoryCache.get(cacheKey);
+  if (mem) {
+    if (expectedCount === undefined || mem.count === expectedCount) {
+      return mem.data;
+    }
+  }
+
+  // 2. Check MariaDB warehouse_stats_cache table
+  const p = await getPool();
+  if (p) {
+    try {
+      const [rows]: any = await p.query(
+        'SELECT record_count, stats_json FROM warehouse_stats_cache WHERE cache_key = ? LIMIT 1',
+        [cacheKey]
+      );
+      if (rows && rows.length > 0) {
+        const row = rows[0];
+        if (expectedCount === undefined || Number(row.record_count) === expectedCount) {
+          const parsed = JSON.parse(row.stats_json);
+          statsMemoryCache.set(cacheKey, { data: parsed, count: Number(row.record_count), savedAt: Date.now() });
+          return parsed;
+        }
+      }
+    } catch (err: any) {
+      console.warn('Chyba při čtení z warehouse_stats_cache:', err?.message || err);
+    }
+  }
+
+  return null;
+}
+
+export async function saveCachedStats(
+  cacheKey: string,
+  warehouse: string,
+  recordCount: number,
+  stats: any
+): Promise<void> {
+  statsMemoryCache.set(cacheKey, { data: stats, count: recordCount, savedAt: Date.now() });
+
+  const p = await getPool();
+  if (p) {
+    try {
+      const statsJson = typeof stats === 'string' ? stats : JSON.stringify(stats);
+      await p.query(
+        `INSERT INTO warehouse_stats_cache (cache_key, warehouse, record_count, stats_json)
+         VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE record_count = VALUES(record_count), stats_json = VALUES(stats_json), updated_at = NOW()`,
+        [cacheKey, warehouse, recordCount, statsJson]
+      );
+    } catch (err: any) {
+      console.warn('Chyba při zápisu do warehouse_stats_cache:', err?.message || err);
+    }
+  }
+}
+
+export async function clearStatsCache(warehouse?: string): Promise<void> {
+  if (warehouse && warehouse !== 'all') {
+    for (const key of statsMemoryCache.keys()) {
+      if (key.includes(warehouse)) {
+        statsMemoryCache.delete(key);
+      }
+    }
+  } else {
+    statsMemoryCache.clear();
+  }
+
+  const p = await getPool();
+  if (p) {
+    try {
+      if (warehouse && warehouse !== 'all') {
+        await p.query('DELETE FROM warehouse_stats_cache WHERE warehouse = ?', [warehouse]);
+      } else {
+        await p.query('TRUNCATE TABLE warehouse_stats_cache');
+      }
+    } catch {
+      // ignore
+    }
+  }
+}
+
+export async function getWarehouseRecords(warehouse: 'ruse' | 'svj' | 'all'): Promise<MovementRecord[]> {
+  const p = await getPool();
+  if (p) {
+    try {
+      let sql = `SELECT 
+        id, warehouse, box_id, sberny_box, cycle_no, obsah_objednavek, pocet_produktu, ean_produktu, pocet_ks,
+        DATE_FORMAT(zacatek_pickovani, '%Y-%m-%dT%H:%i:%s') as zacatek_pickovani,
+        DATE_FORMAT(konec_pickovani, '%Y-%m-%dT%H:%i:%s') as konec_pickovani,
+        DATE_FORMAT(zacatek_sortingu, '%Y-%m-%dT%H:%i:%s') as zacatek_sortingu,
+        DATE_FORMAT(konec_sortingu, '%Y-%m-%dT%H:%i:%s') as konec_sortingu,
+        DATE_FORMAT(zacatek_baleni, '%Y-%m-%dT%H:%i:%s') as zacatek_baleni,
+        DATE_FORMAT(konec_baleni, '%Y-%m-%dT%H:%i:%s') as konec_baleni,
+        CAST(pick_duration_s AS DOUBLE) as pick_duration_s,
+        CAST(sort_duration_s AS DOUBLE) as sort_duration_s,
+        CAST(pack_duration_s AS DOUBLE) as pack_duration_s,
+        CAST(pick_per_item_s AS DOUBLE) as pick_per_item_s,
+        CAST(sort_per_item_s AS DOUBLE) as sort_per_item_s,
+        CAST(pack_per_item_s AS DOUBLE) as pack_per_item_s,
+        ROUND(CAST(pick_per_item_s AS DOUBLE) + CAST(sort_per_item_s AS DOUBLE) + CAST(pack_per_item_s AS DOUBLE), 2) as total_per_item_s,
+        bracket,
+        packer,
+        station,
+        CAST(sec_per_scan AS DOUBLE) as sec_per_scan,
+        CAST(wait_after_picking_min AS DOUBLE) as wait_after_picking_min,
+        CAST(wait_sort_to_pack_min AS DOUBLE) as wait_sort_to_pack_min,
+        CAST(wait_pick_to_pack_min AS DOUBLE) as wait_pick_to_pack_min,
+        is_sorted,
+        is_packed,
+        units_sorted,
+        box_units_sorted,
+        created_at
+      FROM warehouse_movements`;
+
+      const params: any[] = [];
+      if (warehouse !== 'all') {
+        sql += ' WHERE warehouse = ?';
+        params.push(warehouse);
+      }
+      sql += ' ORDER BY zacatek_pickovani DESC';
+
+      const [rows]: any = await p.query(sql, params);
+      return rows as MovementRecord[];
+    } catch (err: any) {
+      console.warn('Chyba při dotazu getWarehouseRecords z MariaDB:', err?.message || err);
+    }
+  }
+
+  // Memory fallback
+  if (warehouse === 'all') return memoryMovements;
+  return memoryMovements.filter(r => (r.warehouse || 'ruse') === warehouse);
 }

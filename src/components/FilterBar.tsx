@@ -1,5 +1,5 @@
 import React from 'react';
-import { Calendar, Filter, Search, Clock, SlidersHorizontal, RotateCcw, FileCode } from 'lucide-react';
+import { Calendar, Filter, Search, Clock, SlidersHorizontal, RotateCcw, FileCode, Loader2 } from 'lucide-react';
 import { FilterState, ItemBracket } from '../types.js';
 import { useLanguage } from '../context/LanguageContext.js';
 
@@ -10,6 +10,7 @@ interface FilterBarProps {
   onExportHtml?: () => void;
   totalFilteredCount: number;
   totalAllCount: number;
+  isFiltering?: boolean;
 }
 
 export const FilterBar: React.FC<FilterBarProps> = ({
@@ -19,6 +20,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
   onExportHtml,
   totalFilteredCount,
   totalAllCount,
+  isFiltering = false,
 }) => {
   const { lang, t } = useLanguage();
 
@@ -139,6 +141,12 @@ export const FilterBar: React.FC<FilterBarProps> = ({
 
         {/* Counter of active rows & HTML export */}
         <div className="flex items-center space-x-2.5 text-xs text-slate-400">
+          {isFiltering && (
+            <span className="flex items-center text-xs text-indigo-400 font-medium space-x-1.5 animate-pulse bg-indigo-950/60 border border-indigo-500/30 px-2 py-0.5 rounded-lg">
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
+              <span>{lang === 'cs' ? 'Přepočítávám...' : 'Updating...'}</span>
+            </span>
+          )}
           <span>
             {t.filter.showingCount} <strong className="text-white font-mono">{totalFilteredCount.toLocaleString('cs-CZ')}</strong> {t.filter.ofCount} {totalAllCount.toLocaleString('cs-CZ')} {t.filter.recordsWord}
           </span>

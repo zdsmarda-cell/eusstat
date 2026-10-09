@@ -148,6 +148,7 @@ export function joinSvjTriFiles(files: SvjInputFile[]): SvjTriFileParseResult {
     wait_after_picking_min: number;
   }>();
 
+  let totalUnitsSortedSum = 0;
   for (const row of sortingRows) {
     const boxKey = findKey(row, ['box', 'box_id', 'prepravka']);
     if (!boxKey) continue;
@@ -168,6 +169,8 @@ export function joinSvjTriFiles(files: SvjInputFile[]): SvjTriFileParseResult {
     const units = Math.max(1, parseNumber(kUnits ? row[kUnits] : null, 1));
     const sorters = Math.max(1, parseNumber(kSorters ? row[kSorters] : null, 1));
     const waitMin = parseNumber(kWait ? row[kWait] : null, 0);
+
+    totalUnitsSortedSum += units;
 
     sortMap.set(boxCode, {
       sort_start: start,
@@ -322,20 +325,29 @@ export function joinSvjTriFiles(files: SvjInputFile[]): SvjTriFileParseResult {
         droppedUnpackedCount += 1;
       }
 
-      // Odhad počtu kusů na tuto objednávku
-      let orderUnits = 1;
-      if (totalUnits === ordersInBox) {
-        orderUnits = 1;
-      } else if (totalUnits > ordersInBox) {
-        // Proporcionální rozdělení
-        if (productItems.length > idx && productItems[idx].qty > 1) {
-          orderUnits = productItems[idx].qty;
+      // Přesný počet kusů pro pickování (ze souboru pickingu) a sortingu (ze souboru sortingu):
+      let orderPickedUnits = 1;
+      if (totalUnits <= ordersInBox) {
+        orderPickedUnits = 1;
+      } else {
+        const base = Math.floor(totalUnits / ordersInBox);
+        const remainder = totalUnits % ordersInBox;
+        orderPickedUnits = base + (idx < remainder ? 1 : 0);
+      }
+
+      // Počet kusů vysortovaných (výhradně ze souboru sortingu units_sorted)
+      let orderSortedUnits = 0;
+      if (isBoxSorted && sortInfo && sortInfo.units_sorted > 0) {
+        if (sortInfo.units_sorted <= ordersInBox) {
+          orderSortedUnits = idx < sortInfo.units_sorted ? 1 : 0;
         } else {
-          const avg = totalUnits / ordersInBox;
-          orderUnits = Math.max(1, Math.round(avg));
+          const base = Math.floor(sortInfo.units_sorted / ordersInBox);
+          const remainder = sortInfo.units_sorted % ordersInBox;
+          orderSortedUnits = base + (idx < remainder ? 1 : 0);
         }
       }
 
+      const orderUnits = orderPickedUnits;
       const assignedEan = productItems[idx % Math.max(1, productItems.length)]?.ean || defaultEan;
       const bracket = getBracket(orderUnits);
 
@@ -345,11 +357,11 @@ export function joinSvjTriFiles(files: SvjInputFile[]): SvjTriFileParseResult {
         : Number((boxPickSec / ordersInBox).toFixed(1));
       const pickPerItemSec = orderUnits > 0 ? Number((orderPickSec / orderUnits).toFixed(1)) : orderPickSec;
 
-      // Alokace časů sortingu (pouze pokud byl box vysortován)
+      // Alokace časů sortingu (pouze pokud byl box vysortován, na základě vysortovaných kusů)
       const orderSortSec = (isBoxSorted && sortInfo && sortInfo.units_sorted > 0)
-        ? Number(((sortInfo.sort_sec / sortInfo.units_sorted) * orderUnits).toFixed(1))
+        ? Number(((sortInfo.sort_sec / sortInfo.units_sorted) * orderSortedUnits).toFixed(1))
         : 0;
-      const sortPerItemSec = (isBoxSorted && orderUnits > 0) ? Number((orderSortSec / orderUnits).toFixed(1)) : 0;
+      const sortPerItemSec = (isBoxSorted && orderSortedUnits > 0) ? Number((orderSortSec / orderSortedUnits).toFixed(1)) : 0;
 
       // Alokace balení (výhradně z ručního balení a po sortingu)
       const orderPackSec = (isOrderPacked && packInfo) ? packInfo.pack_sec : 0;
@@ -396,6 +408,8 @@ export function joinSvjTriFiles(files: SvjInputFile[]): SvjTriFileParseResult {
         box_unique_eans: uniqueEansCount,
         box_total_units: totalUnits,
         box_shared_skus_count: Math.max(0, uniqueEansCount - 1),
+        units_sorted: orderSortedUnits,
+        box_units_sorted: isBoxSorted && sortInfo ? sortInfo.units_sorted : 0,
         is_sorted: isBoxSorted,
         is_packed: isOrderPacked,
       });
@@ -410,6 +424,7 @@ export function joinSvjTriFiles(files: SvjInputFile[]): SvjTriFileParseResult {
     uniqueOrdersPicked: uniqueOrdersPickedCount,
     uniqueOrdersSorted: uniqueOrdersSortedCount,
     uniqueOrdersPacked: uniqueOrdersPackedCount,
+    totalUnitsSorted: totalUnitsSortedSum,
     matchedCompleteOrders: uniqueOrdersPackedCount,
     droppedUnsortedOrders: droppedUnsortedCount,
     droppedUnpackedOrders: droppedUnpackedCount,

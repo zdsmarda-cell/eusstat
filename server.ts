@@ -16,7 +16,21 @@ import {
   getMovements,
   clearMovements,
   flushMovementsToDisk,
+  getCachedStats,
+  saveCachedStats,
+  clearStatsCache,
+  getWarehouseRecords,
 } from './src/server/db.js';
+import {
+  computeBracketStatistics,
+  computeDailyStatistics,
+  computeDailyPerformanceReport,
+  computeBoxSynergyAndHypothesis,
+  computePeriodSummary,
+  computeWarehouseComparison,
+  computeSvjSortingStatistics,
+  runMultipickSlotSimulation,
+} from './src/utils/analytics.js';
 import {
   requireAuth,
   generateTokenPair,
@@ -218,6 +232,77 @@ app.post('/api/db/save', async (req, res) => {
   res.json({ success: true, status });
 });
 
+// =========================================================================
+// ULTRA-FAST CACHED ANALYTICS ENDPOINT (Uses MariaDB helper table & RAM cache)
+// =========================================================================
+app.get('/api/analytics/summary', async (req, res) => {
+  try {
+    const warehouse = ((req.query.warehouse as string) || 'all') as 'ruse' | 'svj' | 'all';
+    const forceRefresh = req.query.forceRefresh === 'true';
+    const cacheKey = `summary_${warehouse}`;
+
+    if (!forceRefresh) {
+      const cached = await getCachedStats(cacheKey);
+      if (cached) {
+        return res.json({
+          success: true,
+          source: 'cache',
+          ...cached,
+        });
+      }
+    }
+
+    // Compute from warehouse records
+    const [ruseRecords, svjRecords] = await Promise.all([
+      warehouse === 'svj' ? [] : getWarehouseRecords('ruse'),
+      warehouse === 'ruse' ? [] : getWarehouseRecords('svj'),
+    ]);
+
+    const activeRecords = warehouse === 'ruse'
+      ? ruseRecords
+      : warehouse === 'svj'
+      ? svjRecords
+      : [...ruseRecords, ...svjRecords];
+
+    const bracketStats = computeBracketStatistics(activeRecords);
+    const dailyStats = computeDailyStatistics(activeRecords);
+    const dailyReport = computeDailyPerformanceReport(activeRecords);
+    const synergyData = computeBoxSynergyAndHypothesis(activeRecords);
+    const periodSummary = computePeriodSummary(activeRecords);
+    const comparison = computeWarehouseComparison(ruseRecords, svjRecords);
+    const svjSorting = warehouse === 'ruse' ? null : computeSvjSortingStatistics(svjRecords.length > 0 ? svjRecords : activeRecords);
+    const simulation = runMultipickSlotSimulation(activeRecords);
+
+    const payload = {
+      warehouse,
+      recordCount: activeRecords.length,
+      ruseCount: ruseRecords.length,
+      svjCount: svjRecords.length,
+      bracketStats,
+      dailyStats,
+      dailyReport,
+      synergyData,
+      periodSummary,
+      comparison,
+      svjSorting,
+      simulation,
+      updatedAt: new Date().toISOString(),
+    };
+
+    // Save to MariaDB warehouse_stats_cache table and RAM cache
+    await saveCachedStats(cacheKey, warehouse, activeRecords.length, payload);
+
+    return res.json({
+      success: true,
+      source: 'computed',
+      ...payload,
+    });
+  } catch (err: any) {
+    console.error('Chyba při výpočtu / načítání analytického souhrnu:', err);
+    res.status(500).json({ error: err?.message || 'Chyba při výpočtu statistického souhrnu' });
+  }
+});
+
 // Movements Endpoints
 app.get('/api/movements', async (req, res) => {
   try {
@@ -229,7 +314,7 @@ app.get('/api/movements', async (req, res) => {
       bracket: bracket as string,
       box: box as string,
       query: query as string,
-      limit: limit ? Number(limit) : 500000,
+      limit: limit ? Number(limit) : 1000,
       offset: offset ? Number(offset) : 0,
     });
     res.json(result);

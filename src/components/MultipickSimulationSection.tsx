@@ -13,13 +13,14 @@ import {
   ShieldAlert,
   BarChart3
 } from 'lucide-react';
-import { MovementRecord, SimulationBracketResult } from '../types.js';
+import { MovementRecord, SimulationBracketResult, MultipickSimulationReport } from '../types.js';
 import { runMultipickSlotSimulation, formatTimeValue } from '../utils/analytics.js';
 import { useLanguage } from '../context/LanguageContext.js';
 
 interface MultipickSimulationSectionProps {
   records: MovementRecord[];
   unit: 'sec' | 'min';
+  cachedSimulation?: MultipickSimulationReport | null;
 }
 
 function formatHoursOrMins(seconds: number): string {
@@ -37,11 +38,15 @@ function formatHoursOrMins(seconds: number): string {
 export const MultipickSimulationSection: React.FC<MultipickSimulationSectionProps> = ({
   records,
   unit,
+  cachedSimulation,
 }) => {
   const { lang, t } = useLanguage();
 
   // Initial simulation report to detect real limits
-  const initialReport = useMemo(() => runMultipickSlotSimulation(records), [records]);
+  const initialReport = useMemo(() => {
+    if (cachedSimulation) return cachedSimulation;
+    return runMultipickSlotSimulation(records);
+  }, [cachedSimulation, records]);
 
   // Capacity limit override state
   const [capacityOverride, setCapacityOverride] = useState<number>(initialReport.boxCapacityLimit);

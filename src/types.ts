@@ -56,6 +56,8 @@ export interface MovementRecord {
   box_unique_eans?: number; // count of unique EANs in the parent box
   box_total_units?: number; // total units in the parent box
   box_shared_skus_count?: number; // count of SKUs that appear in >1 order in this box
+  units_sorted?: number; // count of sorted units for this order (SVJ)
+  box_units_sorted?: number; // total units_sorted in parent box (SVJ)
   is_sorted?: boolean; // flag if order was sorted
   is_packed?: boolean; // flag if order was packed
   created_at?: string;
@@ -232,6 +234,8 @@ export interface PeriodSummary {
   totalOrders: number;
   totalSkus: number;
   totalUnits: number;
+  top80SkusCount?: number;
+  top80SkusSharePct?: number;
   avgUnitsPerOrder: number;
   medianOrdersPerBox: number;
   avgOrdersPerBox: number;
@@ -322,6 +326,7 @@ export interface SvjTriFileParseResult {
   uniqueOrdersPicked: number;
   uniqueOrdersSorted: number;
   uniqueOrdersPacked: number;
+  totalUnitsSorted?: number;
   matchedCompleteOrders: number;
   droppedUnsortedOrders: number;
   droppedUnpackedOrders: number;
@@ -352,6 +357,10 @@ export interface WarehouseComparisonReport {
   svjTotalUnits: number;
   ruseTotalSkus: number;
   svjTotalSkus: number;
+  ruseTop80SkusCount: number;
+  ruseTop80SkusSharePct: number;
+  svjTop80SkusCount: number;
+  svjTop80SkusSharePct: number;
   ruseAvgUnitsPerOrder: number;
   svjAvgUnitsPerOrder: number;
   ruseMedianOrdersPerBox: number;
@@ -367,4 +376,24 @@ export interface WarehouseComparisonReport {
   ruseAvgTotalLeadTimeMin: number;
   svjAvgTotalLeadTimeMin: number;
   bracketComparisons: WarehouseComparisonBracket[];
+
+  // Multipicking potential & optimization comparison
+  ruseMultipickSavedHours: number;
+  ruseMultipickSavingsPct: number;
+  ruseBaselineMultipickRatioPct: number;
+  ruseSimulatedMultipickRatioPct: number;
+
+  svjMultipickSavedHours: number;
+  svjMultipickSavingsPct: number;
+  svjBaselineMultipickRatioPct: number;
+  svjSimulatedMultipickRatioPct: number;
+
+  // Celkový souhrn přes všechny sklady za dané období
+  totalCombinedSkus?: number;
+  totalCombinedTop80SkusCount?: number;
+  totalCombinedTop80SkusSharePct?: number;
+  totalCombinedMultipickSavedHours?: number;
+  totalCombinedMultipickSavingsPct?: number;
+  ruseTopProducts?: { ean: string; units: number; sharePct: number }[];
+  svjTopProducts?: { ean: string; units: number; sharePct: number }[];
 }

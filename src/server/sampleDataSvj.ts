@@ -134,6 +134,8 @@ export function generateSampleSvjData(daysBack: number = 14, totalBoxesCount: nu
         box_unique_eans: boxProducts.length,
         box_total_units: totalUnits,
         box_shared_skus_count: Math.max(0, boxProducts.length - 1),
+        units_sorted: orderUnits,
+        box_units_sorted: totalUnits,
         is_sorted: true,
         is_packed: true,
       });

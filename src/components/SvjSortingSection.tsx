@@ -12,19 +12,20 @@ import {
   UserCheck,
 } from 'lucide-react';
 import { MovementRecord } from '../types.js';
-import { computeSvjSortingStatistics, formatTimeValue } from '../utils/analytics.js';
+import { computeSvjSortingStatistics, formatTimeValue, SvjSortingOverview } from '../utils/analytics.js';
 import { useLanguage } from '../context/LanguageContext.js';
 
 interface SvjSortingSectionProps {
   records: MovementRecord[];
   unit: 'sec' | 'min';
+  cachedStats?: SvjSortingOverview | null;
 }
 
-export const SvjSortingSection: React.FC<SvjSortingSectionProps> = ({ records, unit }) => {
+export const SvjSortingSection: React.FC<SvjSortingSectionProps> = ({ records, unit, cachedStats }) => {
   const { lang } = useLanguage();
   const isCs = lang === 'cs';
 
-  const stats = computeSvjSortingStatistics(records);
+  const stats = cachedStats || computeSvjSortingStatistics(records);
 
   return (
     <div className="bg-slate-900/80 border border-indigo-500/30 rounded-3xl p-6 shadow-xl relative overflow-hidden backdrop-blur-md space-y-6">

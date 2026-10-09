@@ -12,7 +12,7 @@ import {
   Info,
   CheckCircle2
 } from 'lucide-react';
-import { DailyStat, MovementRecord, DayOfWeekStat } from '../types.js';
+import { DailyStat, MovementRecord, DayOfWeekStat, DailyPerformanceReport } from '../types.js';
 import { computeDailyPerformanceReport, formatTimeValue } from '../utils/analytics.js';
 import { useLanguage } from '../context/LanguageContext.js';
 
@@ -20,6 +20,7 @@ interface DailyTrendChartProps {
   dailyStats: DailyStat[];
   records?: MovementRecord[];
   unit: 'sec' | 'min';
+  cachedReport?: DailyPerformanceReport | null;
 }
 
 type ViewTab = 'dow' | 'calendar' | 'chart';
@@ -28,15 +29,17 @@ export const DailyTrendChart: React.FC<DailyTrendChartProps> = ({
   dailyStats,
   records = [],
   unit,
+  cachedReport,
 }) => {
   const { lang, t } = useLanguage();
   const [activeTab, setActiveTab] = useState<ViewTab>('dow');
   const [hoveredChartIndex, setHoveredChartIndex] = useState<number | null>(null);
 
-  // Compute full report including DOW statistics, calendar days, and overall Pareto
+  // Use precomputed report if provided or compute from records
   const report = useMemo(() => {
+    if (cachedReport) return cachedReport;
     return computeDailyPerformanceReport(records);
-  }, [records]);
+  }, [cachedReport, records]);
 
   const { dayOfWeekStats, dailyStats: enrichedDailyStats, overallPareto } = report;
 

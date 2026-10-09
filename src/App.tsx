@@ -40,6 +40,23 @@ import {
 
 export type WarehouseTab = 'ruse' | 'svj' | 'summary';
 
+interface CachedAnalyticsSummary {
+  warehouse: 'ruse' | 'svj' | 'all';
+  recordCount: number;
+  ruseCount: number;
+  svjCount: number;
+  bracketStats: any[];
+  dailyStats: any[];
+  dailyReport?: any;
+  synergyData: any;
+  periodSummary: any;
+  comparison: any;
+  svjSorting?: any;
+  simulation?: any;
+  source?: 'cache' | 'computed';
+  updatedAt?: string;
+}
+
 function Dashboard() {
   const { lang, t } = useLanguage();
   const isCs = lang === 'cs';
@@ -51,6 +68,9 @@ function Dashboard() {
     type: 'memory',
   });
   const [isLoading, setIsLoading] = useState(true);
+  const [isTabSwitching, setIsTabSwitching] = useState(false);
+  const [isFiltering, setIsFiltering] = useState(false);
+  const [serverAnalytics, setServerAnalytics] = useState<Record<string, CachedAnalyticsSummary>>({});
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isDbSettingsModalOpen, setIsDbSettingsModalOpen] = useState(false);
   const [isSampleMenuOpen, setIsSampleMenuOpen] = useState(false);
@@ -74,31 +94,62 @@ function Dashboard() {
 
   const [filter, setFilter] = useState<FilterState>(initialFilter);
 
-  // Fetch initial data and DB status
+  // Fetch summary analytics from server / DB helper table cache
+  const fetchAnalyticsSummary = useCallback(async (warehouse: 'ruse' | 'svj' | 'all' = 'all', forceRefresh: boolean = false) => {
+    try {
+      const res = await authFetch(apiUrl(`/api/analytics/summary?warehouse=${warehouse}${forceRefresh ? '&forceRefresh=true' : ''}`));
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          setServerAnalytics(prev => ({ ...prev, [warehouse]: data }));
+          return data;
+        }
+      }
+    } catch (err) {
+      console.warn('Nelze načíst souhrn z databázové mezipaměti:', err);
+    }
+    return null;
+  }, []);
+
+  // Fetch initial data, cached DB analytics and DB status
   const fetchData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [statusRes, movementsRes] = await Promise.all([
+      const [statusRes, summaryRes, movementsRes] = await Promise.all([
         authFetch(apiUrl('/api/db/status')),
-        authFetch(apiUrl('/api/movements?limit=500000')),
+        authFetch(apiUrl('/api/analytics/summary?warehouse=all')),
+        authFetch(apiUrl('/api/movements?limit=1000')),
       ]);
 
       let statusData: DbStatus = { connected: false, type: 'memory' };
       let movementsData: { records: MovementRecord[] } = { records: [] };
 
       if (statusRes.ok) {
-        const text = await statusRes.text();
         try {
-          statusData = JSON.parse(text);
+          statusData = await statusRes.json();
+        } catch {
+          // ignore
+        }
+      }
+
+      if (summaryRes.ok) {
+        try {
+          const sumData = await summaryRes.json();
+          if (sumData.success) {
+            setServerAnalytics(prev => ({
+              ...prev,
+              all: sumData,
+              ...(sumData.warehouse === 'all' ? { ruse: { ...sumData, warehouse: 'ruse' }, svj: { ...sumData, warehouse: 'svj' } } : {}),
+            }));
+          }
         } catch {
           // ignore
         }
       }
 
       if (movementsRes.ok) {
-        const text = await movementsRes.text();
         try {
-          movementsData = JSON.parse(text);
+          movementsData = await movementsRes.json();
         } catch {
           // ignore
         }
@@ -200,23 +251,70 @@ function Dashboard() {
     return records;
   }, [activeTab, ruseRecords, svjRecords, records]);
 
-  // Compute stats on active tab dataset
+  // Tab switching handler with spinner
+  const handleTabChange = useCallback(async (tab: WarehouseTab) => {
+    if (tab === activeTab) return;
+    setIsTabSwitching(true);
+    try {
+      const targetWh = tab === 'summary' ? 'all' : tab;
+      if (!serverAnalytics[targetWh]) {
+        await fetchAnalyticsSummary(targetWh as any);
+      }
+      setActiveTab(tab);
+    } finally {
+      setTimeout(() => {
+        setIsTabSwitching(false);
+      }, 70);
+    }
+  }, [activeTab, serverAnalytics, fetchAnalyticsSummary]);
+
+  // Filter change handler with spinner
+  const handleFilterChange = useCallback((newFilter: FilterState) => {
+    setIsFiltering(true);
+    setFilter(newFilter);
+    setTimeout(() => {
+      setIsFiltering(false);
+    }, 100);
+  }, []);
+
+  const isDefaultFilter =
+    filter.datePreset === 'all' &&
+    filter.bracket === 'all' &&
+    !filter.searchBox.trim() &&
+    !filter.searchQuery.trim() &&
+    !filter.excludeOutliers;
+
+  const currentServerAnalytics = serverAnalytics[activeTab === 'summary' ? 'all' : activeTab] || serverAnalytics.all;
+
+  // Compute or read stats for active tab dataset
   const bracketStats = useMemo(() => {
+    if (isDefaultFilter && currentServerAnalytics?.bracketStats?.length) {
+      return currentServerAnalytics.bracketStats;
+    }
     return computeBracketStatistics(activeTabRecords);
-  }, [activeTabRecords]);
+  }, [isDefaultFilter, currentServerAnalytics, activeTabRecords]);
 
   const dailyStats = useMemo(() => {
+    if (isDefaultFilter && currentServerAnalytics?.dailyStats?.length) {
+      return currentServerAnalytics.dailyStats;
+    }
     return computeDailyStatistics(activeTabRecords);
-  }, [activeTabRecords]);
+  }, [isDefaultFilter, currentServerAnalytics, activeTabRecords]);
 
   const synergyData = useMemo(() => {
+    if (isDefaultFilter && currentServerAnalytics?.synergyData) {
+      return currentServerAnalytics.synergyData;
+    }
     return computeBoxSynergyAndHypothesis(activeTabRecords);
-  }, [activeTabRecords]);
+  }, [isDefaultFilter, currentServerAnalytics, activeTabRecords]);
 
   // Sumární bilance za zkoumané období
   const periodSummary = useMemo(() => {
+    if (isDefaultFilter && currentServerAnalytics?.periodSummary) {
+      return currentServerAnalytics.periodSummary;
+    }
     return computePeriodSummary(activeTabRecords);
-  }, [activeTabRecords]);
+  }, [isDefaultFilter, currentServerAnalytics, activeTabRecords]);
 
   // Export HTML report
   const handleExportHtml = () => {
@@ -475,7 +573,7 @@ function Dashboard() {
           <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
             {/* Tab 1: Sklad Ruse */}
             <button
-              onClick={() => setActiveTab('ruse')}
+              onClick={() => handleTabChange('ruse')}
               className={`flex items-center space-x-2.5 px-4 py-2.5 rounded-2xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
                 activeTab === 'ruse'
                   ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/25 ring-2 ring-blue-400/40'
@@ -489,13 +587,13 @@ function Dashboard() {
                   activeTab === 'ruse' ? 'bg-blue-700/80 text-blue-100' : 'bg-slate-800 text-slate-400'
                 }`}
               >
-                {ruseRecords.length.toLocaleString('cs-CZ')}
+                {(serverAnalytics.all?.ruseCount ?? ruseRecords.length).toLocaleString('cs-CZ')}
               </span>
             </button>
 
             {/* Tab 2: Sklad SVJ */}
             <button
-              onClick={() => setActiveTab('svj')}
+              onClick={() => handleTabChange('svj')}
               className={`flex items-center space-x-2.5 px-4 py-2.5 rounded-2xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
                 activeTab === 'svj'
                   ? 'bg-purple-600 text-white shadow-lg shadow-purple-500/25 ring-2 ring-purple-400/40'
@@ -509,7 +607,7 @@ function Dashboard() {
                   activeTab === 'svj' ? 'bg-purple-700/80 text-purple-100' : 'bg-slate-800 text-slate-400'
                 }`}
               >
-                {svjRecords.length.toLocaleString('cs-CZ')}
+                {(serverAnalytics.all?.svjCount ?? svjRecords.length).toLocaleString('cs-CZ')}
               </span>
               <span
                 className={`hidden lg:inline-block px-1.5 py-0.5 rounded text-[10px] uppercase font-bold border ${
@@ -524,7 +622,7 @@ function Dashboard() {
 
             {/* Tab 3: Srovnání skladů (Summary) */}
             <button
-              onClick={() => setActiveTab('summary')}
+              onClick={() => handleTabChange('summary')}
               className={`flex items-center space-x-2.5 px-4 py-2.5 rounded-2xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
                 activeTab === 'summary'
                   ? 'bg-gradient-to-r from-indigo-600 via-blue-600 to-cyan-600 text-white shadow-lg shadow-indigo-500/25 ring-2 ring-cyan-400/40'
@@ -598,19 +696,31 @@ function Dashboard() {
         {/* Global Filter Bar */}
         <FilterBar
           filter={filter}
-          onChange={setFilter}
-          onReset={() => setFilter(initialFilter)}
+          onChange={handleFilterChange}
+          onReset={() => handleFilterChange(initialFilter)}
           onExportHtml={handleExportHtml}
-          totalFilteredCount={activeTabRecords.length}
-          totalAllCount={activeAllWarehouseRecords.length}
+          totalFilteredCount={isDefaultFilter ? (currentServerAnalytics?.recordCount ?? activeTabRecords.length) : activeTabRecords.length}
+          totalAllCount={serverAnalytics.all?.recordCount ?? activeAllWarehouseRecords.length}
+          isFiltering={isFiltering}
         />
 
-        {isLoading ? (
-          <div className="flex flex-col items-center justify-center py-20 space-y-3">
-            <Loader2 className="w-8 h-8 text-indigo-500 animate-spin" />
-            <p className="text-xs text-slate-400 font-medium">
-              {isCs ? 'Načítám skladová data a počítám statistiky...' : 'Loading warehouse data & computing analytics...'}
-            </p>
+        {/* PROMINENT LOADING SPINNER ("kolečko") - Shown on initial load & tab switching */}
+        {isLoading || isTabSwitching ? (
+          <div className="bg-slate-900/80 border border-slate-800 rounded-3xl p-16 text-center max-w-md mx-auto space-y-4 shadow-2xl my-8 animate-in fade-in duration-150">
+            <div className="relative w-16 h-16 mx-auto flex items-center justify-center">
+              <div className="absolute inset-0 rounded-full bg-indigo-500/20 animate-ping" />
+              <Loader2 className="w-12 h-12 text-indigo-400 animate-spin relative z-10" />
+            </div>
+            <div className="space-y-1">
+              <h3 className="text-base font-bold text-white">
+                {isCs ? 'Načítám z mezipaměti databáze...' : 'Loading from database cache...'}
+              </h3>
+              <p className="text-xs text-slate-400">
+                {isCs
+                  ? 'Čtu předpočítané statistiky a metriky skladu bez zpoždění.'
+                  : 'Reading precalculated warehouse metrics and statistics.'}
+              </p>
+            </div>
           </div>
         ) : activeTab === 'summary' ? (
           /* ========================================================
@@ -644,6 +754,7 @@ function Dashboard() {
               ruseRecords={filteredRuseRecords}
               svjRecords={filteredSvjRecords}
               unit={filter.unit}
+              cachedReport={serverAnalytics.summary?.comparison}
             />
           </div>
         ) : activeTabRecords.length === 0 ? (
@@ -761,7 +872,11 @@ function Dashboard() {
 
             {/* 3. POUZE PRO SKLAD SVJ: Sekce pro činnost sortingu a meziskladové buffery */}
             {activeTab === 'svj' && (
-              <SvjSortingSection records={activeTabRecords} unit={filter.unit} />
+              <SvjSortingSection
+                records={activeTabRecords}
+                unit={filter.unit}
+                cachedStats={serverAnalytics.svj?.svjSorting}
+              />
             )}
 
             {/* 4. Core Section: Bracket Comparison (1, 2, 3, 4, 5, 6+ ks) */}

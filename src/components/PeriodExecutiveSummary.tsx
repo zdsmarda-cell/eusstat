@@ -123,14 +123,19 @@ export const PeriodExecutiveSummary: React.FC<PeriodExecutiveSummaryProps> = ({
             <div className="text-2xl font-black text-white font-mono tracking-tight">
               {summary.totalSkus.toLocaleString('cs-CZ')}
             </div>
-            <p className="mt-1 text-[11px] text-slate-400 flex items-center space-x-1">
+            <p className="mt-1 text-[11px] text-slate-400 flex items-center justify-between">
               <span>{isCs ? 'Různých EAN kódů' : 'Distinct product EANs'}</span>
+              {summary.top80SkusCount !== undefined && summary.top80SkusCount > 0 && (
+                <span className="text-amber-400 font-semibold font-mono text-[10px]">
+                  80%: {summary.top80SkusCount.toLocaleString('cs-CZ')} SKU
+                </span>
+              )}
             </p>
           </div>
           <div className="mt-2 pt-2 border-t border-slate-800/60 flex items-center justify-between text-[11px] text-slate-400">
-            <span>{isCs ? 'Šíře sortimentu' : 'Assortment breadth'}</span>
-            <span className="text-purple-400 font-semibold font-mono">
-              {(summary.totalSkus / Math.max(1, summary.totalOrders)).toFixed(2)} SKU/obj.
+            <span>{isCs ? '80 % objemu tvoří:' : '80% volume is:'}</span>
+            <span className="text-amber-400 font-semibold font-mono">
+              {summary.top80SkusSharePct !== undefined ? `${summary.top80SkusSharePct} % SKU` : `${(summary.totalSkus / Math.max(1, summary.totalOrders)).toFixed(2)} SKU/obj.`}
             </span>
           </div>
         </div>
