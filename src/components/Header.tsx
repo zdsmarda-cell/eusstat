@@ -138,16 +138,18 @@ export const Header: React.FC<HeaderProps> = ({
               </button>
             </div>
 
-            {/* Seed Sample Data Button */}
-            <button
-              onClick={onLoadSampleData}
-              disabled={isLoading}
-              className="hidden lg:flex items-center space-x-1.5 px-3 py-1.5 text-xs font-medium text-indigo-300 bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/30 rounded-lg transition-all"
-              title="Vygenerovat ukázková skladová data"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-              <span>{t.header.sampleDataBtn}</span>
-            </button>
+            {/* Seed Sample Data Button - skryto při připojení k MariaDB / v ostrém provozu */}
+            {dbStatus?.type !== 'mariadb' && (
+              <button
+                onClick={onLoadSampleData}
+                disabled={isLoading}
+                className="hidden lg:flex items-center space-x-1.5 px-3 py-1.5 text-xs font-medium text-indigo-300 bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/30 rounded-lg transition-all"
+                title="Vygenerovat ukázková skladová data"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+                <span>{t.header.sampleDataBtn}</span>
+              </button>
+            )}
 
             {/* HTML Report Export Button */}
             {onExportHtml && (

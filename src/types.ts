@@ -338,6 +338,15 @@ export interface WarehouseComparisonBracket {
   label: string;
   ruseOrders: number;
   svjOrders: number;
+  // Mediány (na 1. místě)
+  ruseMedianPickPerItemSec: number;
+  svjMedianPickPerItemSec: number;
+  ruseMedianPackPerItemSec: number;
+  svjMedianPackPerItemSec: number;
+  svjMedianSortPerItemSec: number;
+  ruseMedianTotalPerItemSec: number;
+  svjMedianTotalPerItemSec: number;
+  // Aritmetické průměry (na 2. místě)
   ruseAvgPickPerItemSec: number;
   svjAvgPickPerItemSec: number;
   ruseAvgPackPerItemSec: number;
@@ -347,6 +356,8 @@ export interface WarehouseComparisonBracket {
   svjTotalPerItemSec: number;
   pickDiffPct: number;
   packDiffPct: number;
+  pickMedianDiffPct: number;
+  packMedianDiffPct: number;
 }
 
 export interface WarehouseComparisonReport {
@@ -365,6 +376,22 @@ export interface WarehouseComparisonReport {
   svjAvgUnitsPerOrder: number;
   ruseMedianOrdersPerBox: number;
   svjMedianOrdersPerBox: number;
+
+  // Mediány na 1. místě pro klíčové operace
+  ruseMedianPickPerItemSec: number;
+  svjMedianPickPerItemSec: number;
+  ruseMedianPackPerItemSec: number;
+  svjMedianPackPerItemSec: number;
+  svjMedianSortPerItemSec: number;
+  ruseMedianTotalPerItemSec: number;
+  svjMedianTotalPerItemSec: number;
+  ruseMedianWaitPickToPackMin: number;
+  svjMedianWaitPickToSortMin: number;
+  svjMedianWaitSortToPackMin: number;
+  ruseMedianTotalLeadTimeMin: number;
+  svjMedianTotalLeadTimeMin: number;
+
+  // Aritmetické průměry na 2. místě pro klíčové operace
   ruseAvgPickPerItemSec: number;
   svjAvgPickPerItemSec: number;
   ruseAvgPackPerItemSec: number;

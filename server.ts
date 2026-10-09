@@ -98,14 +98,7 @@ app.use(express.urlencoded({ extended: true, limit: '100mb' }));
     if (status.connected && status.type === 'mariadb') {
       console.log(`✅ Úspěšně připojeno k MariaDB: ${status.user}@${status.host}/${status.database} (řádků: ${status.totalRows})`);
     } else {
-      console.log(`ℹ️ Aplikace běží v lokálním diskovém režimu. Pro připojení MariaDB zadejte heslo v Nastavení DB.`);
-    }
-
-    if (process.env.NODE_ENV !== 'production' && !process.env.DB_HOST && !process.env.MARIADB_HOST && status.totalRows === 0) {
-      console.log('Generuji ukázková data pro sklady Ruse a SVJ pro vývojové prostředí...');
-      const ruseSamples = generateSampleWarehouseData(14, 380);
-      const svjSamples = generateSampleSvjData(14, 35);
-      await insertMovements([...ruseSamples, ...svjSamples]);
+      console.log(`ℹ️ Aplikace běží v režimu MariaDB. Pro připojení MariaDB zadejte heslo v Nastavení DB.`);
     }
   } catch (err: any) {
     console.error('Chyba při inicializaci DB:', err?.message || err);
@@ -234,12 +227,33 @@ app.post('/api/db/save', async (req, res) => {
 
 // =========================================================================
 // ULTRA-FAST CACHED ANALYTICS ENDPOINT (Uses MariaDB helper table & RAM cache)
+// Podporuje všechny filtry (extrémní hodnoty, rozsah dat, bracket, vyhledávání)
+// a počítá statistiky VÝHRADNĚ z databáze MariaDB.
 // =========================================================================
 app.get('/api/analytics/summary', async (req, res) => {
   try {
     const warehouse = ((req.query.warehouse as string) || 'all') as 'ruse' | 'svj' | 'all';
     const forceRefresh = req.query.forceRefresh === 'true';
-    const cacheKey = `summary_${warehouse}`;
+    const excludeOutliers = req.query.excludeOutliers === 'true';
+    const datePreset = (req.query.datePreset as string) || 'all';
+    const dateFrom = (req.query.dateFrom as string) || '';
+    const dateTo = (req.query.dateTo as string) || '';
+    const bracket = (req.query.bracket as string) || 'all';
+    const box = (req.query.box as string) || '';
+    const query = (req.query.query as string) || '';
+
+    const filterObj = {
+      excludeOutliers,
+      datePreset,
+      dateFrom,
+      dateTo,
+      bracket,
+      box,
+      query,
+    };
+
+    const filterSuffix = `_outliers${excludeOutliers ? 1 : 0}_br${bracket}_preset${datePreset}_from${dateFrom}_to${dateTo}_box${encodeURIComponent(box)}_q${encodeURIComponent(query)}`;
+    const cacheKey = `summary_${warehouse}${filterSuffix}`;
 
     if (!forceRefresh) {
       const cached = await getCachedStats(cacheKey);
@@ -252,10 +266,10 @@ app.get('/api/analytics/summary', async (req, res) => {
       }
     }
 
-    // Compute from warehouse records
+    // Compute from warehouse records with DB filters applied directly in SQL
     const [ruseRecords, svjRecords] = await Promise.all([
-      warehouse === 'svj' ? [] : getWarehouseRecords('ruse'),
-      warehouse === 'ruse' ? [] : getWarehouseRecords('svj'),
+      warehouse === 'svj' ? [] : getWarehouseRecords('ruse', filterObj),
+      warehouse === 'ruse' ? [] : getWarehouseRecords('svj', filterObj),
     ]);
 
     const activeRecords = warehouse === 'ruse'
@@ -275,6 +289,7 @@ app.get('/api/analytics/summary', async (req, res) => {
 
     const payload = {
       warehouse,
+      filters: filterObj,
       recordCount: activeRecords.length,
       ruseCount: ruseRecords.length,
       svjCount: svjRecords.length,
@@ -298,8 +313,8 @@ app.get('/api/analytics/summary', async (req, res) => {
       ...payload,
     });
   } catch (err: any) {
-    console.error('Chyba při výpočtu / načítání analytického souhrnu:', err);
-    res.status(500).json({ error: err?.message || 'Chyba při výpočtu statistického souhrnu' });
+    console.error('Chyba při výpočtu / načítání analytického souhrnu z DB:', err);
+    res.status(500).json({ error: err?.message || 'Chyba při výpočtu statistického souhrnu z databáze' });
   }
 });
 
@@ -354,6 +369,12 @@ app.post('/api/movements/flush', async (_req, res) => {
 // Seed sample data for Ruse
 app.post('/api/movements/seed-sample', async (req, res) => {
   try {
+    const status = await getDbStatus();
+    if (isProduction || (status.connected && status.type === 'mariadb')) {
+      return res.status(403).json({
+        error: 'V produkčním prostředí a při aktivním připojení k MariaDB je generování ukázkových dat zakázáno. Všechna data se načítají přímo z DB.',
+      });
+    }
     const count = Number(req.body.count) || 400;
     const days = Number(req.body.days) || 14;
     const clearOnlyThis = req.body.clearOnlyThis !== false;
@@ -377,6 +398,12 @@ app.post('/api/movements/seed-sample', async (req, res) => {
 // Seed sample data for SVJ (Picking + Sorting + Manual Packing)
 app.post('/api/movements/seed-svj', async (req, res) => {
   try {
+    const status = await getDbStatus();
+    if (isProduction || (status.connected && status.type === 'mariadb')) {
+      return res.status(403).json({
+        error: 'V produkčním prostředí a při aktivním připojení k MariaDB je generování ukázkových dat zakázáno. Všechna data se načítají přímo z DB.',
+      });
+    }
     const boxesCount = Number(req.body.boxes) || 35;
     const days = Number(req.body.days) || 14;
     const clearOnlyThis = req.body.clearOnlyThis !== false;

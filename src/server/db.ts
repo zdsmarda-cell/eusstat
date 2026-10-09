@@ -87,20 +87,24 @@ function saveConfigToFile(config: MariaDbConfig): void {
 }
 
 // Persistent fallback dataset stored on disk (not just RAM)
+// V produkci a při konfiguraci MariaDB se lokální paměť NIKDY nepoužívá!
 let memoryMovements: MovementRecord[] = [];
 
-// Load persistent disk records on startup
-try {
-  if (fs.existsSync(PERSISTENT_DATA_PATH)) {
+// Načtení z disku pouze pokud nejsme v produkci a není konfigurován žádný DB host
+const isProductionEnv = process.env.NODE_ENV === 'production' || Boolean(process.env.DB_HOST || process.env.MARIADB_HOST);
+
+if (!isProductionEnv && fs.existsSync(PERSISTENT_DATA_PATH)) {
+  try {
     const raw = fs.readFileSync(PERSISTENT_DATA_PATH, 'utf-8');
     memoryMovements = JSON.parse(raw);
     console.log(`📂 Načteno ${memoryMovements.length} uložených záznamů z diskového úložiště (${PERSISTENT_DATA_PATH})`);
+  } catch (e) {
+    console.warn('Could not read persistent warehouse_movements.json:', e);
   }
-} catch (e) {
-  console.warn('Could not read persistent warehouse_movements.json:', e);
 }
 
 function saveMovementsToDisk(): void {
+  if (isProductionEnv) return;
   try {
     fs.writeFileSync(PERSISTENT_DATA_PATH, JSON.stringify(memoryMovements), 'utf-8');
   } catch (err) {
@@ -181,8 +185,8 @@ export async function getPool(): Promise<mysql.Pool | null> {
         lastConnectionError = null;
         console.log(`✅ MariaDB spojení a schéma ověřeno: ${currentConfig.user}@${currentConfig.host}:${currentConfig.port}/${currentConfig.database}`);
 
-        // Automatická synchronizace: Pokud jsou v lokálním úložišti záznamy a MariaDB je prázdná, synchronizujeme je do MariaDB!
-        syncPendingMovementsToMariaDb(newPool).catch(() => {});
+        // V produkci a při připojení k MariaDB se lokální paměť nesynchronizuje
+        // Schéma je inicializováno přímo v MariaDB
       } catch (schemaErr: any) {
         lastConnectionError = schemaErr?.message || 'Chyba inicializace MariaDB schématu';
         console.warn('Warning: Could not auto-initialize schema on pool creation:', lastConnectionError);
@@ -531,12 +535,17 @@ export async function insertMovements(records: MovementRecord[]): Promise<{ coun
       await clearStatsCache(records[0]?.warehouse);
       return { count: records.length, destination: 'mariadb' };
     } catch (err: any) {
-      console.error('❌ Chyba při vkládání do MariaDB, ukládám do lokálního perzistentního úložiště:', err?.message || err);
+      console.error('❌ Chyba při vkládání do MariaDB:', err?.message || err);
       lastConnectionError = err?.message || 'Chyba zápisu do MariaDB';
+      if (isProductionEnv || currentConfig.host) {
+        throw new Error(`Nepodařilo se zapsat data do MariaDB: ${lastConnectionError}`);
+      }
     }
+  } else if (isProductionEnv || currentConfig.host) {
+    throw new Error(`Není k dispozici spojení s MariaDB: ${lastConnectionError || 'Zkontrolujte přístupové údaje'}`);
   }
 
-  // Fallback do diskového úložiště – asynchronně a debouncovaně, aby Express nezamrzal
+  // Fallback do lokální paměti pouze pro čistě vývojový režim bez DB
   memoryMovements = [...records, ...memoryMovements];
   scheduleSaveMovementsToDisk(1500);
   await clearStatsCache(records[0]?.warehouse);
@@ -637,12 +646,28 @@ export async function getMovements(params: {
         source: 'mariadb',
       };
     } catch (err: any) {
-      console.error('Error querying MariaDB, falling back to persistent disk store:', err?.message || err);
+      console.error('Chyba při dotazu MariaDB:', err?.message || err);
       lastConnectionError = err?.message || 'Chyba dotazu do MariaDB';
+      if (isProductionEnv || currentConfig.host) {
+        return {
+          records: [],
+          total: 0,
+          source: 'mariadb',
+        };
+      }
     }
   }
 
-  // Fallback to disk-persisted store
+  // V produkci a při konfiguraci MariaDB NIKDY nevracíme lokální paměť!
+  if (isProductionEnv || currentConfig.host) {
+    return {
+      records: [],
+      total: 0,
+      source: 'mariadb',
+    };
+  }
+
+  // Fallback to disk-persisted store pouze pro lokální vývoj
   let filtered = [...memoryMovements];
 
   if (params.warehouse && params.warehouse !== 'all') {
@@ -792,7 +817,20 @@ export async function clearStatsCache(warehouse?: string): Promise<void> {
   }
 }
 
-export async function getWarehouseRecords(warehouse: 'ruse' | 'svj' | 'all'): Promise<MovementRecord[]> {
+export interface WarehouseRecordFilters {
+  excludeOutliers?: boolean;
+  datePreset?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  bracket?: string;
+  box?: string;
+  query?: string;
+}
+
+export async function getWarehouseRecords(
+  warehouse: 'ruse' | 'svj' | 'all',
+  filters?: WarehouseRecordFilters
+): Promise<MovementRecord[]> {
   const p = await getPool();
   if (p) {
     try {
@@ -825,10 +863,57 @@ export async function getWarehouseRecords(warehouse: 'ruse' | 'svj' | 'all'): Pr
         created_at
       FROM warehouse_movements`;
 
+      const conditions: string[] = [];
       const params: any[] = [];
+
       if (warehouse !== 'all') {
-        sql += ' WHERE warehouse = ?';
+        conditions.push('warehouse = ?');
         params.push(warehouse);
+      }
+
+      if (filters?.excludeOutliers) {
+        conditions.push('pick_duration_s <= 1800 AND pack_duration_s <= 1800');
+      }
+
+      if (filters?.bracket && filters.bracket !== 'all') {
+        conditions.push('bracket = ?');
+        params.push(filters.bracket);
+      }
+
+      if (filters?.box && filters.box.trim()) {
+        conditions.push('sberny_box LIKE ?');
+        params.push(`%${filters.box.trim()}%`);
+      }
+
+      if (filters?.query && filters.query.trim()) {
+        conditions.push('(obsah_objednavek LIKE ? OR ean_produktu LIKE ? OR sberny_box LIKE ?)');
+        const q = `%${filters.query.trim()}%`;
+        params.push(q, q, q);
+      }
+
+      if (filters?.datePreset && filters.datePreset !== 'all') {
+        if (filters.datePreset === 'today') {
+          conditions.push('zacatek_pickovani >= CURDATE()');
+        } else if (filters.datePreset === '7days') {
+          conditions.push('zacatek_pickovani >= DATE_SUB(NOW(), INTERVAL 7 DAY)');
+        } else if (filters.datePreset === '14days') {
+          conditions.push('zacatek_pickovani >= DATE_SUB(NOW(), INTERVAL 14 DAY)');
+        } else if (filters.datePreset === '30days') {
+          conditions.push('zacatek_pickovani >= DATE_SUB(NOW(), INTERVAL 30 DAY)');
+        } else if (filters.datePreset === 'custom') {
+          if (filters.dateFrom) {
+            conditions.push('zacatek_pickovani >= ?');
+            params.push(`${filters.dateFrom} 00:00:00`);
+          }
+          if (filters.dateTo) {
+            conditions.push('konec_baleni <= ?');
+            params.push(`${filters.dateTo} 23:59:59`);
+          }
+        }
+      }
+
+      if (conditions.length > 0) {
+        sql += ' WHERE ' + conditions.join(' AND ');
       }
       sql += ' ORDER BY zacatek_pickovani DESC';
 
@@ -836,10 +921,27 @@ export async function getWarehouseRecords(warehouse: 'ruse' | 'svj' | 'all'): Pr
       return rows as MovementRecord[];
     } catch (err: any) {
       console.warn('Chyba při dotazu getWarehouseRecords z MariaDB:', err?.message || err);
+      if (isProductionEnv || currentConfig.host) {
+        throw new Error(err?.message || 'Chyba při dotazu do MariaDB');
+      }
     }
   }
 
-  // Memory fallback
-  if (warehouse === 'all') return memoryMovements;
-  return memoryMovements.filter(r => (r.warehouse || 'ruse') === warehouse);
+  // V produkci a při konfiguraci MariaDB NIKDY nevracíme lokální paměť!
+  if (isProductionEnv || currentConfig.host) {
+    return [];
+  }
+
+  // Memory fallback pouze pro čistě lokální vývoj bez DB
+  let filtered = [...memoryMovements];
+  if (warehouse !== 'all') {
+    filtered = filtered.filter(r => (r.warehouse || 'ruse') === warehouse);
+  }
+  if (filters?.excludeOutliers) {
+    filtered = filtered.filter(r => r.pick_duration_s <= 1800 && r.pack_duration_s <= 1800);
+  }
+  if (filters?.bracket && filters.bracket !== 'all') {
+    filtered = filtered.filter(r => r.bracket === filters.bracket);
+  }
+  return filtered;
 }

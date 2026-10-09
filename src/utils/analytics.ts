@@ -1286,25 +1286,39 @@ export function computeWarehouseComparison(
   const svjTotalSortSec = svjRecords.reduce((sum, r) => sum + (r.sort_duration_s || 0), 0);
   const svjTotalUnits = Math.max(1, svjSummary.totalUnits);
   const svjAvgSortPerItemSec = Number((svjTotalSortSec / svjTotalUnits).toFixed(1));
+  const svjSortTimes = svjRecords.map(r => r.sort_per_item_s || 0).filter(t => t > 0);
+  const svjMedianSortPerItemSec = Number(median(svjSortTimes).toFixed(1));
 
   // Buffers
   const ruseWithWait = ruseRecords.filter(r => r.wait_pick_to_pack_min !== undefined && r.wait_pick_to_pack_min > 0);
   const ruseAvgWaitPickToPack = ruseWithWait.length > 0
     ? Number((ruseWithWait.reduce((s, r) => s + (r.wait_pick_to_pack_min || 0), 0) / ruseWithWait.length).toFixed(1))
     : 75;
+  const ruseMedianWaitPickToPack = ruseWithWait.length > 0
+    ? Number(median(ruseWithWait.map(r => r.wait_pick_to_pack_min || 0)).toFixed(1))
+    : 72;
 
   const svjWithWait1 = svjRecords.filter(r => r.wait_after_picking_min !== undefined && r.wait_after_picking_min > 0);
   const svjAvgWaitPickToSort = svjWithWait1.length > 0
     ? Number((svjWithWait1.reduce((s, r) => s + (r.wait_after_picking_min || 0), 0) / svjWithWait1.length).toFixed(1))
     : 44.5;
+  const svjMedianWaitPickToSort = svjWithWait1.length > 0
+    ? Number(median(svjWithWait1.map(r => r.wait_after_picking_min || 0)).toFixed(1))
+    : 42;
 
   const svjWithWait2 = svjRecords.filter(r => r.wait_sort_to_pack_min !== undefined && r.wait_sort_to_pack_min > 0);
   const svjAvgWaitSortToPack = svjWithWait2.length > 0
     ? Number((svjWithWait2.reduce((s, r) => s + (r.wait_sort_to_pack_min || 0), 0) / svjWithWait2.length).toFixed(1))
     : 24.2;
+  const svjMedianWaitSortToPack = svjWithWait2.length > 0
+    ? Number(median(svjWithWait2.map(r => r.wait_sort_to_pack_min || 0)).toFixed(1))
+    : 22;
 
   const ruseLeadTimeMin = Number((ruseAvgWaitPickToPack + ((ruseAll?.avgPickTotalSec || 0) + (ruseAll?.avgPackTotalSec || 0)) / 60).toFixed(1));
   const svjLeadTimeMin = Number((svjAvgWaitPickToSort + svjAvgWaitSortToPack + ((svjAll?.avgPickTotalSec || 0) + (svjTotalSortSec / Math.max(1, svjSummary.totalOrders)) + (svjAll?.avgPackTotalSec || 0)) / 60).toFixed(1));
+
+  const ruseMedianLeadTimeMin = Number((ruseMedianWaitPickToPack + ((ruseAll?.medianPickPerItemSec || 0) + (ruseAll?.medianPackPerItemSec || 0)) / 60).toFixed(1));
+  const svjMedianLeadTimeMin = Number((svjMedianWaitPickToSort + svjMedianWaitSortToPack + ((svjAll?.medianPickPerItemSec || 0) + svjMedianSortPerItemSec + (svjAll?.medianPackPerItemSec || 0)) / 60).toFixed(1));
 
   // Bracket by bracket comparison (all, 1, 2, 3, 4, 5, 6+)
   const bracketsOrder: (ItemBracket | 'all')[] = ['all', '1', '2', '3', '4', '5', '6+'];
@@ -1314,9 +1328,15 @@ export function computeWarehouseComparison(
     const rStat = ruseBrackets.find(s => s.bracket === b);
     const sStat = svjBrackets.find(s => s.bracket === b);
 
+    // Mediány na 1. místě
+    const ruseMedianPick = rStat?.medianPickPerItemSec || 0;
+    const svjMedianPick = sStat?.medianPickPerItemSec || 0;
+    const ruseMedianPack = rStat?.medianPackPerItemSec || 0;
+    const svjMedianPack = sStat?.medianPackPerItemSec || 0;
+
+    // Aritmetické průměry na 2. místě
     const rusePick = rStat?.avgPickPerItemSec || 0;
     const svjPick = sStat?.avgPickPerItemSec || 0;
-
     const rusePack = rStat?.avgPackPerItemSec || 0;
     const svjPack = sStat?.avgPackPerItemSec || 0;
 
@@ -1325,9 +1345,14 @@ export function computeWarehouseComparison(
     const svjSubUnits = svjSubset.reduce((sum, r) => sum + r.pocet_produktu, 0);
     const svjSubSortSec = svjSubset.reduce((sum, r) => sum + (r.sort_duration_s || 0), 0);
     const svjSort = svjSubUnits > 0 ? Number((svjSubSortSec / svjSubUnits).toFixed(1)) : 0;
+    const svjSubSortTimes = svjSubset.map(r => r.sort_per_item_s || 0).filter(t => t > 0);
+    const svjMedianSort = Number(median(svjSubSortTimes).toFixed(1));
 
     const ruseTotal = Number((rusePick + rusePack).toFixed(1));
     const svjTotal = Number((svjPick + svjPack + svjSort).toFixed(1));
+
+    const ruseMedianTotal = Number((ruseMedianPick + ruseMedianPack).toFixed(1));
+    const svjMedianTotal = Number((svjMedianPick + svjMedianPack + svjMedianSort).toFixed(1));
 
     const pickDiffPct = rusePick > 0
       ? Number((((svjPick - rusePick) / rusePick) * 100).toFixed(1))
@@ -1336,11 +1361,25 @@ export function computeWarehouseComparison(
       ? Number((((svjPack - rusePack) / rusePack) * 100).toFixed(1))
       : 0;
 
+    const pickMedianDiffPct = ruseMedianPick > 0
+      ? Number((((svjMedianPick - ruseMedianPick) / ruseMedianPick) * 100).toFixed(1))
+      : 0;
+    const packMedianDiffPct = ruseMedianPack > 0
+      ? Number((((svjMedianPack - ruseMedianPack) / ruseMedianPack) * 100).toFixed(1))
+      : 0;
+
     bracketComparisons.push({
       bracket: b,
       label: getBracketLabel(b),
       ruseOrders: rStat?.shipmentCount || 0,
       svjOrders: sStat?.shipmentCount || 0,
+      ruseMedianPickPerItemSec: ruseMedianPick,
+      svjMedianPickPerItemSec: svjMedianPick,
+      ruseMedianPackPerItemSec: ruseMedianPack,
+      svjMedianPackPerItemSec: svjMedianPack,
+      svjMedianSortPerItemSec: svjMedianSort,
+      ruseMedianTotalPerItemSec: ruseMedianTotal,
+      svjMedianTotalPerItemSec: svjMedianTotal,
       ruseAvgPickPerItemSec: rusePick,
       svjAvgPickPerItemSec: svjPick,
       ruseAvgPackPerItemSec: rusePack,
@@ -1350,6 +1389,8 @@ export function computeWarehouseComparison(
       svjTotalPerItemSec: svjTotal,
       pickDiffPct,
       packDiffPct,
+      pickMedianDiffPct,
+      packMedianDiffPct,
     });
   }
 
@@ -1384,6 +1425,22 @@ export function computeWarehouseComparison(
     svjAvgUnitsPerOrder: svjSummary.avgUnitsPerOrder,
     ruseMedianOrdersPerBox: ruseSummary.medianOrdersPerBox,
     svjMedianOrdersPerBox: svjSummary.medianOrdersPerBox,
+
+    // Mediány na 1. místě pro klíčové operace
+    ruseMedianPickPerItemSec: ruseAll?.medianPickPerItemSec || 0,
+    svjMedianPickPerItemSec: svjAll?.medianPickPerItemSec || 0,
+    ruseMedianPackPerItemSec: ruseAll?.medianPackPerItemSec || 0,
+    svjMedianPackPerItemSec: svjAll?.medianPackPerItemSec || 0,
+    svjMedianSortPerItemSec,
+    ruseMedianTotalPerItemSec: Number(((ruseAll?.medianPickPerItemSec || 0) + (ruseAll?.medianPackPerItemSec || 0)).toFixed(1)),
+    svjMedianTotalPerItemSec: Number(((svjAll?.medianPickPerItemSec || 0) + (svjAll?.medianPackPerItemSec || 0) + svjMedianSortPerItemSec).toFixed(1)),
+    ruseMedianWaitPickToPackMin: ruseMedianWaitPickToPack,
+    svjMedianWaitPickToSortMin: svjMedianWaitPickToSort,
+    svjMedianWaitSortToPackMin: svjMedianWaitSortToPack,
+    ruseMedianTotalLeadTimeMin: ruseMedianLeadTimeMin,
+    svjMedianTotalLeadTimeMin: svjMedianLeadTimeMin,
+
+    // Aritmetické průměry na 2. místě pro klíčové operace
     ruseAvgPickPerItemSec: ruseAll?.avgPickPerItemSec || 0,
     svjAvgPickPerItemSec: svjAll?.avgPickPerItemSec || 0,
     ruseAvgPackPerItemSec: ruseAll?.avgPackPerItemSec || 0,

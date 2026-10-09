@@ -94,10 +94,27 @@ function Dashboard() {
 
   const [filter, setFilter] = useState<FilterState>(initialFilter);
 
-  // Fetch summary analytics from server / DB helper table cache
-  const fetchAnalyticsSummary = useCallback(async (warehouse: 'ruse' | 'svj' | 'all' = 'all', forceRefresh: boolean = false) => {
+  // Fetch summary analytics from server / DB helper table cache with active filters
+  const fetchAnalyticsSummary = useCallback(async (
+    warehouse: 'ruse' | 'svj' | 'all' = 'all',
+    forceRefresh: boolean = false,
+    customFilter?: FilterState
+  ) => {
     try {
-      const res = await authFetch(apiUrl(`/api/analytics/summary?warehouse=${warehouse}${forceRefresh ? '&forceRefresh=true' : ''}`));
+      const activeF = customFilter || filter;
+      const params = new URLSearchParams({
+        warehouse,
+        excludeOutliers: activeF.excludeOutliers ? 'true' : 'false',
+        datePreset: activeF.datePreset,
+        dateFrom: activeF.dateFrom || '',
+        dateTo: activeF.dateTo || '',
+        bracket: activeF.bracket,
+        box: activeF.searchBox || '',
+        query: activeF.searchQuery || '',
+      });
+      if (forceRefresh) params.append('forceRefresh', 'true');
+
+      const res = await authFetch(apiUrl(`/api/analytics/summary?${params.toString()}`));
       if (res.ok) {
         const data = await res.json();
         if (data.success) {
@@ -109,7 +126,7 @@ function Dashboard() {
       console.warn('Nelze načíst souhrn z databázové mezipaměti:', err);
     }
     return null;
-  }, []);
+  }, [filter]);
 
   // Fetch initial data, cached DB analytics and DB status
   const fetchData = useCallback(async () => {
@@ -257,64 +274,57 @@ function Dashboard() {
     setIsTabSwitching(true);
     try {
       const targetWh = tab === 'summary' ? 'all' : tab;
-      if (!serverAnalytics[targetWh]) {
-        await fetchAnalyticsSummary(targetWh as any);
-      }
+      await fetchAnalyticsSummary(targetWh as any, false, filter);
       setActiveTab(tab);
     } finally {
       setTimeout(() => {
         setIsTabSwitching(false);
       }, 70);
     }
-  }, [activeTab, serverAnalytics, fetchAnalyticsSummary]);
+  }, [activeTab, filter, fetchAnalyticsSummary]);
 
-  // Filter change handler with spinner
+  // Filter change handler with spinner – načítá filtrovaná data přímo ze serveru / DB
   const handleFilterChange = useCallback((newFilter: FilterState) => {
     setIsFiltering(true);
     setFilter(newFilter);
-    setTimeout(() => {
-      setIsFiltering(false);
-    }, 100);
-  }, []);
-
-  const isDefaultFilter =
-    filter.datePreset === 'all' &&
-    filter.bracket === 'all' &&
-    !filter.searchBox.trim() &&
-    !filter.searchQuery.trim() &&
-    !filter.excludeOutliers;
+    const targetWh = activeTab === 'summary' ? 'all' : activeTab;
+    fetchAnalyticsSummary(targetWh as any, false, newFilter)
+      .finally(() => {
+        setIsFiltering(false);
+      });
+  }, [activeTab, fetchAnalyticsSummary]);
 
   const currentServerAnalytics = serverAnalytics[activeTab === 'summary' ? 'all' : activeTab] || serverAnalytics.all;
 
-  // Compute or read stats for active tab dataset
+  // Compute or read stats for active tab dataset – VŽDY preferujeme data přímo z databáze
   const bracketStats = useMemo(() => {
-    if (isDefaultFilter && currentServerAnalytics?.bracketStats?.length) {
+    if (currentServerAnalytics?.bracketStats?.length) {
       return currentServerAnalytics.bracketStats;
     }
     return computeBracketStatistics(activeTabRecords);
-  }, [isDefaultFilter, currentServerAnalytics, activeTabRecords]);
+  }, [currentServerAnalytics, activeTabRecords]);
 
   const dailyStats = useMemo(() => {
-    if (isDefaultFilter && currentServerAnalytics?.dailyStats?.length) {
+    if (currentServerAnalytics?.dailyStats?.length) {
       return currentServerAnalytics.dailyStats;
     }
     return computeDailyStatistics(activeTabRecords);
-  }, [isDefaultFilter, currentServerAnalytics, activeTabRecords]);
+  }, [currentServerAnalytics, activeTabRecords]);
 
   const synergyData = useMemo(() => {
-    if (isDefaultFilter && currentServerAnalytics?.synergyData) {
+    if (currentServerAnalytics?.synergyData) {
       return currentServerAnalytics.synergyData;
     }
     return computeBoxSynergyAndHypothesis(activeTabRecords);
-  }, [isDefaultFilter, currentServerAnalytics, activeTabRecords]);
+  }, [currentServerAnalytics, activeTabRecords]);
 
-  // Sumární bilance za zkoumané období
+  // Sumární bilance za zkoumané období – načtena z DB
   const periodSummary = useMemo(() => {
-    if (isDefaultFilter && currentServerAnalytics?.periodSummary) {
+    if (currentServerAnalytics?.periodSummary) {
       return currentServerAnalytics.periodSummary;
     }
     return computePeriodSummary(activeTabRecords);
-  }, [isDefaultFilter, currentServerAnalytics, activeTabRecords]);
+  }, [currentServerAnalytics, activeTabRecords]);
 
   // Export HTML report
   const handleExportHtml = () => {
@@ -699,8 +709,8 @@ function Dashboard() {
           onChange={handleFilterChange}
           onReset={() => handleFilterChange(initialFilter)}
           onExportHtml={handleExportHtml}
-          totalFilteredCount={isDefaultFilter ? (currentServerAnalytics?.recordCount ?? activeTabRecords.length) : activeTabRecords.length}
-          totalAllCount={serverAnalytics.all?.recordCount ?? activeAllWarehouseRecords.length}
+          totalFilteredCount={currentServerAnalytics?.recordCount ?? activeTabRecords.length}
+          totalAllCount={serverAnalytics.all?.recordCount ?? currentServerAnalytics?.recordCount ?? activeAllWarehouseRecords.length}
           isFiltering={isFiltering}
         />
 
@@ -727,8 +737,8 @@ function Dashboard() {
              CROSS-WAREHOUSE SUMMARY TAB (Ruse vs SVJ KPI Comparison)
              ======================================================== */
           <div className="space-y-6">
-            {/* Warning callout if one warehouse is missing data */}
-            {(ruseRecords.length === 0 || svjRecords.length === 0) && (
+            {/* Warning callout if one warehouse is missing data (pouze v lokálním vývojovém režimu) */}
+            {dbStatus.type !== 'mariadb' && (ruseRecords.length === 0 || svjRecords.length === 0) && (
               <div className="p-4 bg-gradient-to-r from-indigo-950/40 via-purple-950/30 to-slate-900 border border-indigo-500/30 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
                 <div>
                   <span className="font-bold text-white block">
@@ -754,10 +764,10 @@ function Dashboard() {
               ruseRecords={filteredRuseRecords}
               svjRecords={filteredSvjRecords}
               unit={filter.unit}
-              cachedReport={serverAnalytics.summary?.comparison}
+              cachedReport={currentServerAnalytics?.comparison || serverAnalytics.all?.comparison || serverAnalytics.summary?.comparison}
             />
           </div>
-        ) : activeTabRecords.length === 0 ? (
+        ) : activeTabRecords.length === 0 && (currentServerAnalytics?.recordCount ?? 0) === 0 ? (
           /* ========================================================
              EMPTY STATE FOR INDIVIDUAL WAREHOUSE
              ======================================================== */
@@ -779,25 +789,27 @@ function Dashboard() {
             <p className="text-xs text-slate-400 leading-relaxed">
               {activeTab === 'ruse'
                 ? isCs
-                  ? 'Sklad Ruse používá přímé sběrné pickování a balení. Nahrajte soubor s pohyby nebo vygenerujte vzorová data.'
-                  : 'Ruse warehouse uses wave picking and direct manual packing. Upload your file or load sample data.'
+                  ? 'Sklad Ruse používá přímé sběrné pickování a balení. Nahrajte soubor s pohyby přes tlačítko Import dat.'
+                  : 'Ruse warehouse uses wave picking and direct manual packing. Upload your file via Import Data.'
                 : isCs
-                ? 'Sklad SVJ má navíc proces mezioperačního sortingu a ruční balení (3 soubory). Můžete nahrát všechny 3 soubory naráz nebo načíst vzorová data SVJ.'
-                : 'SVJ warehouse includes sorting and manual packing (3 files). Upload all 3 files at once or load sample data.'}
+                ? 'Sklad SVJ má navíc proces mezioperačního sortingu a ruční balení (3 soubory). Nahrajte soubory přes tlačítko Import dat.'
+                : 'SVJ warehouse includes sorting and manual packing (3 files). Upload files via Import Data.'}
             </p>
             <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
-              <button
-                onClick={() => handleLoadSampleData(activeTab as 'ruse' | 'svj')}
-                className={`px-4 py-2 text-white text-xs font-semibold rounded-xl shadow-lg transition-all cursor-pointer ${
-                  activeTab === 'ruse'
-                    ? 'bg-blue-600 hover:bg-blue-500 shadow-blue-500/20'
-                    : 'bg-purple-600 hover:bg-purple-500 shadow-purple-500/20'
-                }`}
-              >
-                {isCs
-                  ? `Načíst vzorová data pro sklad ${activeTab === 'ruse' ? 'Ruse' : 'SVJ'}`
-                  : `Generate sample data for ${activeTab.toUpperCase()}`}
-              </button>
+              {dbStatus.type !== 'mariadb' && (
+                <button
+                  onClick={() => handleLoadSampleData(activeTab as 'ruse' | 'svj')}
+                  className={`px-4 py-2 text-white text-xs font-semibold rounded-xl shadow-lg transition-all cursor-pointer ${
+                    activeTab === 'ruse'
+                      ? 'bg-blue-600 hover:bg-blue-500 shadow-blue-500/20'
+                      : 'bg-purple-600 hover:bg-purple-500 shadow-purple-500/20'
+                  }`}
+                >
+                  {isCs
+                    ? `Načíst vzorová data pro sklad ${activeTab === 'ruse' ? 'Ruse' : 'SVJ'}`
+                    : `Generate sample data for ${activeTab.toUpperCase()}`}
+                </button>
+              )}
               <button
                 onClick={() => setIsImportModalOpen(true)}
                 className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-xl border border-slate-700 transition-all cursor-pointer"
@@ -840,11 +852,11 @@ function Dashboard() {
                   <span className="text-slate-400">
                     {activeTab === 'ruse'
                       ? isCs
-                        ? `Zafiltrováno ${activeTabRecords.length.toLocaleString('cs-CZ')} ze ${ruseRecords.length.toLocaleString('cs-CZ')} záznamů. Operace: Sběrné pickování a ruční balení.`
-                        : `${activeTabRecords.length.toLocaleString()} of ${ruseRecords.length.toLocaleString()} records filtered. Stages: Picking and packing.`
+                        ? `Zafiltrováno ${(currentServerAnalytics?.recordCount ?? activeTabRecords.length).toLocaleString('cs-CZ')} ze ${(serverAnalytics.all?.ruseCount ?? currentServerAnalytics?.recordCount ?? ruseRecords.length).toLocaleString('cs-CZ')} záznamů z databáze.`
+                        : `${(currentServerAnalytics?.recordCount ?? activeTabRecords.length).toLocaleString()} of ${(serverAnalytics.all?.ruseCount ?? currentServerAnalytics?.recordCount ?? ruseRecords.length).toLocaleString()} database records filtered.`
                       : isCs
-                      ? `Zafiltrováno ${activeTabRecords.length.toLocaleString('cs-CZ')} ze ${svjRecords.length.toLocaleString('cs-CZ')} záznamů. Zahrnuto pouze ruční balení (zakázky jsou v datech vysortované i zabalené).`
-                      : `${activeTabRecords.length.toLocaleString()} of ${svjRecords.length.toLocaleString()} records filtered. Only manual packing included (all orders are sorted and packed).`}
+                      ? `Zafiltrováno ${(currentServerAnalytics?.recordCount ?? activeTabRecords.length).toLocaleString('cs-CZ')} ze ${(serverAnalytics.all?.svjCount ?? currentServerAnalytics?.recordCount ?? svjRecords.length).toLocaleString('cs-CZ')} záznamů z databáze.`
+                      : `${(currentServerAnalytics?.recordCount ?? activeTabRecords.length).toLocaleString()} of ${(serverAnalytics.all?.svjCount ?? currentServerAnalytics?.recordCount ?? svjRecords.length).toLocaleString()} database records filtered.`}
                   </span>
                 </div>
               </div>
@@ -863,8 +875,8 @@ function Dashboard() {
             {/* 1. Sumární přehled za zkoumané období (Objednávky, SKU, Kusy, Průměr ks/zásilku, Medián obj./box) */}
             <PeriodExecutiveSummary
               summary={periodSummary}
-              totalFilteredRecords={activeTabRecords.length}
-              totalAllRecords={activeAllWarehouseRecords.length}
+              totalFilteredRecords={currentServerAnalytics?.recordCount ?? activeTabRecords.length}
+              totalAllRecords={serverAnalytics.all?.recordCount ?? currentServerAnalytics?.recordCount ?? activeAllWarehouseRecords.length}
             />
 
             {/* 2. KPI Cards */}
@@ -875,7 +887,7 @@ function Dashboard() {
               <SvjSortingSection
                 records={activeTabRecords}
                 unit={filter.unit}
-                cachedStats={serverAnalytics.svj?.svjSorting}
+                cachedStats={currentServerAnalytics?.svjSorting || serverAnalytics.svj?.svjSorting}
               />
             )}
 
@@ -886,10 +898,19 @@ function Dashboard() {
             <BoxSynergyAnalysis synergyData={synergyData} unit={filter.unit} />
 
             {/* 6. Daily Performance Table & Pareto Analysis (Vývoj přes dny a dny v týdnu) */}
-            <DailyTrendChart dailyStats={dailyStats} records={activeTabRecords} unit={filter.unit} />
+            <DailyTrendChart
+              dailyStats={dailyStats}
+              records={activeTabRecords}
+              cachedReport={currentServerAnalytics?.dailyReport}
+              unit={filter.unit}
+            />
 
             {/* 7. Zhodnocení: Simulace optimalizace a přeskupení do 2h slotů (Multipicking) */}
-            <MultipickSimulationSection records={activeTabRecords} unit={filter.unit} />
+            <MultipickSimulationSection
+              records={activeTabRecords}
+              cachedSimulation={currentServerAnalytics?.simulation}
+              unit={filter.unit}
+            />
           </>
         )}
       </main>

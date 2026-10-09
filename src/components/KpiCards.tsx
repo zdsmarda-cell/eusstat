@@ -62,11 +62,11 @@ export const KpiCards: React.FC<KpiCardsProps> = ({ bracketStats, periodSummary,
         <div className="absolute -right-4 -bottom-4 w-20 h-20 bg-blue-500/5 rounded-full blur-xl group-hover:bg-blue-500/10 transition-colors" />
       </div>
 
-      {/* 2. Doba pickování na 1 produkt */}
+      {/* 2. Doba pickování na 1 produkt (Medián na 1. místě, Průměr na 2. místě) */}
       <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 shadow-lg relative overflow-hidden group hover:border-slate-700 transition-all">
         <div className="flex items-center justify-between">
           <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-            {t.kpi.avgPickTime}
+            {lang === 'cs' ? 'Doba pickování (1 ks)' : 'Picking Time / Unit'}
           </span>
           <div className="w-8 h-8 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center">
             <Box className="w-4 h-4 text-indigo-400" />
@@ -75,14 +75,14 @@ export const KpiCards: React.FC<KpiCardsProps> = ({ bracketStats, periodSummary,
         <div className="mt-3">
           <div className="flex items-baseline space-x-2">
             <span className="text-2xl font-bold text-white tracking-tight font-mono">
-              {formatTimeValue(allStat?.avgPickPerItemSec || 0, unit)}
+              {formatTimeValue(allStat?.medianPickPerItemSec || 0, unit)}
             </span>
-            <span className="text-xs text-slate-400">/ {lang === 'cs' ? 'ks' : 'unit'}</span>
+            <span className="text-xs text-indigo-400 font-semibold">{lang === 'cs' ? 'medián / ks' : 'median / unit'}</span>
           </div>
           <div className="mt-1 flex items-center justify-between text-xs text-slate-400">
-            <span>{t.kpi.medianPick}:</span>
+            <span>{lang === 'cs' ? 'Aritmetický průměr (Ø):' : 'Arithmetic mean (Ø):'}</span>
             <span className="text-slate-200 font-medium font-mono">
-              {formatTimeValue(allStat?.medianPickPerItemSec || 0, unit)}
+              {formatTimeValue(allStat?.avgPickPerItemSec || 0, unit)}
             </span>
           </div>
           {multiStat && singleStat && multiStat.pickSavingsPctVsSingle > 0 && (
@@ -95,11 +95,11 @@ export const KpiCards: React.FC<KpiCardsProps> = ({ bracketStats, periodSummary,
         <div className="absolute -right-4 -bottom-4 w-20 h-20 bg-indigo-500/5 rounded-full blur-xl group-hover:bg-indigo-500/10 transition-colors" />
       </div>
 
-      {/* 3. Doba balení na 1 produkt */}
+      {/* 3. Doba balení na 1 produkt (Medián na 1. místě, Průměr na 2. místě) */}
       <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 shadow-lg relative overflow-hidden group hover:border-slate-700 transition-all">
         <div className="flex items-center justify-between">
           <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-            {t.kpi.avgPackTime}
+            {lang === 'cs' ? 'Doba balení (1 ks)' : 'Packing Time / Unit'}
           </span>
           <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center">
             <CheckCircle2 className="w-4 h-4 text-emerald-400" />
@@ -108,14 +108,14 @@ export const KpiCards: React.FC<KpiCardsProps> = ({ bracketStats, periodSummary,
         <div className="mt-3">
           <div className="flex items-baseline space-x-2">
             <span className="text-2xl font-bold text-white tracking-tight font-mono">
-              {formatTimeValue(allStat?.avgPackPerItemSec || 0, unit)}
+              {formatTimeValue(allStat?.medianPackPerItemSec || 0, unit)}
             </span>
-            <span className="text-xs text-slate-400">/ {lang === 'cs' ? 'ks' : 'unit'}</span>
+            <span className="text-xs text-emerald-400 font-semibold">{lang === 'cs' ? 'medián / ks' : 'median / unit'}</span>
           </div>
           <div className="mt-1 flex items-center justify-between text-xs text-slate-400">
-            <span>{t.kpi.medianPack}:</span>
+            <span>{lang === 'cs' ? 'Aritmetický průměr (Ø):' : 'Arithmetic mean (Ø):'}</span>
             <span className="text-slate-200 font-medium font-mono">
-              {formatTimeValue(allStat?.medianPackPerItemSec || 0, unit)}
+              {formatTimeValue(allStat?.avgPackPerItemSec || 0, unit)}
             </span>
           </div>
           {multiStat && singleStat && multiStat.packSavingsPctVsSingle > 0 && (
@@ -128,7 +128,7 @@ export const KpiCards: React.FC<KpiCardsProps> = ({ bracketStats, periodSummary,
         <div className="absolute -right-4 -bottom-4 w-20 h-20 bg-emerald-500/5 rounded-full blur-xl group-hover:bg-emerald-500/10 transition-colors" />
       </div>
 
-      {/* 4. Celkový čas (Pick + Pack) na 1 produkt */}
+      {/* 4. Celkový čas (Pick + Pack) na 1 produkt (Medián na 1. místě, Průměr na 2. místě) */}
       <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 shadow-lg relative overflow-hidden group hover:border-slate-700 transition-all">
         <div className="flex items-center justify-between">
           <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
@@ -141,12 +141,15 @@ export const KpiCards: React.FC<KpiCardsProps> = ({ bracketStats, periodSummary,
         <div className="mt-3">
           <div className="flex items-baseline space-x-2">
             <span className="text-2xl font-bold text-white tracking-tight font-mono">
-              {formatTimeValue(allStat?.avgTotalPerItemSec || 0, unit)}
+              {formatTimeValue(allStat?.medianTotalPerItemSec || 0, unit)}
             </span>
-            <span className="text-xs text-slate-400">/ {lang === 'cs' ? 'ks' : 'unit'}</span>
+            <span className="text-xs text-purple-400 font-semibold">{lang === 'cs' ? 'medián / ks' : 'median / unit'}</span>
           </div>
           <div className="mt-1 flex items-center justify-between text-xs text-slate-400">
-            <span>{lang === 'cs' ? 'Pick + Balení dohromady' : 'Combined Pick + Pack'}</span>
+            <span>{lang === 'cs' ? 'Aritmetický průměr (Ø):' : 'Arithmetic mean (Ø):'}</span>
+            <span className="text-slate-200 font-medium font-mono">
+              {formatTimeValue(allStat?.avgTotalPerItemSec || 0, unit)}
+            </span>
           </div>
           {multiStat && singleStat && multiStat.totalSavingsPctVsSingle > 0 && (
             <div className="mt-1 flex items-center space-x-1 text-purple-300 text-xs font-semibold">

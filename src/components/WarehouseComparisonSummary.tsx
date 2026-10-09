@@ -127,7 +127,7 @@ export const WarehouseComparisonSummary: React.FC<WarehouseComparisonSummaryProp
             </div>
           </div>
 
-          {/* 2. Doba pickování na 1 kus */}
+          {/* 2. Doba pickování na 1 kus (Medián na 1. místě, Průměr na 2. místě) */}
           <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-4.5">
             <div className="flex items-center justify-between text-xs text-slate-400">
               <span className="font-bold uppercase tracking-wider">{isCs ? 'Doba pickování (1 ks)' : 'Picking Time / Item'}</span>
@@ -135,21 +135,27 @@ export const WarehouseComparisonSummary: React.FC<WarehouseComparisonSummaryProp
             </div>
             <div className="mt-3 grid grid-cols-2 gap-3 border-b border-slate-800/80 pb-3">
               <div>
-                <span className="text-[11px] font-semibold text-blue-400 block">Ruse</span>
-                <span className="text-xl font-bold text-white font-mono">{formatTimeValue(report.ruseAvgPickPerItemSec, unit)}</span>
+                <span className="text-[11px] font-semibold text-blue-400 block">Ruse (Medián)</span>
+                <span className="text-xl font-bold text-white font-mono">{formatTimeValue(report.ruseMedianPickPerItemSec, unit)}</span>
+                <span className="text-[11px] text-slate-400 block font-mono">Ø {formatTimeValue(report.ruseAvgPickPerItemSec, unit)}</span>
               </div>
               <div>
-                <span className="text-[11px] font-semibold text-purple-400 block">SVJ</span>
-                <span className="text-xl font-bold text-purple-400 font-mono">{formatTimeValue(report.svjAvgPickPerItemSec, unit)}</span>
+                <span className="text-[11px] font-semibold text-purple-400 block">SVJ (Medián)</span>
+                <span className="text-xl font-bold text-purple-400 font-mono">{formatTimeValue(report.svjMedianPickPerItemSec, unit)}</span>
+                <span className="text-[11px] text-purple-300/80 block font-mono">Ø {formatTimeValue(report.svjAvgPickPerItemSec, unit)}</span>
               </div>
             </div>
             <div className="mt-2.5 flex items-center justify-between text-xs">
-              <span className="text-slate-400">{isCs ? 'Rozdíl (SVJ vs Ruse):' : 'Difference:'}</span>
+              <span className="text-slate-400">{isCs ? 'Rozdíl mediánů:' : 'Median diff:'}</span>
+              {formatDelta(report.ruseMedianPickPerItemSec, report.svjMedianPickPerItemSec, 's')}
+            </div>
+            <div className="mt-1 flex items-center justify-between text-[11px] text-slate-500">
+              <span>{isCs ? 'Rozdíl průměrů (Ø):' : 'Mean diff (Ø):'}</span>
               {formatDelta(report.ruseAvgPickPerItemSec, report.svjAvgPickPerItemSec, 's')}
             </div>
           </div>
 
-          {/* 3. Doba ručního balení na 1 kus */}
+          {/* 3. Doba ručního balení na 1 kus (Medián na 1. místě, Průměr na 2. místě) */}
           <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-4.5">
             <div className="flex items-center justify-between text-xs text-slate-400">
               <span className="font-bold uppercase tracking-wider">{isCs ? 'Ruční balení (1 ks)' : 'Manual Packing / Item'}</span>
@@ -157,21 +163,27 @@ export const WarehouseComparisonSummary: React.FC<WarehouseComparisonSummaryProp
             </div>
             <div className="mt-3 grid grid-cols-2 gap-3 border-b border-slate-800/80 pb-3">
               <div>
-                <span className="text-[11px] font-semibold text-blue-400 block">Ruse</span>
-                <span className="text-xl font-bold text-white font-mono">{formatTimeValue(report.ruseAvgPackPerItemSec, unit)}</span>
+                <span className="text-[11px] font-semibold text-blue-400 block">Ruse (Medián)</span>
+                <span className="text-xl font-bold text-white font-mono">{formatTimeValue(report.ruseMedianPackPerItemSec, unit)}</span>
+                <span className="text-[11px] text-slate-400 block font-mono">Ø {formatTimeValue(report.ruseAvgPackPerItemSec, unit)}</span>
               </div>
               <div>
-                <span className="text-[11px] font-semibold text-purple-400 block">SVJ</span>
-                <span className="text-xl font-bold text-emerald-400 font-mono">{formatTimeValue(report.svjAvgPackPerItemSec, unit)}</span>
+                <span className="text-[11px] font-semibold text-purple-400 block">SVJ (Medián)</span>
+                <span className="text-xl font-bold text-emerald-400 font-mono">{formatTimeValue(report.svjMedianPackPerItemSec, unit)}</span>
+                <span className="text-[11px] text-emerald-300/80 block font-mono">Ø {formatTimeValue(report.svjAvgPackPerItemSec, unit)}</span>
               </div>
             </div>
             <div className="mt-2.5 flex items-center justify-between text-xs">
-              <span className="text-slate-400">{isCs ? 'Rozdíl v balení:' : 'Pack difference:'}</span>
+              <span className="text-slate-400">{isCs ? 'Rozdíl mediánů:' : 'Median pack diff:'}</span>
+              {formatDelta(report.ruseMedianPackPerItemSec, report.svjMedianPackPerItemSec, 's')}
+            </div>
+            <div className="mt-1 flex items-center justify-between text-[11px] text-slate-500">
+              <span>{isCs ? 'Rozdíl průměrů (Ø):' : 'Mean pack diff (Ø):'}</span>
               {formatDelta(report.ruseAvgPackPerItemSec, report.svjAvgPackPerItemSec, 's')}
             </div>
           </div>
 
-          {/* 4. Sorting v SVJ (Operace navíc) */}
+          {/* 4. Sorting v SVJ (Operace navíc - Medián na 1. místě, Průměr na 2. místě) */}
           <div className="bg-slate-950/70 border border-purple-500/30 rounded-2xl p-4.5 relative overflow-hidden">
             <div className="flex items-center justify-between text-xs text-slate-400">
               <span className="font-bold uppercase tracking-wider text-purple-300">{isCs ? 'Sorting v SVJ (Operace navíc)' : 'SVJ Sorting Stage'}</span>
@@ -185,8 +197,8 @@ export const WarehouseComparisonSummary: React.FC<WarehouseComparisonSummaryProp
               </div>
               <div>
                 <span className="text-[11px] font-semibold text-purple-400 block">SVJ Sorting</span>
-                <span className="text-xl font-bold text-purple-400 font-mono">{formatTimeValue(report.svjAvgSortPerItemSec, unit)}</span>
-                <span className="text-[11px] text-purple-300/80 block">{isCs ? 'Před ručním balením' : 'Before packing'}</span>
+                <span className="text-xl font-bold text-purple-400 font-mono">{formatTimeValue(report.svjMedianSortPerItemSec, unit)}</span>
+                <span className="text-[11px] text-purple-300/80 block font-mono">Ø {formatTimeValue(report.svjAvgSortPerItemSec, unit)}</span>
               </div>
             </div>
             <div className="mt-2.5 text-xs text-slate-400">
@@ -352,13 +364,13 @@ export const WarehouseComparisonSummary: React.FC<WarehouseComparisonSummaryProp
                 <th className="py-3 px-3.5 font-bold uppercase tracking-wider">{isCs ? 'Kategorie (Bracket)' : 'Bracket'}</th>
                 <th className="py-3 px-3.5 font-bold uppercase tracking-wider text-right">{isCs ? 'Obj. Ruse' : 'Ruse Orders'}</th>
                 <th className="py-3 px-3.5 font-bold uppercase tracking-wider text-right">{isCs ? 'Obj. SVJ' : 'SVJ Orders'}</th>
-                <th className="py-3 px-3.5 font-bold uppercase tracking-wider text-right text-blue-400">{isCs ? 'Pick Ruse / ks' : 'Ruse Pick / item'}</th>
-                <th className="py-3 px-3.5 font-bold uppercase tracking-wider text-right text-purple-400">{isCs ? 'Pick SVJ / ks' : 'SVJ Pick / item'}</th>
-                <th className="py-3 px-3.5 font-bold uppercase tracking-wider text-right text-emerald-400">{isCs ? 'Pack Ruse / ks' : 'Ruse Pack / item'}</th>
-                <th className="py-3 px-3.5 font-bold uppercase tracking-wider text-right text-teal-400">{isCs ? 'Pack SVJ (Ruční)' : 'SVJ Manual Pack'}</th>
-                <th className="py-3 px-3.5 font-bold uppercase tracking-wider text-right text-purple-300">{isCs ? 'Sorting SVJ' : 'SVJ Sort'}</th>
-                <th className="py-3 px-3.5 font-bold uppercase tracking-wider text-right">{isCs ? 'Rozdíl Pick' : 'Pick Diff'}</th>
-                <th className="py-3 px-3.5 font-bold uppercase tracking-wider text-right">{isCs ? 'Rozdíl Pack' : 'Pack Diff'}</th>
+                <th className="py-3 px-3.5 font-bold uppercase tracking-wider text-right text-blue-400">{isCs ? 'Pick Ruse (Medián / Ø)' : 'Ruse Pick (Med / Ø)'}</th>
+                <th className="py-3 px-3.5 font-bold uppercase tracking-wider text-right text-purple-400">{isCs ? 'Pick SVJ (Medián / Ø)' : 'SVJ Pick (Med / Ø)'}</th>
+                <th className="py-3 px-3.5 font-bold uppercase tracking-wider text-right text-emerald-400">{isCs ? 'Pack Ruse (Medián / Ø)' : 'Ruse Pack (Med / Ø)'}</th>
+                <th className="py-3 px-3.5 font-bold uppercase tracking-wider text-right text-teal-400">{isCs ? 'Pack SVJ (Medián / Ø)' : 'SVJ Pack (Med / Ø)'}</th>
+                <th className="py-3 px-3.5 font-bold uppercase tracking-wider text-right text-purple-300">{isCs ? 'Sorting SVJ (Medián / Ø)' : 'SVJ Sort (Med / Ø)'}</th>
+                <th className="py-3 px-3.5 font-bold uppercase tracking-wider text-right">{isCs ? 'Rozdíl Pick (Med / Ø)' : 'Pick Diff (Med / Ø)'}</th>
+                <th className="py-3 px-3.5 font-bold uppercase tracking-wider text-right">{isCs ? 'Rozdíl Pack (Med / Ø)' : 'Pack Diff (Med / Ø)'}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60 font-mono">
@@ -377,22 +389,47 @@ export const WarehouseComparisonSummary: React.FC<WarehouseComparisonSummaryProp
                     </td>
                     <td className="py-3 px-3.5 text-right text-slate-300">{row.ruseOrders.toLocaleString('cs-CZ')}</td>
                     <td className="py-3 px-3.5 text-right text-slate-300">{row.svjOrders.toLocaleString('cs-CZ')}</td>
-                    <td className="py-3 px-3.5 text-right text-blue-300">{formatTimeValue(row.ruseAvgPickPerItemSec, unit)}</td>
-                    <td className="py-3 px-3.5 text-right text-purple-300">{formatTimeValue(row.svjAvgPickPerItemSec, unit)}</td>
-                    <td className="py-3 px-3.5 text-right text-emerald-300">{formatTimeValue(row.ruseAvgPackPerItemSec, unit)}</td>
-                    <td className="py-3 px-3.5 text-right text-teal-300">{formatTimeValue(row.svjAvgPackPerItemSec, unit)}</td>
+                    <td className="py-3 px-3.5 text-right text-blue-300">
+                      <div className="font-bold text-white">{formatTimeValue(row.ruseMedianPickPerItemSec, unit)}</div>
+                      <div className="text-[10px] text-slate-400 font-normal">Ø {formatTimeValue(row.ruseAvgPickPerItemSec, unit)}</div>
+                    </td>
+                    <td className="py-3 px-3.5 text-right text-purple-300">
+                      <div className="font-bold text-purple-300">{formatTimeValue(row.svjMedianPickPerItemSec, unit)}</div>
+                      <div className="text-[10px] text-purple-400/80 font-normal">Ø {formatTimeValue(row.svjAvgPickPerItemSec, unit)}</div>
+                    </td>
+                    <td className="py-3 px-3.5 text-right text-emerald-300">
+                      <div className="font-bold text-emerald-300">{formatTimeValue(row.ruseMedianPackPerItemSec, unit)}</div>
+                      <div className="text-[10px] text-slate-400 font-normal">Ø {formatTimeValue(row.ruseAvgPackPerItemSec, unit)}</div>
+                    </td>
+                    <td className="py-3 px-3.5 text-right text-teal-300">
+                      <div className="font-bold text-teal-300">{formatTimeValue(row.svjMedianPackPerItemSec, unit)}</div>
+                      <div className="text-[10px] text-teal-400/80 font-normal">Ø {formatTimeValue(row.svjAvgPackPerItemSec, unit)}</div>
+                    </td>
                     <td className="py-3 px-3.5 text-right text-purple-400">
-                      {row.svjAvgSortPerItemSec > 0 ? formatTimeValue(row.svjAvgSortPerItemSec, unit) : '–'}
+                      {row.svjMedianSortPerItemSec > 0 ? (
+                        <>
+                          <div className="font-bold text-purple-300">{formatTimeValue(row.svjMedianSortPerItemSec, unit)}</div>
+                          <div className="text-[10px] text-purple-400/80 font-normal">Ø {formatTimeValue(row.svjAvgSortPerItemSec, unit)}</div>
+                        </>
+                      ) : (
+                        '–'
+                      )}
                     </td>
                     <td className="py-3 px-3.5 text-right font-semibold">
-                      <span className={row.pickDiffPct > 0 ? 'text-amber-400' : 'text-emerald-400'}>
-                        {row.pickDiffPct > 0 ? '+' : ''}{row.pickDiffPct}%
-                      </span>
+                      <div className={row.pickMedianDiffPct > 0 ? 'text-amber-400' : 'text-emerald-400'}>
+                        {row.pickMedianDiffPct > 0 ? '+' : ''}{row.pickMedianDiffPct}%
+                      </div>
+                      <div className={`text-[10px] font-normal ${row.pickDiffPct > 0 ? 'text-amber-500' : 'text-emerald-500'}`}>
+                        Ø {row.pickDiffPct > 0 ? '+' : ''}{row.pickDiffPct}%
+                      </div>
                     </td>
                     <td className="py-3 px-3.5 text-right font-semibold">
-                      <span className={row.packDiffPct > 0 ? 'text-amber-400' : 'text-emerald-400'}>
-                        {row.packDiffPct > 0 ? '+' : ''}{row.packDiffPct}%
-                      </span>
+                      <div className={row.packMedianDiffPct > 0 ? 'text-amber-400' : 'text-emerald-400'}>
+                        {row.packMedianDiffPct > 0 ? '+' : ''}{row.packMedianDiffPct}%
+                      </div>
+                      <div className={`text-[10px] font-normal ${row.packDiffPct > 0 ? 'text-amber-500' : 'text-emerald-500'}`}>
+                        Ø {row.packDiffPct > 0 ? '+' : ''}{row.packDiffPct}%
+                      </div>
                     </td>
                   </tr>
                 );
