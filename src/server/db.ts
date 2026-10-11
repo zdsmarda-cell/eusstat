@@ -87,13 +87,13 @@ function saveConfigToFile(config: MariaDbConfig): void {
 }
 
 // Persistent fallback dataset stored on disk (not just RAM)
-// V produkci a při konfiguraci MariaDB se lokální paměť NIKDY nepoužívá!
 let memoryMovements: MovementRecord[] = [];
 
-// Načtení z disku pouze pokud nejsme v produkci a není konfigurován žádný DB host
-const isProductionEnv = process.env.NODE_ENV === 'production' || Boolean(process.env.DB_HOST || process.env.MARIADB_HOST);
+// Načtení z disku: Pokud MariaDB nemá platné heslo nebo není dostupná, používáme persistentní disk
+let currentConfig: MariaDbConfig = loadSavedConfig();
+const isProductionEnv = process.env.NODE_ENV === 'production' && Boolean(currentConfig.password);
 
-if (!isProductionEnv && fs.existsSync(PERSISTENT_DATA_PATH)) {
+if (fs.existsSync(PERSISTENT_DATA_PATH)) {
   try {
     const raw = fs.readFileSync(PERSISTENT_DATA_PATH, 'utf-8');
     memoryMovements = JSON.parse(raw);
@@ -104,7 +104,6 @@ if (!isProductionEnv && fs.existsSync(PERSISTENT_DATA_PATH)) {
 }
 
 function saveMovementsToDisk(): void {
-  if (isProductionEnv) return;
   try {
     fs.writeFileSync(PERSISTENT_DATA_PATH, JSON.stringify(memoryMovements), 'utf-8');
   } catch (err) {
@@ -113,7 +112,6 @@ function saveMovementsToDisk(): void {
 }
 
 let pool: mysql.Pool | null = null;
-let currentConfig: MariaDbConfig = loadSavedConfig();
 let lastConnectionError: string | null = null;
 
 export function getDbConfig(): MariaDbConfig {
@@ -531,21 +529,20 @@ export async function insertMovements(records: MovementRecord[]): Promise<{ coun
   if (p) {
     try {
       await insertMovementsDirect(p, records);
-      // MariaDB je primární úložiště; neblokujeme event loop zápisem stovek tisíc záznamů do RAM ani na disk
       await clearStatsCache(records[0]?.warehouse);
       return { count: records.length, destination: 'mariadb' };
     } catch (err: any) {
       console.error('❌ Chyba při vkládání do MariaDB:', err?.message || err);
       lastConnectionError = err?.message || 'Chyba zápisu do MariaDB';
-      if (isProductionEnv || currentConfig.host) {
+      if (isProductionEnv && currentConfig.password) {
         throw new Error(`Nepodařilo se zapsat data do MariaDB: ${lastConnectionError}`);
       }
     }
-  } else if (isProductionEnv || currentConfig.host) {
+  } else if (isProductionEnv && currentConfig.password) {
     throw new Error(`Není k dispozici spojení s MariaDB: ${lastConnectionError || 'Zkontrolujte přístupové údaje'}`);
   }
 
-  // Fallback do lokální paměti pouze pro čistě vývojový režim bez DB
+  // Fallback do lokální paměti pro vývojový režim nebo když MariaDB nemá heslo
   memoryMovements = [...records, ...memoryMovements];
   scheduleSaveMovementsToDisk(1500);
   await clearStatsCache(records[0]?.warehouse);
@@ -570,8 +567,12 @@ export async function getMovements(params: {
       let queryParams: any[] = [];
 
       if (params.warehouse && params.warehouse !== 'all') {
-        conditions.push('warehouse = ?');
-        queryParams.push(params.warehouse);
+        if (params.warehouse === 'ruse') {
+          conditions.push("(warehouse = 'ruse' OR warehouse IS NULL OR warehouse = '')");
+        } else {
+          conditions.push('warehouse = ?');
+          queryParams.push(params.warehouse);
+        }
       }
       if (params.dateFrom) {
         conditions.push('zacatek_pickovani >= ?');
@@ -648,7 +649,7 @@ export async function getMovements(params: {
     } catch (err: any) {
       console.error('Chyba při dotazu MariaDB:', err?.message || err);
       lastConnectionError = err?.message || 'Chyba dotazu do MariaDB';
-      if (isProductionEnv || currentConfig.host) {
+      if (isProductionEnv && currentConfig.password) {
         return {
           records: [],
           total: 0,
@@ -658,8 +659,8 @@ export async function getMovements(params: {
     }
   }
 
-  // V produkci a při konfiguraci MariaDB NIKDY nevracíme lokální paměť!
-  if (isProductionEnv || currentConfig.host) {
+  // Pouze v ostré produkci s heslem k MariaDB bez spojení nevracíme paměť
+  if (isProductionEnv && currentConfig.password) {
     return {
       records: [],
       total: 0,
@@ -793,21 +794,15 @@ export async function saveCachedStats(
 }
 
 export async function clearStatsCache(warehouse?: string): Promise<void> {
-  if (warehouse && warehouse !== 'all') {
-    for (const key of statsMemoryCache.keys()) {
-      if (key.includes(warehouse)) {
-        statsMemoryCache.delete(key);
-      }
-    }
-  } else {
-    statsMemoryCache.clear();
-  }
+  // 1. Vyčistit paměťovou mezipaměť pro konzistentní výsledky
+  statsMemoryCache.clear();
 
+  // 2. Vyčistit MariaDB tabulku mezipaměti
   const p = await getPool();
   if (p) {
     try {
       if (warehouse && warehouse !== 'all') {
-        await p.query('DELETE FROM warehouse_stats_cache WHERE warehouse = ?', [warehouse]);
+        await p.query("DELETE FROM warehouse_stats_cache WHERE warehouse = ? OR warehouse = 'all'", [warehouse]);
       } else {
         await p.query('TRUNCATE TABLE warehouse_stats_cache');
       }
@@ -867,8 +862,12 @@ export async function getWarehouseRecords(
       const params: any[] = [];
 
       if (warehouse !== 'all') {
-        conditions.push('warehouse = ?');
-        params.push(warehouse);
+        if (warehouse === 'ruse') {
+          conditions.push("(warehouse = 'ruse' OR warehouse IS NULL OR warehouse = '')");
+        } else {
+          conditions.push('warehouse = ?');
+          params.push(warehouse);
+        }
       }
 
       if (filters?.excludeOutliers) {
@@ -921,18 +920,18 @@ export async function getWarehouseRecords(
       return rows as MovementRecord[];
     } catch (err: any) {
       console.warn('Chyba při dotazu getWarehouseRecords z MariaDB:', err?.message || err);
-      if (isProductionEnv || currentConfig.host) {
+      if (isProductionEnv && currentConfig.password) {
         throw new Error(err?.message || 'Chyba při dotazu do MariaDB');
       }
     }
   }
 
-  // V produkci a při konfiguraci MariaDB NIKDY nevracíme lokální paměť!
-  if (isProductionEnv || currentConfig.host) {
+  // Pouze v ostré produkci s heslem bez DB spojení nevracíme paměť
+  if (isProductionEnv && currentConfig.password) {
     return [];
   }
 
-  // Memory fallback pouze pro čistě lokální vývoj bez DB
+  // Memory fallback pro vývojový režim nebo když MariaDB nemá heslo
   let filtered = [...memoryMovements];
   if (warehouse !== 'all') {
     filtered = filtered.filter(r => (r.warehouse || 'ruse') === warehouse);

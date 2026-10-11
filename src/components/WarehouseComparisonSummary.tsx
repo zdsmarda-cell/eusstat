@@ -18,6 +18,7 @@ import {
   Sparkles,
   Tag,
   Zap,
+  Download,
 } from 'lucide-react';
 import { MovementRecord, WarehouseComparisonReport } from '../types.js';
 import { computeWarehouseComparison, formatTimeValue } from '../utils/analytics.js';
@@ -28,6 +29,7 @@ interface WarehouseComparisonSummaryProps {
   svjRecords: MovementRecord[];
   unit: 'sec' | 'min';
   cachedReport?: WarehouseComparisonReport | null;
+  onExportHtml?: () => void;
 }
 
 export const WarehouseComparisonSummary: React.FC<WarehouseComparisonSummaryProps> = ({
@@ -35,6 +37,7 @@ export const WarehouseComparisonSummary: React.FC<WarehouseComparisonSummaryProp
   svjRecords,
   unit,
   cachedReport,
+  onExportHtml,
 }) => {
   const { lang } = useLanguage();
   const isCs = lang === 'cs';
@@ -96,6 +99,16 @@ export const WarehouseComparisonSummary: React.FC<WarehouseComparisonSummaryProp
               <span className="w-2 h-2 rounded-full bg-purple-400 animate-pulse" />
               <span>Sklad SVJ ({report.svjTotalOrders.toLocaleString('cs-CZ')} obj.)</span>
             </div>
+            {onExportHtml && (
+              <button
+                onClick={onExportHtml}
+                className="flex items-center space-x-1.5 px-3.5 py-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 rounded-xl font-bold text-xs transition-all shadow-lg hover:scale-[1.02] active:scale-[0.98] cursor-pointer"
+                title={isCs ? 'Uložit kompletní srovnání skladů jako samostatný HTML report' : 'Save cross-warehouse comparison report as standalone HTML'}
+              >
+                <Download className="w-3.5 h-3.5 text-emerald-400" />
+                <span>{isCs ? 'Uložit srovnání do HTML' : 'Download Comparison HTML'}</span>
+              </button>
+            )}
           </div>
         </div>
 

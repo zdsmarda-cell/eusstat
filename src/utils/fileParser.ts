@@ -518,6 +518,7 @@ export function linkBoxesAndScans(boxesRows: any[], scansRows: any[], sheetNames
         box_total_units: box.units,
         box_shared_skus_count: boxSynergyInfo.get(box.box_id)?.sharedSkusCount,
         created_at: formatLocalIso(firstScanTime),
+        warehouse: 'ruse',
       });
     }
   } else if (boxesMap.size > 0) {
@@ -553,6 +554,7 @@ export function linkBoxesAndScans(boxesRows: any[], scansRows: any[], sheetNames
         sec_per_scan: box.sec_per_scan,
         wait_pick_to_pack_min: box.wait_pick_to_pack_min,
         created_at: formatLocalIso(box.picking_start),
+        warehouse: 'ruse',
       });
     }
   }
@@ -878,6 +880,7 @@ export function processParsedRows(rows: any[], sheetName?: string): ParseResult 
       packer: colPacker ? String(row[colPacker] || '') : undefined,
       sec_per_scan: colSecPerScan ? parseCzechNumber(row[colSecPerScan]) : undefined,
       wait_pick_to_pack_min: colWaitPickToPack ? parseCzechNumber(row[colWaitPickToPack]) : undefined,
+      warehouse: 'ruse',
     });
   }
 

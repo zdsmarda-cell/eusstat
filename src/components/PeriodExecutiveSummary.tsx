@@ -10,6 +10,8 @@ import {
   TrendingUp,
   Info,
   Clock,
+  Shuffle,
+  CheckCircle2,
 } from 'lucide-react';
 import { PeriodSummary } from '../types.js';
 import { useLanguage } from '../context/LanguageContext.js';
@@ -33,6 +35,32 @@ export const PeriodExecutiveSummary: React.FC<PeriodExecutiveSummaryProps> = ({
   const isCs = lang === 'cs';
 
   const hasDateRange = Boolean(summary.dateFrom && summary.dateTo);
+
+  const sortMed = (summary.medianSortPerItemSec && summary.medianSortPerItemSec > 0)
+    ? summary.medianSortPerItemSec
+    : (svjSorting?.medianSortPerItemSec ?? 0);
+  const sortAvg = (summary.avgSortPerItemSec && summary.avgSortPerItemSec > 0)
+    ? summary.avgSortPerItemSec
+    : (svjSorting?.avgSortPerItemSec ?? 0);
+  const showSorting = Boolean(isSvj);
+
+  const pickMed = summary.medianPickPerItemSec ?? 0;
+  const pickAvg = summary.avgPickPerItemSec ?? 0;
+  const packMed = summary.medianPackPerItemSec ?? 0;
+  const packAvg = summary.avgPackPerItemSec ?? 0;
+
+  // Celkový čas na 1 ks: V SVJ striktně součet operací Pickování + Sortování + Balení (medián i průměr)
+  const totalMed = showSorting
+    ? Number((pickMed + sortMed + packMed).toFixed(1))
+    : (summary.medianTotalPerItemSec && summary.medianTotalPerItemSec > 0
+        ? summary.medianTotalPerItemSec
+        : Number((pickMed + packMed).toFixed(1)));
+
+  const totalAvg = showSorting
+    ? Number((pickAvg + sortAvg + packAvg).toFixed(1))
+    : (summary.avgTotalPerItemSec && summary.avgTotalPerItemSec > 0
+        ? summary.avgTotalPerItemSec
+        : Number((pickAvg + packAvg).toFixed(1)));
 
   return (
     <div className="bg-gradient-to-br from-slate-900 via-slate-900/90 to-slate-950 border border-indigo-500/20 rounded-3xl p-5 sm:p-6 shadow-2xl relative overflow-hidden backdrop-blur-xl">
@@ -242,51 +270,131 @@ export const PeriodExecutiveSummary: React.FC<PeriodExecutiveSummaryProps> = ({
         </div>
       </div>
 
-      {/* SVJ 3-fázový procesní řetězec na 1 kus (Pickování -> Sortování -> Balení) */}
-      {(isSvj || summary.hasSorting) && (
-        <div className="mt-3.5 pt-3.5 border-t border-purple-500/30 bg-purple-950/20 rounded-2xl p-3.5 border border-purple-500/20 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs">
-          <div className="flex items-center space-x-2.5">
-            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/25 text-purple-300 border border-purple-500/40 uppercase tracking-wider">
-              {isCs ? 'SVJ Procesní řetězec na 1 ks' : 'SVJ Fulfillment Stages / Item'}
+      {/* Procesní řetězec na 1 kus: SVJ 3 operace (Pick + Sort + Pack) vs Ruse 2 operace (Pick + Pack) */}
+      <div className="mt-4 pt-4 border-t border-slate-800/80 space-y-3.5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div className="flex items-center space-x-2">
+            <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+              showSorting
+                ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                : 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
+            }`}>
+              {showSorting ? (isCs ? 'SVJ Procesní rozpad na 1 ks' : 'SVJ Fulfillment Breakdown / Unit') : (isCs ? 'Ruse Procesní rozpad na 1 ks' : 'Ruse Fulfillment Breakdown / Unit')}
             </span>
-            <span className="text-slate-300 font-semibold">
-              {isCs ? 'Pickování ➔ Sortování ➔ Balení' : 'Picking ➔ Sorting ➔ Packing'}
+            <span className="text-xs text-slate-300 font-semibold">
+              {showSorting
+                ? (isCs ? 'Celkový čas = Pickování + Sortování + Balení' : 'Total Time = Picking + Sorting + Packing')
+                : (isCs ? 'Celkový čas = Pickování + Ruční balení' : 'Total Time = Picking + Manual Packing')}
             </span>
           </div>
+          <span className={`text-[11px] font-mono ${showSorting ? 'text-purple-300/80' : 'text-blue-300/80'}`}>
+            {showSorting
+              ? (isCs ? 'Včetně mezioperačního sortingu ze sběrných boxů' : 'Including batch collection sorting')
+              : (isCs ? 'Přímá expedice ze sběrného boxu' : 'Direct fulfillment from batch tote')}
+          </span>
+        </div>
 
-          <div className="flex flex-wrap items-center gap-2 sm:gap-3 font-mono text-[11px]">
-            <div className="flex items-center space-x-1.5 bg-slate-900/80 px-2.5 py-1 rounded-lg border border-indigo-500/30 text-indigo-300">
-              <span className="text-slate-400">Pick:</span>
-              <strong className="text-white">{summary.medianPickPerItemSec ?? '-'} s</strong>
-              <span className="text-slate-500 text-[10px]">Ø {summary.avgPickPerItemSec ?? '-'} s</span>
+        {/* Process Cards: Pick, Sort (SVJ), Pack, Total */}
+        <div className={`grid grid-cols-1 sm:grid-cols-2 ${showSorting ? 'lg:grid-cols-4' : 'lg:grid-cols-3'} gap-3`}>
+          {/* 1. Pickování */}
+          <div className="bg-slate-900/90 border border-indigo-500/25 rounded-2xl p-3.5 relative overflow-hidden">
+            <div className="flex items-center justify-between text-xs text-slate-400">
+              <span className="font-bold uppercase tracking-wider text-indigo-300">{isCs ? '1. Pickování' : '1. Picking'}</span>
+              <Clock className="w-3.5 h-3.5 text-indigo-400" />
             </div>
-
-            <span className="text-purple-400 font-bold">+</span>
-
-            <div className="flex items-center space-x-1.5 bg-purple-900/30 px-2.5 py-1 rounded-lg border border-purple-500/40 text-purple-300">
-              <span className="text-purple-300">Sort:</span>
-              <strong className="text-white">{summary.medianSortPerItemSec ?? svjSorting?.medianSortPerItemSec ?? '-'} s</strong>
-              <span className="text-purple-300/70 text-[10px]">Ø {summary.avgSortPerItemSec ?? svjSorting?.avgSortPerItemSec ?? '-'} s</span>
+            <div className="mt-2 flex items-baseline space-x-2 font-mono">
+              <span className="text-xl font-black text-white">{pickMed} s</span>
+              <span className="text-xs text-indigo-400">{isCs ? 'medián' : 'median'}</span>
             </div>
-
-            <span className="text-purple-400 font-bold">+</span>
-
-            <div className="flex items-center space-x-1.5 bg-slate-900/80 px-2.5 py-1 rounded-lg border border-emerald-500/30 text-emerald-300">
-              <span className="text-slate-400">Pack:</span>
-              <strong className="text-white">{summary.medianPackPerItemSec ?? '-'} s</strong>
-              <span className="text-slate-500 text-[10px]">Ø {summary.avgPackPerItemSec ?? '-'} s</span>
+            <div className="mt-1 flex items-center justify-between text-[11px] text-slate-400 font-mono">
+              <span>{isCs ? 'Průměr (Ø):' : 'Mean (Ø):'}</span>
+              <span className="text-slate-200">{pickAvg} s</span>
             </div>
+          </div>
 
-            <span className="text-purple-400 font-bold">=</span>
+          {/* 2. Sortování (pouze SVJ) */}
+          {showSorting && (
+            <div className="bg-purple-950/20 border border-purple-500/40 rounded-2xl p-3.5 relative overflow-hidden">
+              <div className="flex items-center justify-between text-xs text-purple-300">
+                <span className="font-bold uppercase tracking-wider text-purple-300">{isCs ? '2. Sortování' : '2. Sorting'}</span>
+                <Shuffle className="w-3.5 h-3.5 text-purple-400" />
+              </div>
+              <div className="mt-2 flex items-baseline space-x-2 font-mono">
+                <span className="text-xl font-black text-purple-300">{sortMed} s</span>
+                <span className="text-xs text-purple-400">{isCs ? 'medián' : 'median'}</span>
+              </div>
+              <div className="mt-1 flex items-center justify-between text-[11px] text-slate-400 font-mono">
+                <span>{isCs ? 'Průměr (Ø):' : 'Mean (Ø):'}</span>
+                <span className="text-purple-200">{sortAvg} s</span>
+              </div>
+            </div>
+          )}
 
-            <div className="flex items-center space-x-1.5 bg-gradient-to-r from-purple-900/50 to-indigo-900/50 px-3 py-1 rounded-lg border border-purple-400/50 text-white shadow-sm">
-              <span className="text-purple-200 font-semibold">{isCs ? 'Celkem:' : 'Total:'}</span>
-              <strong className="text-purple-200 font-bold text-xs">{summary.medianTotalPerItemSec ?? '-'} s</strong>
-              <span className="text-slate-400 text-[10px]">Ø {summary.avgTotalPerItemSec ?? '-'} s</span>
+          {/* 3. Balení */}
+          <div className="bg-slate-900/90 border border-emerald-500/25 rounded-2xl p-3.5 relative overflow-hidden">
+            <div className="flex items-center justify-between text-xs text-slate-400">
+              <span className="font-bold uppercase tracking-wider text-emerald-300">{showSorting ? (isCs ? '3. Ruční balení' : '3. Packing') : (isCs ? '2. Ruční balení' : '2. Packing')}</span>
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+            </div>
+            <div className="mt-2 flex items-baseline space-x-2 font-mono">
+              <span className="text-xl font-black text-white">{packMed} s</span>
+              <span className="text-xs text-emerald-400">{isCs ? 'medián' : 'median'}</span>
+            </div>
+            <div className="mt-1 flex items-center justify-between text-[11px] text-slate-400 font-mono">
+              <span>{isCs ? 'Průměr (Ø):' : 'Mean (Ø):'}</span>
+              <span className="text-slate-200">{packAvg} s</span>
+            </div>
+          </div>
+
+          {/* 4. Celkový procesní čas */}
+          <div className={`bg-gradient-to-br ${
+            showSorting
+              ? 'from-purple-950/40 via-indigo-950/30 to-slate-900/90 border-purple-400/50 shadow-purple-900/20'
+              : 'from-blue-950/40 via-indigo-950/30 to-slate-900/90 border-blue-400/50 shadow-blue-900/20'
+          } border rounded-2xl p-3.5 relative overflow-hidden shadow-lg`}>
+            <div className="flex items-center justify-between text-xs text-slate-300">
+              <span className="font-bold uppercase tracking-wider text-white">{isCs ? 'Celkem na 1 kus' : 'Total / Item'}</span>
+              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                showSorting ? 'bg-purple-500/30 text-purple-200' : 'bg-blue-500/30 text-blue-200'
+              }`}>
+                {showSorting ? (isCs ? '3 procesy' : '3 stages') : (isCs ? '2 procesy' : '2 stages')}
+              </span>
+            </div>
+            <div className="mt-2 flex items-baseline space-x-2 font-mono">
+              <span className={`text-xl font-black ${showSorting ? 'text-purple-200' : 'text-blue-200'}`}>{totalMed} s</span>
+              <span className={`text-xs ${showSorting ? 'text-purple-300' : 'text-blue-300'}`}>{isCs ? 'medián' : 'median'}</span>
+            </div>
+            <div className="mt-1 flex items-center justify-between text-[11px] text-slate-400 font-mono">
+              <span>{isCs ? 'Průměr (Ø):' : 'Mean (Ø):'}</span>
+              <span className="text-white font-bold">{totalAvg} s</span>
             </div>
           </div>
         </div>
-      )}
+
+        {/* Inline additive formula */}
+        <div className="bg-slate-950/70 border border-slate-800 rounded-xl px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs font-mono">
+          <span className="text-slate-400 font-sans text-[11px] font-semibold">{isCs ? 'Vzorec pro 1 kus:' : 'Formula per item:'}</span>
+          <div className="flex flex-wrap items-center gap-2 text-[11px]">
+            <span className="text-indigo-300 font-semibold">{isCs ? 'Pick' : 'Pick'} ({pickMed} s / Ø {pickAvg} s)</span>
+            <span className="text-slate-500 font-bold">+</span>
+            {showSorting && (
+              <>
+                <span className="text-purple-300 font-semibold">{isCs ? 'Sort' : 'Sort'} ({sortMed} s / Ø {sortAvg} s)</span>
+                <span className="text-purple-400 font-bold">+</span>
+              </>
+            )}
+            <span className="text-emerald-300 font-semibold">{isCs ? 'Pack' : 'Pack'} ({packMed} s / Ø {packAvg} s)</span>
+            <span className="text-slate-500 font-bold">=</span>
+            <span className={`px-2 py-0.5 rounded font-bold border ${
+              showSorting
+                ? 'bg-purple-500/20 text-purple-200 border-purple-500/30'
+                : 'bg-blue-500/20 text-blue-200 border-blue-500/30'
+            }`}>
+              {isCs ? 'Celkem' : 'Total'}: {totalMed} s (Ø {totalAvg} s)
+            </span>
+          </div>
+        </div>
+      </div>
     </div>
   );
 };

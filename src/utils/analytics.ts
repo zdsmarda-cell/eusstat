@@ -145,13 +145,28 @@ export function computePeriodSummary(records: MovementRecord[]): PeriodSummary {
   const avgPickPerItemSec = totalUnits > 0 ? Number((sumPickSec / totalUnits).toFixed(1)) : 0;
   const medianPickPerItemSec = pickPerItems.length > 0 ? Number(median(pickPerItems).toFixed(1)) : 0;
 
-  const sortedRecords = records.filter(r => (r.sort_per_item_s !== undefined && r.sort_per_item_s > 0) || (r.sort_duration_s !== undefined && r.sort_duration_s > 0) || r.is_sorted === true);
-  const hasSorting = sortedRecords.length > 0;
+  const sortedRecords = records.filter(r =>
+    (r.warehouse || 'ruse') === 'svj' ||
+    (r.sort_per_item_s !== undefined && r.sort_per_item_s > 0) ||
+    (r.sort_duration_s !== undefined && r.sort_duration_s > 0) ||
+    r.is_sorted === true
+  );
   const sumSortSec = sortedRecords.reduce((s, r) => s + (r.sort_duration_s || 0), 0);
   const totalUnitsSorted = sortedRecords.reduce((s, r) => s + (r.units_sorted || r.pocet_produktu || 1), 0);
-  const sortPerItems = sortedRecords.map(r => r.sort_per_item_s || 0).filter(t => t > 0);
-  const avgSortPerItemSec = totalUnitsSorted > 0 ? Number((sumSortSec / totalUnitsSorted).toFixed(1)) : 0;
+  const sortPerItems = sortedRecords
+    .map(r => {
+      if (r.sort_per_item_s !== undefined && r.sort_per_item_s > 0) return r.sort_per_item_s;
+      if (r.sort_duration_s !== undefined && r.sort_duration_s > 0) {
+        return r.sort_duration_s / Math.max(1, r.units_sorted || r.pocet_produktu || 1);
+      }
+      return 0;
+    })
+    .filter(t => t > 0);
+  const avgSortPerItemSec = totalUnitsSorted > 0 && sumSortSec > 0
+    ? Number((sumSortSec / totalUnitsSorted).toFixed(1))
+    : (sortPerItems.length > 0 ? Number((sortPerItems.reduce((a, b) => a + b, 0) / sortPerItems.length).toFixed(1)) : 0);
   const medianSortPerItemSec = sortPerItems.length > 0 ? Number(median(sortPerItems).toFixed(1)) : 0;
+  const hasSorting = sortedRecords.length > 0 && (avgSortPerItemSec > 0 || medianSortPerItemSec > 0 || records.some(r => r.warehouse === 'svj'));
 
   const packedRecords = records.filter(r => r.is_packed !== false && (r.pack_duration_s > 0 || (r.warehouse || 'ruse') === 'ruse'));
   const sumPackSec = packedRecords.reduce((s, r) => s + (r.pack_duration_s || 0), 0);
@@ -160,17 +175,14 @@ export function computePeriodSummary(records: MovementRecord[]): PeriodSummary {
   const avgPackPerItemSec = totalUnitsPacked > 0 ? Number((sumPackSec / totalUnitsPacked).toFixed(1)) : 0;
   const medianPackPerItemSec = packPerItems.length > 0 ? Number(median(packPerItems).toFixed(1)) : 0;
 
+  // Celkový čas na 1 ks: V SVJ striktně součet všech 3 operací (Pickování + Sortování + Balení) pro průměr i medián
   const avgTotalPerItemSec = hasSorting
     ? Number((avgPickPerItemSec + avgSortPerItemSec + avgPackPerItemSec).toFixed(1))
     : Number((avgPickPerItemSec + avgPackPerItemSec).toFixed(1));
 
-  const totalPerItems = records.map(r => {
-    if (hasSorting) {
-      return Number(((r.pick_per_item_s || 0) + (r.sort_per_item_s || 0) + (r.pack_per_item_s || 0)).toFixed(1));
-    }
-    return r.total_per_item_s !== undefined ? r.total_per_item_s : Number(((r.pick_per_item_s || 0) + (r.pack_per_item_s || 0)).toFixed(1));
-  });
-  const medianTotalPerItemSec = totalPerItems.length > 0 ? Number(median(totalPerItems).toFixed(1)) : 0;
+  const medianTotalPerItemSec = hasSorting
+    ? Number((medianPickPerItemSec + medianSortPerItemSec + medianPackPerItemSec).toFixed(1))
+    : Number((medianPickPerItemSec + medianPackPerItemSec).toFixed(1));
 
   return {
     dateFrom,
@@ -259,14 +271,29 @@ export function computeBracketStatistics(records: MovementRecord[]): BracketStat
     const avgPickPerItemSec = totalItems > 0 ? sumPickDuration / totalItems : 0;
 
     // 2. Sortování (pro SVJ či záznamy se sortováním)
-    const sortedSubset = subset.filter(r => (r.sort_per_item_s !== undefined && r.sort_per_item_s > 0) || (r.sort_duration_s !== undefined && r.sort_duration_s > 0) || r.is_sorted === true);
+    const sortedSubset = subset.filter(r =>
+      (r.warehouse || 'ruse') === 'svj' ||
+      (r.sort_per_item_s !== undefined && r.sort_per_item_s > 0) ||
+      (r.sort_duration_s !== undefined && r.sort_duration_s > 0) ||
+      r.is_sorted === true
+    );
     const sortedShipmentCount = sortedSubset.length;
     const sortedTotalItems = sortedSubset.reduce((acc, r) => acc + (r.units_sorted || r.pocet_produktu || 1), 0);
     const sumSortDuration = sortedSubset.reduce((acc, r) => acc + (r.sort_duration_s || 0), 0);
-    const sortPerItems = sortedSubset.map(r => r.sort_per_item_s || 0).filter(t => t > 0);
+    const sortPerItems = sortedSubset
+      .map(r => {
+        if (r.sort_per_item_s !== undefined && r.sort_per_item_s > 0) return r.sort_per_item_s;
+        if (r.sort_duration_s !== undefined && r.sort_duration_s > 0) {
+          return r.sort_duration_s / Math.max(1, r.units_sorted || r.pocet_produktu || 1);
+        }
+        return 0;
+      })
+      .filter(t => t > 0);
 
     const avgSortTotalSec = sortedShipmentCount > 0 ? sumSortDuration / sortedShipmentCount : 0;
-    const avgSortPerItemSec = sortedTotalItems > 0 ? sumSortDuration / sortedTotalItems : 0;
+    const avgSortPerItemSec = sortedTotalItems > 0 && sumSortDuration > 0
+      ? sumSortDuration / sortedTotalItems
+      : (sortPerItems.length > 0 ? sortPerItems.reduce((a, b) => a + b, 0) / sortPerItems.length : 0);
     const medianSortPerItemSec = sortPerItems.length > 0 ? median(sortPerItems) : 0;
     const p90SortPerItemSec = sortPerItems.length > 0 ? percentile(sortPerItems, 90) : 0;
 
@@ -313,7 +340,9 @@ export function computeBracketStatistics(records: MovementRecord[]): BracketStat
       medianPackPerItemSec: Number(median(packPerItems).toFixed(1)),
       p90PackPerItemSec: Number(percentile(packPerItems, 90).toFixed(1)),
       avgTotalPerItemSec: Number(avgTotalPerItemSec.toFixed(1)),
-      medianTotalPerItemSec: Number(median(totalPerItems).toFixed(1)),
+      medianTotalPerItemSec: hasSortingInBracket
+        ? Number((Number(median(pickPerItems).toFixed(1)) + Number(medianSortPerItemSec.toFixed(1)) + Number(median(packPerItems).toFixed(1))).toFixed(1))
+        : Number(median(totalPerItems).toFixed(1)),
       pickSavingsPctVsSingle: 0,
       sortSavingsPctVsSingle: 0,
       packSavingsPctVsSingle: 0,
@@ -1368,9 +1397,19 @@ export function computeWarehouseComparison(
   // Sorting stats for SVJ
   const svjTotalSortSec = svjRecords.reduce((sum, r) => sum + (r.sort_duration_s || 0), 0);
   const svjTotalUnits = Math.max(1, svjSummary.totalUnits);
-  const svjAvgSortPerItemSec = Number((svjTotalSortSec / svjTotalUnits).toFixed(1));
-  const svjSortTimes = svjRecords.map(r => r.sort_per_item_s || 0).filter(t => t > 0);
-  const svjMedianSortPerItemSec = Number(median(svjSortTimes).toFixed(1));
+  const svjSortTimes = svjRecords
+    .map(r => {
+      if (r.sort_per_item_s !== undefined && r.sort_per_item_s > 0) return r.sort_per_item_s;
+      if (r.sort_duration_s !== undefined && r.sort_duration_s > 0) {
+        return r.sort_duration_s / Math.max(1, r.units_sorted || r.pocet_produktu || 1);
+      }
+      return 0;
+    })
+    .filter(t => t > 0);
+  const svjAvgSortPerItemSec = svjTotalUnits > 0 && svjTotalSortSec > 0
+    ? Number((svjTotalSortSec / svjTotalUnits).toFixed(1))
+    : (svjSortTimes.length > 0 ? Number((svjSortTimes.reduce((a, b) => a + b, 0) / svjSortTimes.length).toFixed(1)) : 0);
+  const svjMedianSortPerItemSec = svjSortTimes.length > 0 ? Number(median(svjSortTimes).toFixed(1)) : 0;
 
   // Buffers
   const ruseWithWait = ruseRecords.filter(r => r.wait_pick_to_pack_min !== undefined && r.wait_pick_to_pack_min > 0);
@@ -1428,7 +1467,15 @@ export function computeWarehouseComparison(
     const svjSubUnits = svjSubset.reduce((sum, r) => sum + r.pocet_produktu, 0);
     const svjSubSortSec = svjSubset.reduce((sum, r) => sum + (r.sort_duration_s || 0), 0);
     const svjSort = svjSubUnits > 0 ? Number((svjSubSortSec / svjSubUnits).toFixed(1)) : 0;
-    const svjSubSortTimes = svjSubset.map(r => r.sort_per_item_s || 0).filter(t => t > 0);
+    const svjSubSortTimes = svjSubset
+      .map(r => {
+        if (r.sort_per_item_s !== undefined && r.sort_per_item_s > 0) return r.sort_per_item_s;
+        if (r.sort_duration_s !== undefined && r.sort_duration_s > 0) {
+          return r.sort_duration_s / Math.max(1, r.units_sorted || r.pocet_produktu || 1);
+        }
+        return 0;
+      })
+      .filter(t => t > 0);
     const svjMedianSort = Number(median(svjSubSortTimes).toFixed(1));
 
     const ruseTotal = Number((rusePick + rusePack).toFixed(1));

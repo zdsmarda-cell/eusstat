@@ -19,12 +19,10 @@ export const KpiCards: React.FC<KpiCardsProps> = ({ bracketStats, periodSummary,
   const singleStat = bracketStats.find(s => s.bracket === '1');
   const multiStat = bracketStats.find(s => s.bracket === '6+') || bracketStats.find(s => s.bracket === '5');
 
-  // Detekce SVJ skladu nebo přítomnosti procesu sortování
-  const isSvj = propIsSvj ?? Boolean(
-    (allStat?.avgSortPerItemSec && allStat.avgSortPerItemSec > 0) ||
-    periodSummary?.hasSorting ||
-    svjSorting
-  );
+  // Detekce SVJ skladu nebo přítomnosti procesu sortování (striktně respektujeme propIsSvj)
+  const isSvj = propIsSvj !== undefined
+    ? propIsSvj
+    : Boolean((allStat?.avgSortPerItemSec && allStat.avgSortPerItemSec > 0) || periodSummary?.hasSorting);
 
   const totalShipments = periodSummary ? periodSummary.totalOrders : (allStat?.shipmentCount || 0);
   const totalItems = periodSummary ? periodSummary.totalUnits : (allStat?.itemCount || 0);
@@ -32,14 +30,32 @@ export const KpiCards: React.FC<KpiCardsProps> = ({ bracketStats, periodSummary,
     ? periodSummary.avgUnitsPerOrder
     : (allStat && allStat.shipmentCount > 0 ? (allStat.itemCount / allStat.shipmentCount).toFixed(2) : '0');
 
-  // Hodnoty sortingu
-  const medianSortVal = (allStat?.medianSortPerItemSec && allStat.medianSortPerItemSec > 0)
-    ? allStat.medianSortPerItemSec
-    : (periodSummary?.medianSortPerItemSec || svjSorting?.medianSortPerItemSec || 0);
+  // Hodnoty sortingu (pouze pokud je sklad SVJ)
+  const medianSortVal = isSvj
+    ? ((allStat?.medianSortPerItemSec && allStat.medianSortPerItemSec > 0)
+        ? allStat.medianSortPerItemSec
+        : (periodSummary?.medianSortPerItemSec || svjSorting?.medianSortPerItemSec || 0))
+    : 0;
 
-  const avgSortVal = (allStat?.avgSortPerItemSec && allStat.avgSortPerItemSec > 0)
-    ? allStat.avgSortPerItemSec
-    : (periodSummary?.avgSortPerItemSec || svjSorting?.avgSortPerItemSec || 0);
+  const avgSortVal = isSvj
+    ? ((allStat?.avgSortPerItemSec && allStat.avgSortPerItemSec > 0)
+        ? allStat.avgSortPerItemSec
+        : (periodSummary?.avgSortPerItemSec || svjSorting?.avgSortPerItemSec || 0))
+    : 0;
+
+  // Celkový čas na 1 ks: SVJ má Pick + Sort + Pack, Ruse má Pick + Pack
+  const medianPickVal = allStat?.medianPickPerItemSec || 0;
+  const avgPickVal = allStat?.avgPickPerItemSec || 0;
+  const medianPackVal = allStat?.medianPackPerItemSec || 0;
+  const avgPackVal = allStat?.avgPackPerItemSec || 0;
+
+  const medianTotalVal = isSvj
+    ? Number((medianPickVal + medianSortVal + medianPackVal).toFixed(1))
+    : Number((medianPickVal + medianPackVal).toFixed(1));
+
+  const avgTotalVal = isSvj
+    ? Number((avgPickVal + avgSortVal + avgPackVal).toFixed(1))
+    : Number((avgPickVal + avgPackVal).toFixed(1));
 
   return (
     <div className={`grid grid-cols-1 sm:grid-cols-2 ${isSvj ? 'lg:grid-cols-5' : 'lg:grid-cols-4'} gap-3.5 sm:gap-4`}>
@@ -198,14 +214,14 @@ export const KpiCards: React.FC<KpiCardsProps> = ({ bracketStats, periodSummary,
         <div className="mt-3">
           <div className="flex items-baseline space-x-2">
             <span className="text-2xl font-bold text-white tracking-tight font-mono">
-              {formatTimeValue(allStat?.medianTotalPerItemSec || 0, unit)}
+              {formatTimeValue(medianTotalVal, unit)}
             </span>
             <span className="text-xs text-purple-400 font-semibold">{lang === 'cs' ? 'medián / ks' : 'median / unit'}</span>
           </div>
           <div className="mt-1 flex items-center justify-between text-xs text-slate-400">
             <span>{lang === 'cs' ? 'Aritmetický průměr (Ø):' : 'Arithmetic mean (Ø):'}</span>
             <span className="text-slate-200 font-medium font-mono">
-              {formatTimeValue(allStat?.avgTotalPerItemSec || 0, unit)}
+              {formatTimeValue(avgTotalVal, unit)}
             </span>
           </div>
           <div className="mt-1 flex items-center justify-between text-[11px] text-slate-400 pt-1 border-t border-slate-800/60">

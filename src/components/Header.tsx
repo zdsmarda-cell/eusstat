@@ -13,6 +13,7 @@ interface HeaderProps {
   onExportHtml?: () => void;
   isLoading: boolean;
   totalRecordsCount: number;
+  activeTab?: 'ruse' | 'svj' | 'summary';
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -23,6 +24,7 @@ export const Header: React.FC<HeaderProps> = ({
   onExportHtml,
   isLoading,
   totalRecordsCount,
+  activeTab,
 }) => {
   const { lang, setLang, t } = useLanguage();
   const { username, logout } = useAuth();
@@ -157,10 +159,24 @@ export const Header: React.FC<HeaderProps> = ({
                 onClick={onExportHtml}
                 disabled={totalRecordsCount === 0 || isLoading}
                 className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-40"
-                title={lang === 'cs' ? 'Uložit výstupy jako samostatný HTML dokument k prohlížení a odeslání' : 'Save outputs as standalone HTML document'}
+                title={
+                  lang === 'cs'
+                    ? activeTab === 'summary'
+                      ? 'Uložit kompletní srovnávací report skladů Ruse vs SVJ jako samostatný HTML dokument'
+                      : activeTab === 'svj'
+                      ? 'Uložit report skladu SVJ (včetně sortingu) jako samostatný HTML dokument'
+                      : 'Uložit report skladu Ruse jako samostatný HTML dokument'
+                    : 'Save outputs as standalone HTML document'
+                }
               >
                 <FileCode className="w-4 h-4 text-emerald-400" />
-                <span className="hidden md:inline">{lang === 'cs' ? 'Uložit jako HTML' : 'Save as HTML'}</span>
+                <span className="hidden md:inline">
+                  {lang === 'cs'
+                    ? activeTab === 'summary'
+                      ? 'Uložit srovnání (HTML)'
+                      : 'Uložit jako HTML'
+                    : 'Save as HTML'}
+                </span>
               </button>
             )}
 

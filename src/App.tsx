@@ -17,6 +17,7 @@ import {
   computeDailyStatistics,
   computeBoxSynergyAndHypothesis,
   computePeriodSummary,
+  computeWarehouseComparison,
 } from './utils/analytics.js';
 import { PeriodExecutiveSummary } from './components/PeriodExecutiveSummary.js';
 import { WarehouseComparisonSummary } from './components/WarehouseComparisonSummary.js';
@@ -54,6 +55,8 @@ interface CachedAnalyticsSummary {
   svjSorting?: any;
   svjBypassAnalysis?: any;
   simulation?: any;
+  ruseSummary?: any;
+  svjSummary?: any;
   source?: 'cache' | 'computed';
   updatedAt?: string;
 }
@@ -144,11 +147,12 @@ function Dashboard() {
     setIsLoading(true);
     try {
       const activeWh = activeTab === 'summary' ? 'all' : activeTab;
-      const [statusRes, activeWhSummaryRes, allSummaryRes, movementsRes] = await Promise.all([
+      const [statusRes, ruseSummaryRes, svjSummaryRes, allSummaryRes, movementsRes] = await Promise.all([
         authFetch(apiUrl('/api/db/status')),
-        authFetch(apiUrl(`/api/analytics/summary?warehouse=${activeWh}`)),
+        authFetch(apiUrl('/api/analytics/summary?warehouse=ruse')),
+        authFetch(apiUrl('/api/analytics/summary?warehouse=svj')),
         authFetch(apiUrl('/api/analytics/summary?warehouse=all')),
-        authFetch(apiUrl('/api/movements?limit=1000')),
+        authFetch(apiUrl('/api/movements?limit=5000&warehouse=all')),
       ]);
 
       let statusData: DbStatus = { connected: false, type: 'memory' };
@@ -169,7 +173,6 @@ function Dashboard() {
           const sumData = await allSummaryRes.json();
           if (sumData.success) {
             newAnalytics.all = sumData;
-            // Použijeme skutečně oddělené souhrny ze serveru, NIKDY nepřepisujeme Ruse daty ze SVJ!
             if (sumData.ruseSummary) newAnalytics.ruse = sumData.ruseSummary;
             if (sumData.svjSummary) newAnalytics.svj = sumData.svjSummary;
           }
@@ -178,11 +181,22 @@ function Dashboard() {
         }
       }
 
-      if (activeWhSummaryRes.ok) {
+      if (ruseSummaryRes.ok) {
         try {
-          const activeData = await activeWhSummaryRes.json();
-          if (activeData.success) {
-            newAnalytics[activeWh] = activeData;
+          const ruseData = await ruseSummaryRes.json();
+          if (ruseData.success) {
+            newAnalytics.ruse = ruseData;
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      if (svjSummaryRes.ok) {
+        try {
+          const svjData = await svjSummaryRes.json();
+          if (svjData.success) {
+            newAnalytics.svj = svjData;
           }
         } catch {
           // ignore
@@ -329,8 +343,27 @@ function Dashboard() {
       });
   }, [activeTab, fetchAnalyticsSummary]);
 
-  // VŽDY přesně odpovídá aktivní záložce – NIKDY nepadá do serverAnalytics.all pro Ruse nebo SVJ!
-  const currentServerAnalytics = serverAnalytics[activeTab === 'summary' ? 'all' : activeTab];
+  // VŽDY přesně odpovídá aktivní záložce – s bezpečným fallbackem na serverAnalytics.all dílčí souhrny
+  const currentServerAnalytics = serverAnalytics[activeTab === 'summary' ? 'all' : activeTab]
+    || (activeTab === 'ruse' ? (serverAnalytics.all?.ruseSummary || serverAnalytics.ruse) : undefined)
+    || (activeTab === 'svj' ? (serverAnalytics.all?.svjSummary || serverAnalytics.svj) : undefined)
+    || (activeTab === 'summary' ? serverAnalytics.all : undefined);
+
+  // Celkový počet záznamů skladu před filtrací (zabraňuje zobrazení 716 na záložce Ruse)
+  const activeWarehouseTotalAllCount = useMemo(() => {
+    if (activeTab === 'ruse') {
+      return serverAnalytics.all?.ruseCount ?? currentServerAnalytics?.ruseCount ?? ruseRecords.length;
+    }
+    if (activeTab === 'svj') {
+      return serverAnalytics.all?.svjCount ?? currentServerAnalytics?.svjCount ?? svjRecords.length;
+    }
+    return serverAnalytics.all?.recordCount ?? (ruseRecords.length + svjRecords.length);
+  }, [activeTab, serverAnalytics, currentServerAnalytics, ruseRecords.length, svjRecords.length]);
+
+  // Počet záznamů odpovídající aplikovaným filtrům
+  const activeWarehouseFilteredCount = useMemo(() => {
+    return currentServerAnalytics?.recordCount ?? activeTabRecords.length;
+  }, [currentServerAnalytics, activeTabRecords.length]);
 
   // Compute or read stats for active tab dataset – VŽDY preferujeme data přímo z databáze
   const bracketStats = useMemo(() => {
@@ -364,7 +397,13 @@ function Dashboard() {
 
   // Export HTML report – VŽDY předáváme kompletní databázovou mezipaměť a aktivní sklad
   const handleExportHtml = () => {
-    const totalCount = currentServerAnalytics?.recordCount ?? activeTabRecords.length;
+    const activeAnalytics = activeTab === 'summary'
+      ? (serverAnalytics.all || currentServerAnalytics)
+      : activeTab === 'svj'
+      ? (serverAnalytics.svj || serverAnalytics.all?.svjSummary || currentServerAnalytics)
+      : (serverAnalytics.ruse || serverAnalytics.all?.ruseSummary || currentServerAnalytics);
+
+    const totalCount = activeAnalytics?.recordCount ?? activeTabRecords.length;
     if (totalCount === 0 && activeTabRecords.length === 0) {
       showToast(
         isCs ? 'Není k dispozici žádný záznam k exportu.' : 'No records available to export.',
@@ -375,11 +414,16 @@ function Dashboard() {
     try {
       downloadHtmlReport({
         records: activeTabRecords,
+        ruseRecords: filteredRuseRecords,
+        svjRecords: filteredSvjRecords,
         filter,
         unit: filter.unit,
         lang,
         warehouse: activeTab,
-        cachedAnalytics: currentServerAnalytics,
+        cachedAnalytics: activeAnalytics,
+        comparisonReport: serverAnalytics.all?.comparison || activeAnalytics?.comparison || computeWarehouseComparison(filteredRuseRecords, filteredSvjRecords),
+        ruseAnalytics: serverAnalytics.ruse || serverAnalytics.all?.ruseSummary || activeAnalytics?.ruseSummary,
+        svjAnalytics: serverAnalytics.svj || serverAnalytics.all?.svjSummary || activeAnalytics?.svjSummary,
       });
       showToast(
         isCs
@@ -531,12 +575,16 @@ function Dashboard() {
       return [...newRecords, ...prev];
     });
 
-    // Aktualizovat stav DB
+    // Aktualizovat stav DB a kompletně znovunačíst analytiku ze serveru
     try {
-      const statusRes = await authFetch(apiUrl('/api/db/status'));
-      if (statusRes.ok) {
-        const sData = await statusRes.json();
-        setDbStatus(sData);
+      await fetchData();
+      if (targetWarehouse === 'ruse' || targetWarehouse === 'svj') {
+        setActiveTab(targetWarehouse);
+        try {
+          localStorage.setItem('active_warehouse_tab', targetWarehouse);
+        } catch {
+          // ignore
+        }
       }
     } catch {
       // ignore
@@ -583,6 +631,7 @@ function Dashboard() {
         onExportHtml={handleExportHtml}
         isLoading={isLoading}
         totalRecordsCount={records.length}
+        activeTab={activeTab}
       />
 
       {/* Main Content Dashboard */}
@@ -748,8 +797,8 @@ function Dashboard() {
           onChange={handleFilterChange}
           onReset={() => handleFilterChange(initialFilter)}
           onExportHtml={handleExportHtml}
-          totalFilteredCount={currentServerAnalytics?.recordCount ?? activeTabRecords.length}
-          totalAllCount={serverAnalytics.all?.recordCount ?? currentServerAnalytics?.recordCount ?? activeAllWarehouseRecords.length}
+          totalFilteredCount={activeWarehouseFilteredCount}
+          totalAllCount={activeWarehouseTotalAllCount}
           isFiltering={isFiltering}
         />
 
@@ -804,6 +853,7 @@ function Dashboard() {
               svjRecords={filteredSvjRecords}
               unit={filter.unit}
               cachedReport={currentServerAnalytics?.comparison || serverAnalytics.all?.comparison || serverAnalytics.summary?.comparison}
+              onExportHtml={handleExportHtml}
             />
           </div>
         ) : activeTabRecords.length === 0 && (currentServerAnalytics?.recordCount ?? 0) === 0 ? (
@@ -914,10 +964,10 @@ function Dashboard() {
             {/* 1. Sumární přehled za zkoumané období (Objednávky, SKU, Kusy, Průměr ks/zásilku, Medián obj./box) */}
             <PeriodExecutiveSummary
               summary={periodSummary}
-              totalFilteredRecords={currentServerAnalytics?.recordCount ?? activeTabRecords.length}
-              totalAllRecords={serverAnalytics.all?.recordCount ?? currentServerAnalytics?.recordCount ?? activeAllWarehouseRecords.length}
+              totalFilteredRecords={activeWarehouseFilteredCount}
+              totalAllRecords={activeWarehouseTotalAllCount}
               isSvj={activeTab === 'svj'}
-              svjSorting={currentServerAnalytics?.svjSorting || serverAnalytics.svj?.svjSorting}
+              svjSorting={activeTab === 'svj' ? (currentServerAnalytics?.svjSorting || serverAnalytics.svj?.svjSorting) : undefined}
             />
 
             {/* 2. KPI Cards */}
@@ -926,7 +976,7 @@ function Dashboard() {
               periodSummary={periodSummary}
               unit={filter.unit}
               isSvj={activeTab === 'svj'}
-              svjSorting={currentServerAnalytics?.svjSorting || serverAnalytics.svj?.svjSorting}
+              svjSorting={activeTab === 'svj' ? (currentServerAnalytics?.svjSorting || serverAnalytics.svj?.svjSorting) : undefined}
             />
 
             {/* 3. POUZE PRO SKLAD SVJ: Sekce pro činnost sortingu a meziskladové buffery */}
