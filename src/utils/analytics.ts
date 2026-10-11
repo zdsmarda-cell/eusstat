@@ -139,6 +139,39 @@ export function computePeriodSummary(records: MovementRecord[]): PeriodSummary {
 
   const pareto = computeProductPareto(records);
 
+  // 4. Procesní metriky (Pick, Sort, Pack)
+  const pickPerItems = records.map(r => r.pick_per_item_s || 0);
+  const sumPickSec = records.reduce((s, r) => s + (r.pick_duration_s || 0), 0);
+  const avgPickPerItemSec = totalUnits > 0 ? Number((sumPickSec / totalUnits).toFixed(1)) : 0;
+  const medianPickPerItemSec = pickPerItems.length > 0 ? Number(median(pickPerItems).toFixed(1)) : 0;
+
+  const sortedRecords = records.filter(r => (r.sort_per_item_s !== undefined && r.sort_per_item_s > 0) || (r.sort_duration_s !== undefined && r.sort_duration_s > 0) || r.is_sorted === true);
+  const hasSorting = sortedRecords.length > 0;
+  const sumSortSec = sortedRecords.reduce((s, r) => s + (r.sort_duration_s || 0), 0);
+  const totalUnitsSorted = sortedRecords.reduce((s, r) => s + (r.units_sorted || r.pocet_produktu || 1), 0);
+  const sortPerItems = sortedRecords.map(r => r.sort_per_item_s || 0).filter(t => t > 0);
+  const avgSortPerItemSec = totalUnitsSorted > 0 ? Number((sumSortSec / totalUnitsSorted).toFixed(1)) : 0;
+  const medianSortPerItemSec = sortPerItems.length > 0 ? Number(median(sortPerItems).toFixed(1)) : 0;
+
+  const packedRecords = records.filter(r => r.is_packed !== false && (r.pack_duration_s > 0 || (r.warehouse || 'ruse') === 'ruse'));
+  const sumPackSec = packedRecords.reduce((s, r) => s + (r.pack_duration_s || 0), 0);
+  const totalUnitsPacked = packedRecords.reduce((s, r) => s + (r.pocet_produktu || 1), 0);
+  const packPerItems = packedRecords.map(r => r.pack_per_item_s || 0).filter(t => t > 0);
+  const avgPackPerItemSec = totalUnitsPacked > 0 ? Number((sumPackSec / totalUnitsPacked).toFixed(1)) : 0;
+  const medianPackPerItemSec = packPerItems.length > 0 ? Number(median(packPerItems).toFixed(1)) : 0;
+
+  const avgTotalPerItemSec = hasSorting
+    ? Number((avgPickPerItemSec + avgSortPerItemSec + avgPackPerItemSec).toFixed(1))
+    : Number((avgPickPerItemSec + avgPackPerItemSec).toFixed(1));
+
+  const totalPerItems = records.map(r => {
+    if (hasSorting) {
+      return Number(((r.pick_per_item_s || 0) + (r.sort_per_item_s || 0) + (r.pack_per_item_s || 0)).toFixed(1));
+    }
+    return r.total_per_item_s !== undefined ? r.total_per_item_s : Number(((r.pick_per_item_s || 0) + (r.pack_per_item_s || 0)).toFixed(1));
+  });
+  const medianTotalPerItemSec = totalPerItems.length > 0 ? Number(median(totalPerItems).toFixed(1)) : 0;
+
   return {
     dateFrom,
     dateTo,
@@ -154,6 +187,16 @@ export function computePeriodSummary(records: MovementRecord[]): PeriodSummary {
     totalBoxesCount,
     minOrdersPerBox,
     maxOrdersPerBox,
+    hasSorting,
+    totalUnitsSorted,
+    avgSortPerItemSec,
+    medianSortPerItemSec,
+    avgPickPerItemSec,
+    medianPickPerItemSec,
+    avgPackPerItemSec,
+    medianPackPerItemSec,
+    avgTotalPerItemSec,
+    medianTotalPerItemSec,
   };
 }
 
@@ -179,6 +222,10 @@ export function computeBracketStatistics(records: MovementRecord[]): BracketStat
         avgPickPerItemSec: 0,
         medianPickPerItemSec: 0,
         p90PickPerItemSec: 0,
+        avgSortTotalSec: 0,
+        avgSortPerItemSec: 0,
+        medianSortPerItemSec: 0,
+        p90SortPerItemSec: 0,
         avgPackTotalSec: 0,
         avgPackPerItemSec: 0,
         medianPackPerItemSec: 0,
@@ -186,6 +233,7 @@ export function computeBracketStatistics(records: MovementRecord[]): BracketStat
         avgTotalPerItemSec: 0,
         medianTotalPerItemSec: 0,
         pickSavingsPctVsSingle: 0,
+        sortSavingsPctVsSingle: 0,
         packSavingsPctVsSingle: 0,
         totalSavingsPctVsSingle: 0,
       });
@@ -202,6 +250,7 @@ export function computeBracketStatistics(records: MovementRecord[]): BracketStat
       ? (b === 'all' ? 100 : Number(((totalItems / overallItems) * 100).toFixed(1)))
       : 0;
 
+    // 1. Pickování
     const pickTotals = subset.map(r => r.pick_duration_s);
     const pickPerItems = subset.map(r => r.pick_per_item_s);
     const sumPickDuration = subset.reduce((acc, r) => acc + r.pick_duration_s, 0);
@@ -209,7 +258,19 @@ export function computeBracketStatistics(records: MovementRecord[]): BracketStat
     const avgPickTotalSec = sumPickDuration / shipmentCount;
     const avgPickPerItemSec = totalItems > 0 ? sumPickDuration / totalItems : 0;
 
-    // Statistika balení se počítá VÝHRADNĚ ze zásilek, které prošly ručním balením
+    // 2. Sortování (pro SVJ či záznamy se sortováním)
+    const sortedSubset = subset.filter(r => (r.sort_per_item_s !== undefined && r.sort_per_item_s > 0) || (r.sort_duration_s !== undefined && r.sort_duration_s > 0) || r.is_sorted === true);
+    const sortedShipmentCount = sortedSubset.length;
+    const sortedTotalItems = sortedSubset.reduce((acc, r) => acc + (r.units_sorted || r.pocet_produktu || 1), 0);
+    const sumSortDuration = sortedSubset.reduce((acc, r) => acc + (r.sort_duration_s || 0), 0);
+    const sortPerItems = sortedSubset.map(r => r.sort_per_item_s || 0).filter(t => t > 0);
+
+    const avgSortTotalSec = sortedShipmentCount > 0 ? sumSortDuration / sortedShipmentCount : 0;
+    const avgSortPerItemSec = sortedTotalItems > 0 ? sumSortDuration / sortedTotalItems : 0;
+    const medianSortPerItemSec = sortPerItems.length > 0 ? median(sortPerItems) : 0;
+    const p90SortPerItemSec = sortPerItems.length > 0 ? percentile(sortPerItems, 90) : 0;
+
+    // 3. Balení se počítá VÝHRADNĚ ze zásilek, které prošly ručním balením
     const packedSubset = subset.filter(r => r.is_packed !== false && (r.pack_duration_s > 0 || (r.warehouse || 'ruse') === 'ruse'));
     const packedShipmentCount = packedSubset.length;
     const packedTotalItems = packedSubset.reduce((acc, r) => acc + (r.pocet_produktu || 1), 0);
@@ -218,8 +279,19 @@ export function computeBracketStatistics(records: MovementRecord[]): BracketStat
 
     const avgPackTotalSec = packedShipmentCount > 0 ? sumPackDuration / packedShipmentCount : 0;
     const avgPackPerItemSec = packedTotalItems > 0 ? sumPackDuration / packedTotalItems : 0;
-    const avgTotalPerItemSec = avgPickPerItemSec + avgPackPerItemSec;
-    const totalPerItems = subset.map(r => r.total_per_item_s);
+
+    // 4. Celkový čas na 1 ks: Pickování + Sortování + Balení (pro SVJ) resp. Pickování + Balení (pro Ruse)
+    const hasSortingInBracket = sortedShipmentCount > 0 || avgSortPerItemSec > 0;
+    const avgTotalPerItemSec = hasSortingInBracket
+      ? avgPickPerItemSec + avgSortPerItemSec + avgPackPerItemSec
+      : avgPickPerItemSec + avgPackPerItemSec;
+
+    const totalPerItems = subset.map(r => {
+      if (hasSortingInBracket) {
+        return Number(((r.pick_per_item_s || 0) + (r.sort_per_item_s || 0) + (r.pack_per_item_s || 0)).toFixed(1));
+      }
+      return r.total_per_item_s !== undefined ? r.total_per_item_s : Number(((r.pick_per_item_s || 0) + (r.pack_per_item_s || 0)).toFixed(1));
+    });
 
     statsMap.set(b, {
       bracket: b,
@@ -232,6 +304,10 @@ export function computeBracketStatistics(records: MovementRecord[]): BracketStat
       avgPickPerItemSec: Number(avgPickPerItemSec.toFixed(1)),
       medianPickPerItemSec: Number(median(pickPerItems).toFixed(1)),
       p90PickPerItemSec: Number(percentile(pickPerItems, 90).toFixed(1)),
+      avgSortTotalSec: Number(avgSortTotalSec.toFixed(1)),
+      avgSortPerItemSec: Number(avgSortPerItemSec.toFixed(1)),
+      medianSortPerItemSec: Number(medianSortPerItemSec.toFixed(1)),
+      p90SortPerItemSec: Number(p90SortPerItemSec.toFixed(1)),
       avgPackTotalSec: Number(avgPackTotalSec.toFixed(1)),
       avgPackPerItemSec: Number(avgPackPerItemSec.toFixed(1)),
       medianPackPerItemSec: Number(median(packPerItems).toFixed(1)),
@@ -239,6 +315,7 @@ export function computeBracketStatistics(records: MovementRecord[]): BracketStat
       avgTotalPerItemSec: Number(avgTotalPerItemSec.toFixed(1)),
       medianTotalPerItemSec: Number(median(totalPerItems).toFixed(1)),
       pickSavingsPctVsSingle: 0,
+      sortSavingsPctVsSingle: 0,
       packSavingsPctVsSingle: 0,
       totalSavingsPctVsSingle: 0,
     });
@@ -251,6 +328,9 @@ export function computeBracketStatistics(records: MovementRecord[]): BracketStat
       const s = statsMap.get(b);
       if (s && s.avgTotalPerItemSec > 0) {
         s.pickSavingsPctVsSingle = Number((((single.avgPickPerItemSec - s.avgPickPerItemSec) / single.avgPickPerItemSec) * 100).toFixed(1));
+        if (single.avgSortPerItemSec && single.avgSortPerItemSec > 0 && s.avgSortPerItemSec !== undefined) {
+          s.sortSavingsPctVsSingle = Number((((single.avgSortPerItemSec - s.avgSortPerItemSec) / single.avgSortPerItemSec) * 100).toFixed(1));
+        }
         s.packSavingsPctVsSingle = Number((((single.avgPackPerItemSec - s.avgPackPerItemSec) / single.avgPackPerItemSec) * 100).toFixed(1));
         s.totalSavingsPctVsSingle = Number((((single.avgTotalPerItemSec - s.avgTotalPerItemSec) / single.avgTotalPerItemSec) * 100).toFixed(1));
       }

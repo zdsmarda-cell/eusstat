@@ -16,10 +16,11 @@ export const BracketComparisonSection: React.FC<BracketComparisonProps> = ({ bra
   const detailedBrackets = bracketStats.filter(s => s.bracket !== 'all');
   const allStat = bracketStats.find(s => s.bracket === 'all');
   const singleStat = bracketStats.find(s => s.bracket === '1');
+  const hasSorting = bracketStats.some(s => s.avgSortPerItemSec !== undefined && s.avgSortPerItemSec > 0);
 
   // Find max value for chart scaling
   const maxPerItem = Math.max(
-    ...detailedBrackets.map(s => s.avgPickPerItemSec + s.avgPackPerItemSec),
+    ...detailedBrackets.map(s => s.avgTotalPerItemSec || (s.avgPickPerItemSec + (s.avgSortPerItemSec || 0) + s.avgPackPerItemSec)),
     1
   );
 
@@ -143,6 +144,14 @@ export const BracketComparisonSection: React.FC<BracketComparisonProps> = ({ bra
                       {formatTimeValue(stat.avgPickPerItemSec, unit)}
                     </span>
                   </div>
+                  {Boolean(stat.avgSortPerItemSec && stat.avgSortPerItemSec > 0) && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-purple-300">{lang === 'cs' ? 'Sort / ks:' : 'Sort / unit:'}</span>
+                      <span className="font-mono text-slate-200 font-medium">
+                        {formatTimeValue(stat.avgSortPerItemSec || 0, unit)}
+                      </span>
+                    </div>
+                  )}
                   <div className="flex items-center justify-between">
                     <span className="text-emerald-300">{t.brackets.packPerItem}:</span>
                     <span className="font-mono text-slate-200 font-medium">
@@ -152,7 +161,7 @@ export const BracketComparisonSection: React.FC<BracketComparisonProps> = ({ bra
                   <div className="pt-1 border-t border-slate-800/80 flex items-center justify-between text-slate-400 text-[10px]">
                     <span>{t.brackets.wholeOrderTotal}:</span>
                     <span className="font-mono text-slate-300 font-semibold">
-                      {formatTimeValue(stat.avgPickTotalSec + stat.avgPackTotalSec, unit)}
+                      {formatTimeValue(stat.avgPickTotalSec + (stat.avgSortTotalSec || 0) + stat.avgPackTotalSec, unit)}
                     </span>
                   </div>
                   <div className="flex items-center justify-between text-slate-400 text-[10px]">
@@ -170,12 +179,19 @@ export const BracketComparisonSection: React.FC<BracketComparisonProps> = ({ bra
               <div className="mt-3 pt-2 border-t border-slate-800/60">
                 <div className="h-2 w-full bg-slate-900 rounded-full overflow-hidden flex">
                   <div
-                    style={{ width: `${Math.round((stat.avgPickPerItemSec / (stat.avgPickPerItemSec + stat.avgPackPerItemSec || 1)) * 100)}%` }}
+                    style={{ width: `${Math.round((stat.avgPickPerItemSec / (stat.avgTotalPerItemSec || 1)) * 100)}%` }}
                     className="bg-indigo-500 h-full"
                     title={`Pick: ${formatTimeValue(stat.avgPickPerItemSec, unit)}`}
                   />
+                  {Boolean(stat.avgSortPerItemSec && stat.avgSortPerItemSec > 0) && (
+                    <div
+                      style={{ width: `${Math.round(((stat.avgSortPerItemSec || 0) / (stat.avgTotalPerItemSec || 1)) * 100)}%` }}
+                      className="bg-purple-500 h-full"
+                      title={`Sort: ${formatTimeValue(stat.avgSortPerItemSec || 0, unit)}`}
+                    />
+                  )}
                   <div
-                    style={{ width: `${Math.round((stat.avgPackPerItemSec / (stat.avgPickPerItemSec + stat.avgPackPerItemSec || 1)) * 100)}%` }}
+                    style={{ width: `${Math.round((stat.avgPackPerItemSec / (stat.avgTotalPerItemSec || 1)) * 100)}%` }}
                     className="bg-emerald-500 h-full"
                     title={`Balení: ${formatTimeValue(stat.avgPackPerItemSec, unit)}`}
                   />
@@ -205,6 +221,12 @@ export const BracketComparisonSection: React.FC<BracketComparisonProps> = ({ bra
               <span className="w-3 h-3 rounded bg-indigo-500" />
               <span>{t.brackets.legendPick}</span>
             </span>
+            {hasSorting && (
+              <span className="flex items-center space-x-1.5 text-purple-400">
+                <span className="w-3 h-3 rounded bg-purple-500" />
+                <span>{lang === 'cs' ? 'Sortování' : 'Sorting'}</span>
+              </span>
+            )}
             <span className="flex items-center space-x-1.5 text-emerald-300">
               <span className="w-3 h-3 rounded bg-emerald-500" />
               <span>{t.brackets.legendPack}</span>
@@ -216,12 +238,17 @@ export const BracketComparisonSection: React.FC<BracketComparisonProps> = ({ bra
         <div className="mt-5 space-y-3.5">
           {detailedBrackets.map((stat) => {
             const pickVal = metricTab === 'perItem' ? stat.avgPickPerItemSec : stat.avgPickTotalSec;
+            const sortVal = metricTab === 'perItem' ? (stat.avgSortPerItemSec || 0) : (stat.avgSortTotalSec || 0);
             const packVal = metricTab === 'perItem' ? stat.avgPackPerItemSec : stat.avgPackTotalSec;
+            const totalVal = metricTab === 'perItem'
+              ? stat.avgTotalPerItemSec
+              : (stat.avgPickTotalSec + (stat.avgSortTotalSec || 0) + stat.avgPackTotalSec);
             const maxVal = metricTab === 'perItem'
               ? maxPerItem
-              : Math.max(...detailedBrackets.map(s => s.avgPickTotalSec + s.avgPackTotalSec), 1);
+              : Math.max(...detailedBrackets.map(s => s.avgPickTotalSec + (s.avgSortTotalSec || 0) + s.avgPackTotalSec), 1);
 
             const pickWidth = `${Math.min(100, Math.max(2, (pickVal / maxVal) * 100))}%`;
+            const sortWidth = `${Math.min(100, Math.max(hasSorting && sortVal > 0 ? 2 : 0, (sortVal / maxVal) * 100))}%`;
             const packWidth = `${Math.min(100, Math.max(2, (packVal / maxVal) * 100))}%`;
 
             const rowBracketLabel = stat.bracket === '6+'
@@ -239,13 +266,19 @@ export const BracketComparisonSection: React.FC<BracketComparisonProps> = ({ bra
                       ({stat.shipmentCount} {lang === 'cs' ? 'obj.' : 'orders'} / <span className="text-amber-300 font-semibold">{stat.shipmentSharePct}%</span> • {stat.itemCount} {lang === 'cs' ? 'ks' : 'units'} / <span className="text-indigo-300 font-semibold">{stat.itemSharePct}%</span>)
                     </span>
                   </div>
-                  <div className="flex items-center space-x-3 font-mono font-semibold text-white">
+                  <div className="flex items-center space-x-2 sm:space-x-3 font-mono font-semibold text-white">
                     <span className="text-indigo-400">Pick: {formatTimeValue(pickVal, unit)}</span>
+                    {hasSorting && sortVal > 0 && (
+                      <>
+                        <span className="text-slate-600">+</span>
+                        <span className="text-purple-400">Sort: {formatTimeValue(sortVal, unit)}</span>
+                      </>
+                    )}
                     <span className="text-slate-600">+</span>
                     <span className="text-emerald-400">{lang === 'cs' ? 'Balení:' : 'Pack:'} {formatTimeValue(packVal, unit)}</span>
                     <span className="text-slate-600">=</span>
                     <span className="text-purple-300 font-bold">
-                      {formatTimeValue(pickVal + packVal, unit)}
+                      {formatTimeValue(totalVal, unit)}
                     </span>
                   </div>
                 </div>
@@ -258,6 +291,14 @@ export const BracketComparisonSection: React.FC<BracketComparisonProps> = ({ bra
                   >
                     {pickVal > 5 && formatTimeValue(pickVal, unit)}
                   </div>
+                  {hasSorting && sortVal > 0 && (
+                    <div
+                      style={{ width: sortWidth }}
+                      className="h-full bg-gradient-to-r from-purple-600 to-purple-500 rounded flex items-center justify-end pr-1.5 text-[10px] font-mono text-white/90 transition-all duration-500"
+                    >
+                      {sortVal > 5 && formatTimeValue(sortVal, unit)}
+                    </div>
+                  )}
                   <div
                     style={{ width: packWidth }}
                     className="h-full bg-gradient-to-r from-emerald-600 to-emerald-500 rounded flex items-center justify-end pr-1.5 text-[10px] font-mono text-white/90 transition-all duration-500"
@@ -283,6 +324,11 @@ export const BracketComparisonSection: React.FC<BracketComparisonProps> = ({ bra
               <th className="py-3 px-2.5 font-semibold text-right text-indigo-300 border-l border-slate-800">
                 {t.brackets.tableOrderPick}
               </th>
+              {hasSorting && (
+                <th className="py-3 px-2.5 font-semibold text-right text-purple-300">
+                  {lang === 'cs' ? 'Sort / obj.' : 'Sort / ord.'}
+                </th>
+              )}
               <th className="py-3 px-2.5 font-semibold text-right text-emerald-300">
                 {t.brackets.tableOrderPack}
               </th>
@@ -293,6 +339,11 @@ export const BracketComparisonSection: React.FC<BracketComparisonProps> = ({ bra
               <th className="py-3 px-2.5 font-semibold text-right text-indigo-300 bg-indigo-950/20 border-l border-slate-800">
                 {t.brackets.tableUnitPick}
               </th>
+              {hasSorting && (
+                <th className="py-3 px-2.5 font-semibold text-right text-purple-300 bg-purple-950/30">
+                  {lang === 'cs' ? 'Sort / ks (Ø/med)' : 'Sort / unit (Ø/med)'}
+                </th>
+              )}
               <th className="py-3 px-2.5 font-semibold text-right text-emerald-300 bg-emerald-950/20">
                 {t.brackets.tableUnitPack}
               </th>
@@ -335,11 +386,16 @@ export const BracketComparisonSection: React.FC<BracketComparisonProps> = ({ bra
                   <td className="py-2.5 px-2.5 text-right text-indigo-300 border-l border-slate-800">
                     {formatTimeValue(stat.avgPickTotalSec, unit)}
                   </td>
+                  {hasSorting && (
+                    <td className="py-2.5 px-2.5 text-right text-purple-300">
+                      {formatTimeValue(stat.avgSortTotalSec || 0, unit)}
+                    </td>
+                  )}
                   <td className="py-2.5 px-2.5 text-right text-emerald-300">
                     {formatTimeValue(stat.avgPackTotalSec, unit)}
                   </td>
                   <td className="py-2.5 px-2.5 text-right font-bold text-purple-300">
-                    {formatTimeValue(stat.avgPickTotalSec + stat.avgPackTotalSec, unit)}
+                    {formatTimeValue(stat.avgPickTotalSec + (stat.avgSortTotalSec || 0) + stat.avgPackTotalSec, unit)}
                   </td>
                   {/* Unit rate times */}
                   <td className="py-2.5 px-2.5 text-right font-bold text-indigo-200 bg-indigo-950/20 border-l border-slate-800">
@@ -348,6 +404,14 @@ export const BracketComparisonSection: React.FC<BracketComparisonProps> = ({ bra
                       ({formatTimeValue(stat.medianPickPerItemSec, unit)})
                     </span>
                   </td>
+                  {hasSorting && (
+                    <td className="py-2.5 px-2.5 text-right font-bold text-purple-200 bg-purple-950/30">
+                      <span>{formatTimeValue(stat.avgSortPerItemSec || 0, unit)}</span>
+                      <span className="text-[10px] text-purple-300/70 font-normal ml-1">
+                        ({formatTimeValue(stat.medianSortPerItemSec || 0, unit)})
+                      </span>
+                    </td>
+                  )}
                   <td className="py-2.5 px-2.5 text-right font-bold text-emerald-200 bg-emerald-950/20">
                     <span>{formatTimeValue(stat.avgPackPerItemSec, unit)}</span>
                     <span className="text-[10px] text-slate-400 font-normal ml-1">

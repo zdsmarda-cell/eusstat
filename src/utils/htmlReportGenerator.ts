@@ -74,8 +74,13 @@ export function generateHtmlReport(data: HtmlReportData): string {
 
   const allStat = bracketStats.find((b: BracketStat) => b.bracket === 'all') || bracketStats[0];
 
+  const hasSorting = warehouse === 'svj' || Boolean(svjSorting || (allStat?.avgSortPerItemSec && allStat.avgSortPerItemSec > 0) || periodSummary?.hasSorting);
+  const avgSortPerItem = allStat?.avgSortPerItemSec || svjSorting?.avgSortPerItemSec || periodSummary?.avgSortPerItemSec || 0;
+  const medianSortPerItem = allStat?.medianSortPerItemSec || svjSorting?.medianSortPerItemSec || periodSummary?.medianSortPerItemSec || 0;
+
   const totalOrders = periodSummary?.totalOrders || cachedAnalytics?.recordCount || allStat?.shipmentCount || records.length;
   const totalUnits = periodSummary?.totalUnits || cachedAnalytics?.totalUnits || allStat?.itemCount || records.reduce((sum, r) => sum + (r.pocet_produktu || 1), 0);
+  const totalSortSec = Math.round(avgSortPerItem * (svjSorting?.totalUnitsSorted || totalUnits));
   const avgPickPerItem = allStat?.avgPickPerItemSec || (records.length > 0 ? records.reduce((sum, r) => sum + r.pick_duration_s, 0) / Math.max(1, totalUnits) : 0);
   const avgPackPerItem = allStat?.avgPackPerItemSec || (records.length > 0 ? records.reduce((sum, r) => sum + r.pack_duration_s, 0) / Math.max(1, totalUnits) : 0);
   const totalPickSec = Math.round(avgPickPerItem * totalUnits);
@@ -83,7 +88,9 @@ export function generateHtmlReport(data: HtmlReportData): string {
 
   const medianPickPerItem = allStat?.medianPickPerItemSec || avgPickPerItem;
   const medianPackPerItem = allStat?.medianPackPerItemSec || avgPackPerItem;
-  const avgTotalPerItem = avgPickPerItem + avgPackPerItem;
+  const avgTotalPerItem = hasSorting
+    ? (allStat?.avgTotalPerItemSec || Number((avgPickPerItem + avgSortPerItem + avgPackPerItem).toFixed(1)))
+    : (avgPickPerItem + avgPackPerItem);
 
   const warehouseTitle = warehouse === 'ruse'
     ? (isCs ? 'Sklad Ruse' : 'Ruse Warehouse')
@@ -623,7 +630,7 @@ export function generateHtmlReport(data: HtmlReportData): string {
 
   <!-- KPI Overview -->
   <section>
-    <div class="kpi-grid">
+    <div class="kpi-grid" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));">
       <div class="kpi-card">
         <div class="kpi-card-title">${isCs ? 'Celkem vyřízených zásilek' : 'Total shipments'}</div>
         <div class="kpi-card-value">${totalOrders.toLocaleString('cs-CZ')}</div>
@@ -631,21 +638,29 @@ export function generateHtmlReport(data: HtmlReportData): string {
       </div>
 
       <div class="kpi-card">
-        <div class="kpi-card-title">${isCs ? 'Průměrný čas na 1 kus (Celkem)' : 'Avg Total per Item'}</div>
-        <div class="kpi-card-value" style="color: #818cf8;">${formatTimeValue(avgTotalPerItem, unit)}</div>
-        <div class="kpi-card-sub">${isCs ? 'Pickování' : 'Picking'} + ${isCs ? 'Balení' : 'Packing'}</div>
-      </div>
-
-      <div class="kpi-card">
         <div class="kpi-card-title">${isCs ? 'Průměrný čas pickování (1 ks)' : 'Avg Picking per Item'}</div>
         <div class="kpi-card-value" style="color: #60a5fa;">${formatTimeValue(avgPickPerItem, unit)}</div>
-        <div class="kpi-card-sub">${formatDurationHuman(totalPickSec)} ${isCs ? 'čistého času picku' : 'total pick time'}</div>
+        <div class="kpi-card-sub">${isCs ? `Medián: ${formatTimeValue(medianPickPerItem, unit)}` : `Median: ${formatTimeValue(medianPickPerItem, unit)}`} • ${formatDurationHuman(totalPickSec)}</div>
       </div>
+
+      ${hasSorting ? `
+      <div class="kpi-card" style="border-color: rgba(168, 85, 247, 0.4);">
+        <div class="kpi-card-title" style="color: #c084fc;">${isCs ? 'Průměrný čas sortování (1 ks)' : 'Avg Sorting per Item'}</div>
+        <div class="kpi-card-value" style="color: #c084fc;">${formatTimeValue(avgSortPerItem, unit)}</div>
+        <div class="kpi-card-sub">${isCs ? `Medián: ${formatTimeValue(medianSortPerItem, unit)}` : `Median: ${formatTimeValue(medianSortPerItem, unit)}`} • ${formatDurationHuman(totalSortSec)}</div>
+      </div>
+      ` : ''}
 
       <div class="kpi-card">
         <div class="kpi-card-title">${isCs ? 'Průměrný čas balení (1 ks)' : 'Avg Packing per Item'}</div>
         <div class="kpi-card-value" style="color: #34d399;">${formatTimeValue(avgPackPerItem, unit)}</div>
-        <div class="kpi-card-sub">${formatDurationHuman(totalPackSec)} ${isCs ? 'čistého času balení' : 'total pack time'}</div>
+        <div class="kpi-card-sub">${isCs ? `Medián: ${formatTimeValue(medianPackPerItem, unit)}` : `Median: ${formatTimeValue(medianPackPerItem, unit)}`} • ${formatDurationHuman(totalPackSec)}</div>
+      </div>
+
+      <div class="kpi-card" style="border-color: rgba(99, 102, 241, 0.4);">
+        <div class="kpi-card-title" style="color: #a5b4fc;">${hasSorting ? (isCs ? 'Celkový čas na 1 ks (Pick + Sort + Balení)' : 'Total Time per Item (Pick + Sort + Pack)') : (isCs ? 'Průměrný čas na 1 kus (Celkem)' : 'Avg Total per Item')}</div>
+        <div class="kpi-card-value" style="color: #818cf8;">${formatTimeValue(avgTotalPerItem, unit)}</div>
+        <div class="kpi-card-sub">${hasSorting ? (isCs ? 'Pickování + Sortování + Balení' : 'Picking + Sorting + Packing') : (isCs ? 'Pickování + Balení' : 'Picking + Packing')}</div>
       </div>
     </div>
   </section>
@@ -682,6 +697,7 @@ export function generateHtmlReport(data: HtmlReportData): string {
           <th class="text-right">${isCs ? 'Podíl (%)' : 'Share (%)'}</th>
           <th class="text-right">${isCs ? 'Kusů celkem' : 'Total Items'}</th>
           <th class="text-right">${isCs ? 'Pick / 1ks (Průměr)' : 'Pick / item (Avg)'}</th>
+          ${hasSorting ? `<th class="text-right" style="color: #c084fc;">${isCs ? 'Sort / 1ks (Průměr)' : 'Sort / item (Avg)'}</th>` : ''}
           <th class="text-right">${isCs ? 'Balení / 1ks (Průměr)' : 'Pack / item (Avg)'}</th>
           <th class="text-right">${isCs ? 'Celkem / 1ks (Průměr)' : 'Total / item (Avg)'}</th>
           <th class="text-right">${isCs ? 'Medián / 1ks' : 'Median / item'}</th>
@@ -696,10 +712,11 @@ export function generateHtmlReport(data: HtmlReportData): string {
             <td class="text-right font-mono">${b.shipmentSharePct}%</td>
             <td class="text-right font-mono">${b.itemCount.toLocaleString('cs-CZ')}</td>
             <td class="text-right font-mono" style="color: #60a5fa;">${formatTimeValue(b.avgPickPerItemSec, unit)}</td>
+            ${hasSorting ? `<td class="text-right font-mono" style="color: #c084fc;">${formatTimeValue(b.avgSortPerItemSec || 0, unit)}</td>` : ''}
             <td class="text-right font-mono" style="color: #34d399;">${formatTimeValue(b.avgPackPerItemSec, unit)}</td>
             <td class="text-right font-mono" style="color: #a5b4fc; font-weight: 700;">${formatTimeValue(b.avgTotalPerItemSec, unit)}</td>
             <td class="text-right font-mono">${formatTimeValue(b.medianTotalPerItemSec, unit)}</td>
-            <td class="text-right font-mono" style="font-weight: 700;">${formatTimeValue(b.avgPickTotalSec + b.avgPackTotalSec, unit)}</td>
+            <td class="text-right font-mono" style="font-weight: 700;">${formatTimeValue(b.avgPickTotalSec + (b.avgSortTotalSec || 0) + b.avgPackTotalSec, unit)}</td>
           </tr>
         `).join('')}
       </tbody>

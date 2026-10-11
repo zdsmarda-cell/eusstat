@@ -18,12 +18,16 @@ interface PeriodExecutiveSummaryProps {
   summary: PeriodSummary;
   totalFilteredRecords: number;
   totalAllRecords: number;
+  isSvj?: boolean;
+  svjSorting?: any;
 }
 
 export const PeriodExecutiveSummary: React.FC<PeriodExecutiveSummaryProps> = ({
   summary,
   totalFilteredRecords,
   totalAllRecords,
+  isSvj = false,
+  svjSorting,
 }) => {
   const { lang } = useLanguage();
   const isCs = lang === 'cs';
@@ -237,6 +241,52 @@ export const PeriodExecutiveSummary: React.FC<PeriodExecutiveSummaryProps> = ({
             : `Volume density: ~${Math.round(summary.totalUnits / Math.max(1, summary.totalBoxesCount))} units per collection crate`}
         </div>
       </div>
+
+      {/* SVJ 3-fázový procesní řetězec na 1 kus (Pickování -> Sortování -> Balení) */}
+      {(isSvj || summary.hasSorting) && (
+        <div className="mt-3.5 pt-3.5 border-t border-purple-500/30 bg-purple-950/20 rounded-2xl p-3.5 border border-purple-500/20 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs">
+          <div className="flex items-center space-x-2.5">
+            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/25 text-purple-300 border border-purple-500/40 uppercase tracking-wider">
+              {isCs ? 'SVJ Procesní řetězec na 1 ks' : 'SVJ Fulfillment Stages / Item'}
+            </span>
+            <span className="text-slate-300 font-semibold">
+              {isCs ? 'Pickování ➔ Sortování ➔ Balení' : 'Picking ➔ Sorting ➔ Packing'}
+            </span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3 font-mono text-[11px]">
+            <div className="flex items-center space-x-1.5 bg-slate-900/80 px-2.5 py-1 rounded-lg border border-indigo-500/30 text-indigo-300">
+              <span className="text-slate-400">Pick:</span>
+              <strong className="text-white">{summary.medianPickPerItemSec ?? '-'} s</strong>
+              <span className="text-slate-500 text-[10px]">Ø {summary.avgPickPerItemSec ?? '-'} s</span>
+            </div>
+
+            <span className="text-purple-400 font-bold">+</span>
+
+            <div className="flex items-center space-x-1.5 bg-purple-900/30 px-2.5 py-1 rounded-lg border border-purple-500/40 text-purple-300">
+              <span className="text-purple-300">Sort:</span>
+              <strong className="text-white">{summary.medianSortPerItemSec ?? svjSorting?.medianSortPerItemSec ?? '-'} s</strong>
+              <span className="text-purple-300/70 text-[10px]">Ø {summary.avgSortPerItemSec ?? svjSorting?.avgSortPerItemSec ?? '-'} s</span>
+            </div>
+
+            <span className="text-purple-400 font-bold">+</span>
+
+            <div className="flex items-center space-x-1.5 bg-slate-900/80 px-2.5 py-1 rounded-lg border border-emerald-500/30 text-emerald-300">
+              <span className="text-slate-400">Pack:</span>
+              <strong className="text-white">{summary.medianPackPerItemSec ?? '-'} s</strong>
+              <span className="text-slate-500 text-[10px]">Ø {summary.avgPackPerItemSec ?? '-'} s</span>
+            </div>
+
+            <span className="text-purple-400 font-bold">=</span>
+
+            <div className="flex items-center space-x-1.5 bg-gradient-to-r from-purple-900/50 to-indigo-900/50 px-3 py-1 rounded-lg border border-purple-400/50 text-white shadow-sm">
+              <span className="text-purple-200 font-semibold">{isCs ? 'Celkem:' : 'Total:'}</span>
+              <strong className="text-purple-200 font-bold text-xs">{summary.medianTotalPerItemSec ?? '-'} s</strong>
+              <span className="text-slate-400 text-[10px]">Ø {summary.avgTotalPerItemSec ?? '-'} s</span>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

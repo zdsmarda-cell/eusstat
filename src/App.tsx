@@ -916,10 +916,18 @@ function Dashboard() {
               summary={periodSummary}
               totalFilteredRecords={currentServerAnalytics?.recordCount ?? activeTabRecords.length}
               totalAllRecords={serverAnalytics.all?.recordCount ?? currentServerAnalytics?.recordCount ?? activeAllWarehouseRecords.length}
+              isSvj={activeTab === 'svj'}
+              svjSorting={currentServerAnalytics?.svjSorting || serverAnalytics.svj?.svjSorting}
             />
 
             {/* 2. KPI Cards */}
-            <KpiCards bracketStats={bracketStats} periodSummary={periodSummary} unit={filter.unit} />
+            <KpiCards
+              bracketStats={bracketStats}
+              periodSummary={periodSummary}
+              unit={filter.unit}
+              isSvj={activeTab === 'svj'}
+              svjSorting={currentServerAnalytics?.svjSorting || serverAnalytics.svj?.svjSorting}
+            />
 
             {/* 3. POUZE PRO SKLAD SVJ: Sekce pro činnost sortingu a meziskladové buffery */}
             {activeTab === 'svj' && (

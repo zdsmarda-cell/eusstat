@@ -146,6 +146,10 @@ export interface BracketStat {
   avgPickPerItemSec: number;
   medianPickPerItemSec: number;
   p90PickPerItemSec: number;
+  avgSortTotalSec?: number;      // SVJ sorting
+  avgSortPerItemSec?: number;    // SVJ sorting
+  medianSortPerItemSec?: number; // SVJ sorting
+  p90SortPerItemSec?: number;    // SVJ sorting
   avgPackTotalSec: number;
   avgPackPerItemSec: number;
   medianPackPerItemSec: number;
@@ -153,6 +157,7 @@ export interface BracketStat {
   avgTotalPerItemSec: number;
   medianTotalPerItemSec: number;
   pickSavingsPctVsSingle: number;
+  sortSavingsPctVsSingle?: number;
   packSavingsPctVsSingle: number;
   totalSavingsPctVsSingle: number;
 }
@@ -244,6 +249,17 @@ export interface PeriodSummary {
   totalBoxesCount: number;
   minOrdersPerBox: number;
   maxOrdersPerBox: number;
+  // SVJ Sorting & Process Overview
+  hasSorting?: boolean;
+  totalUnitsSorted?: number;
+  avgSortPerItemSec?: number;
+  medianSortPerItemSec?: number;
+  avgPickPerItemSec?: number;
+  medianPickPerItemSec?: number;
+  avgPackPerItemSec?: number;
+  medianPackPerItemSec?: number;
+  avgTotalPerItemSec?: number;
+  medianTotalPerItemSec?: number;
 }
 
 export interface ProductParetoData {
