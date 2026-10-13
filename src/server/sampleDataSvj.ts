@@ -76,15 +76,41 @@ export function generateSampleSvjData(daysBack: number = 14, totalBoxesCount: nu
       const orderUid = String(orderSeq++);
       const packerInfo = packers[(bIdx + oIdx) % packers.length];
 
-      // Item count distribution for this order
+      // Item count distribution for this order (covering all brackets including 6+ and mono/hetero)
       let orderUnits = 1;
+      let isMonoSku = false;
       const roll = Math.random();
-      if (roll > 0.85) orderUnits = 3 + Math.floor(Math.random() * 3); // 3-5 items
-      else if (roll > 0.65) orderUnits = 2; // 2 items
-      else orderUnits = 1; // 1 item (65% singles)
+      if (roll > 0.94) {
+        orderUnits = 6 + Math.floor(Math.random() * 4); // 6-9 items (bracket 6+)
+      } else if (roll > 0.86) {
+        orderUnits = 4 + Math.floor(Math.random() * 2); // 4-5 items (bracket 4-5)
+      } else if (roll > 0.76) {
+        orderUnits = 3; // 3 items (bracket 3)
+      } else if (roll > 0.52) {
+        orderUnits = 2; // 2 items (bracket 2)
+        // 35% mono-SKU (2x stejný), 65% hetero-SKU (2 různé)
+        isMonoSku = Math.random() < 0.35;
+      } else {
+        orderUnits = 1; // 1 item (bracket 1, ~52% singles)
+        isMonoSku = true;
+      }
 
       const bracket = orderUnits === 1 ? '1' : orderUnits === 2 ? '2' : orderUnits === 3 ? '3' : orderUnits === 4 ? '4' : orderUnits === 5 ? '5' : '6+';
-      const assignedSku = boxProducts[oIdx % boxProducts.length];
+      
+      let assignedSku: string;
+      if (orderUnits === 2) {
+        if (isMonoSku) {
+          assignedSku = `${boxProducts[oIdx % boxProducts.length]} x2`;
+        } else {
+          const sku1 = boxProducts[oIdx % boxProducts.length];
+          const sku2 = boxProducts[(oIdx + 1) % boxProducts.length];
+          assignedSku = `${sku1}, ${sku2}`;
+        }
+      } else if (orderUnits >= 3) {
+        assignedSku = boxProducts.slice(0, Math.min(orderUnits, boxProducts.length)).join(', ');
+      } else {
+        assignedSku = boxProducts[oIdx % boxProducts.length];
+      }
 
       // Manual Packing Duration
       // Base open/verification: ~12-25s + ~6s per additional item
@@ -138,6 +164,7 @@ export function generateSampleSvjData(daysBack: number = 14, totalBoxesCount: nu
         box_units_sorted: totalUnits,
         is_sorted: true,
         is_packed: true,
+        is_mono_sku: isMonoSku,
       });
     }
   }

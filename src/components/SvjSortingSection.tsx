@@ -679,6 +679,16 @@ export const SvjSortingSection: React.FC<SvjSortingSectionProps> = ({
                 : 'Comparison of tote capacities, sorting elimination vs picking/packing penalties for each bracket.'}
             </p>
           </div>
+          <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+            <span className="px-2.5 py-1 rounded-xl text-xs bg-purple-500/15 text-purple-300 border border-purple-500/30 font-mono font-medium">
+              {isCs
+                ? `Vzorek: ${bypassReport.totalSvjOrders.toLocaleString('cs-CZ')} obj. (${bypassReport.totalSvjUnits.toLocaleString('cs-CZ')} ks)`
+                : `Sample: ${bypassReport.totalSvjOrders.toLocaleString()} orders (${bypassReport.totalSvjUnits.toLocaleString()} units)`}
+            </span>
+            <span className="px-2.5 py-1 rounded-xl text-xs bg-slate-800 text-slate-300 border border-slate-700 font-mono text-[11px]">
+              {isCs ? `Box kapacita: ${boxCapacity} ks` : `Tote capacity: ${boxCapacity} pcs`}
+            </span>
+          </div>
         </div>
 
         <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-950/60 shadow-lg">
