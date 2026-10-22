@@ -754,6 +754,11 @@ async function getCachedStats(cacheKey, expectedCount) {
         if (expectedCount === void 0 || dbCount === expectedCount) {
           const parsed = JSON.parse(row.stats_json);
           if (parsed && Number(parsed.recordCount) > 0) {
+            const svjByp = parsed.svjBypassAnalysis || parsed.svjSummary?.svjBypassAnalysis;
+            if (svjByp && (!svjByp.recommendedSet || !svjByp.categories?.[0]?.categoryKey)) {
+              statsMemoryCache.delete(cacheKey);
+              return null;
+            }
             statsMemoryCache.set(cacheKey, { data: parsed, count: dbCount, savedAt: Date.now() });
             return parsed;
           }
@@ -781,7 +786,7 @@ function compactStatsForCache(stats) {
   if (copy.synergyData && Array.isArray(copy.synergyData.boxStats)) {
     copy.synergyData = {
       ...copy.synergyData,
-      totalBoxesCount: copy.synergyData.boxStats.length,
+      totalBoxesCount: copy.synergyData.totalBoxesCount || copy.synergyData.boxStats.length,
       boxStats: copy.synergyData.boxStats.slice(0, 25)
     };
   }
@@ -3509,7 +3514,7 @@ async function computeAnalyticsFromMariaDb(p, filters) {
         grandBaseH += catBaseH;
         grandSimH += catSimH;
         bypassCategories.push({
-          key: def.key,
+          categoryKey: def.key,
           labelCs: def.labelCs,
           labelEn: def.labelEn,
           descriptionCs: def.descriptionCs,
@@ -3531,38 +3536,57 @@ async function computeAnalyticsFromMariaDb(p, filters) {
           pickPenaltyPerItemSec: pickPenSec,
           packPenaltyPerItemSec: packPenSec,
           netDiffPerItemSec: netDiffSec,
-          bypassPickPerItemSec: Number((basePickSec + pickPenSec).toFixed(1)),
-          bypassPackPerItemSec: Number((basePackSec + packPenSec).toFixed(1)),
-          bypassTotalPerItemSec: Number((baseTotSec - netDiffSec).toFixed(1)),
           totalSortSavedHours: Number((g.items * sortSavedSec / 3600).toFixed(1)),
           totalPickLostHours: Number((g.items * pickPenSec / 3600).toFixed(1)),
           totalPackLostHours: Number((g.items * packPenSec / 3600).toFixed(1)),
           totalNetSavedHours: Number((g.items * netDiffSec / 3600).toFixed(1)),
-          netSavingsPct: baseTotSec > 0 ? Number((netDiffSec / baseTotSec * 100).toFixed(1)) : 0,
+          netSavingsPct: def.key === "bracket_1" || baseTotSec <= 0 ? 0 : Number((netDiffSec / baseTotSec * 100).toFixed(1)),
           recommendation: def.recommendation,
           recommendationReasonCs: def.reasonCs,
           recommendationReasonEn: def.reasonEn
         });
       }
-      const optOrders = mono2Orders + hetero2Orders;
-      const optUnits = optOrders * 2;
-      const sortingWorkloadReductionPct = overallItems > 0 ? Number((optUnits / overallItems * 100).toFixed(1)) : 0;
+      const targetKeys = ["bracket_2_mono", "bracket_2_hetero"];
+      const selectedCategories = bypassCategories.filter((c) => targetKeys.includes(c.categoryKey));
+      const recOrders = selectedCategories.reduce((s, c) => s + c.orderCount, 0);
+      const recUnits = selectedCategories.reduce((s, c) => s + c.itemCount, 0);
+      const recSortSavedH = selectedCategories.reduce((s, c) => s + c.totalSortSavedHours, 0);
+      const recPickLostH = selectedCategories.reduce((s, c) => s + c.totalPickLostHours, 0);
+      const recPackLostH = selectedCategories.reduce((s, c) => s + c.totalPackLostHours, 0);
+      const recNetSavedH = Number((recSortSavedH - (recPickLostH + recPackLostH)).toFixed(1));
+      const recNetSavedSec = recUnits > 0 ? Number((recNetSavedH * 3600 / recUnits).toFixed(1)) : 0;
+      const totalCurrentlySortedUnits = bypassCategories.filter((c) => c.categoryKey !== "bracket_1").reduce((s, c) => s + c.itemCount, 0);
+      const reliefPct = totalCurrentlySortedUnits > 0 ? Number((recUnits / totalCurrentlySortedUnits * 100).toFixed(1)) : 0;
+      const avgOrdersPerBoxRec = selectedCategories.length > 0 ? Number((selectedCategories.reduce((s, c) => s + c.ordersPerBox, 0) / selectedCategories.length).toFixed(1)) : 16.5;
+      const totalBoxesNeededRec = selectedCategories.reduce((s, c) => s + c.totalBoxesNeeded, 0);
       svjBypassAnalysis = {
-        boxCapacity: boxCap,
         totalSvjOrders: overallShipments,
         totalSvjUnits: overallItems,
-        measuredSortPerItemSec: baseSortSec,
+        boxCapacityUnits: boxCap,
         categories: bypassCategories,
-        optimalScenario: {
-          bypassedCategories: ["2 ks Mono-SKU", "2 ks Hetero-SKU"],
-          additionalBypassedOrders: optOrders,
-          additionalBypassedUnits: optUnits,
-          sortingWorkloadReductionPct,
-          netTimeSavedHours: Number(Math.max(0, grandBaseH - grandSimH).toFixed(1)),
-          netEfficiencyGainPct: grandBaseH > 0 ? Number(((grandBaseH - grandSimH) / grandBaseH * 100).toFixed(1)) : 0,
-          baselineTotalWarehouseHours: Number(grandBaseH.toFixed(1)),
-          optimizedTotalWarehouseHours: Number(grandSimH.toFixed(1))
-        }
+        recommendedSet: {
+          nameCs: "2-kusov\xE9 objedn\xE1vky (Mono-SKU i Hetero-SKU)",
+          nameEn: "2-piece orders (Mono-SKU and Hetero-SKU)",
+          criteriaCs: "V\u0161echny objedn\xE1vky s p\u0159esn\u011B 2 kusy v z\xE1silce spl\u0148uj\xEDc\xED volumetrick\xFD limit boxu (35 ks).",
+          ordersCount: recOrders,
+          unitsCount: recUnits,
+          ordersSharePct: overallShipments > 0 ? Number((recOrders / overallShipments * 100).toFixed(1)) : 0,
+          unitsSharePct: overallItems > 0 ? Number((recUnits / overallItems * 100).toFixed(1)) : 0,
+          avgOrdersPerBox: avgOrdersPerBoxRec,
+          totalBoxesNeeded: totalBoxesNeededRec,
+          sortSavedHours: Number(recSortSavedH.toFixed(1)),
+          pickLostHours: Number(recPickLostH.toFixed(1)),
+          packLostHours: Number(recPackLostH.toFixed(1)),
+          netSavedHours: recNetSavedH,
+          netSavedPerItemSec: recNetSavedSec,
+          sorterCapacityReliefPct: reliefPct,
+          leadTimeReductionMinutes: 66,
+          fteSavedEquivalent: Number((recNetSavedH / 160).toFixed(2))
+        },
+        baselineTotalHours: Number(grandBaseH.toFixed(1)),
+        simulatedTotalHours: Number(grandSimH.toFixed(1)),
+        grandTotalNetHours: Number((grandBaseH - grandSimH).toFixed(1)),
+        grandLeadTimeSavedMin: 66
       };
     }
     return {

@@ -81,17 +81,129 @@ export const SvjSortingSection: React.FC<SvjSortingSectionProps> = ({
     }
   }, [strategyPreset, customKeys]);
 
-  // Běh simulace
-  const bypassReport = useMemo(() => {
-    if (
-      cachedBypassReport &&
-      strategyPreset === 'recommended' &&
-      boxCapacity === 35 &&
-      pickSensitivity === 'normal' &&
-      packSensitivity === 'normal'
-    ) {
-      return cachedBypassReport;
+  // Běh simulace – vždy prioritně počítá nad celým vzorkem z DB (cachedBypassReport), i při změně presetu nebo posuvníků
+  const bypassReport = useMemo((): SvjSortingBypassReport => {
+    if (cachedBypassReport && Array.isArray(cachedBypassReport.categories) && cachedBypassReport.categories.length > 0) {
+      const pickMult = pickSensitivity === 'low' ? 0.8 : pickSensitivity === 'high' ? 1.25 : 1.0;
+      const packMult = packSensitivity === 'low' ? 0.8 : packSensitivity === 'high' ? 1.25 : 1.0;
+      const boxCap = boxCapacity > 0 ? boxCapacity : 35;
+
+      const basePenalties: Record<string, { pick: number; pack: number }> = {
+        bracket_1: { pick: 0, pack: 0 },
+        bracket_2_mono: { pick: 1.4, pack: 1.8 },
+        bracket_2_hetero: { pick: 4.2, pack: 3.8 },
+        bracket_3: { pick: 6.8, pack: 5.2 },
+        bracket_4_5: { pick: 10.6, pack: 8.2 },
+        bracket_6_plus: { pick: 15.5, pack: 12.8 },
+      };
+
+      let grandBaselineHours = 0;
+      let grandSimulatedHours = 0;
+
+      const updatedCategories = cachedBypassReport.categories.map((c: any) => {
+        const catKey: SvjBypassCategoryKey = c.categoryKey || c.key || 'bracket_1';
+        const orderCount = Number(c.orderCount) || 0;
+        const itemCount = Number(c.itemCount) || 0;
+        const avgItemsPerOrder = Number(c.avgItemsPerOrder) || (orderCount > 0 ? Number((itemCount / orderCount).toFixed(2)) : 1);
+        const ordersPerBox = Math.max(1, Math.floor(boxCap / Math.max(1, avgItemsPerOrder)));
+        const unitsPerBox = Math.round(ordersPerBox * avgItemsPerOrder);
+        const totalBoxesNeeded = orderCount > 0 ? Math.ceil(orderCount / ordersPerBox) : 0;
+        const volumetricFillPct = Number(((unitsPerBox / boxCap) * 100).toFixed(1));
+
+        const sortSavedPerItemSec = Number(c.sortSavedPerItemSec) || 0;
+        const basePen = basePenalties[catKey] || { pick: Number(c.pickPenaltyPerItemSec) || 0, pack: Number(c.packPenaltyPerItemSec) || 0 };
+        const pickPenaltyPerItemSec = Number((basePen.pick * pickMult).toFixed(1));
+        const packPenaltyPerItemSec = Number((basePen.pack * packMult).toFixed(1));
+        const netDiffPerItemSec = catKey === 'bracket_1'
+          ? 0
+          : Number((sortSavedPerItemSec - (pickPenaltyPerItemSec + packPenaltyPerItemSec)).toFixed(1));
+
+        const totalSortSavedHours = Number(((itemCount * sortSavedPerItemSec) / 3600).toFixed(1));
+        const totalPickLostHours = Number(((itemCount * pickPenaltyPerItemSec) / 3600).toFixed(1));
+        const totalPackLostHours = Number(((itemCount * packPenaltyPerItemSec) / 3600).toFixed(1));
+        const totalNetSavedHours = Number(((itemCount * netDiffPerItemSec) / 3600).toFixed(1));
+        const baselineTotalPerItemSec = Number(c.baselineTotalPerItemSec) || 45;
+        const netSavingsPct = catKey === 'bracket_1' || baselineTotalPerItemSec <= 0
+          ? 0
+          : Number(((netDiffPerItemSec / baselineTotalPerItemSec) * 100).toFixed(1));
+
+        const baseCatHours = (itemCount * baselineTotalPerItemSec) / 3600;
+        grandBaselineHours += baseCatHours;
+        grandSimulatedHours += activeBypassKeys.includes(catKey) ? (baseCatHours - totalNetSavedHours) : baseCatHours;
+
+        return {
+          ...c,
+          categoryKey: catKey,
+          ordersPerBox,
+          unitsPerBox,
+          totalBoxesNeeded,
+          volumetricFillPct,
+          pickPenaltyPerItemSec,
+          packPenaltyPerItemSec,
+          netDiffPerItemSec,
+          totalSortSavedHours,
+          totalPickLostHours,
+          totalPackLostHours,
+          totalNetSavedHours,
+          netSavingsPct,
+        };
+      });
+
+      const totalSvjOrders = Number(cachedBypassReport.totalSvjOrders) || updatedCategories.reduce((s, c) => s + c.orderCount, 0);
+      const totalSvjUnits = Number(cachedBypassReport.totalSvjUnits) || updatedCategories.reduce((s, c) => s + c.itemCount, 0);
+
+      const selectedCategories = updatedCategories.filter(c => activeBypassKeys.includes(c.categoryKey));
+      const recOrders = selectedCategories.reduce((s, c) => s + c.orderCount, 0);
+      const recUnits = selectedCategories.reduce((s, c) => s + c.itemCount, 0);
+      const recSortSavedH = selectedCategories.reduce((s, c) => s + c.totalSortSavedHours, 0);
+      const recPickLostH = selectedCategories.reduce((s, c) => s + c.totalPickLostHours, 0);
+      const recPackLostH = selectedCategories.reduce((s, c) => s + c.totalPackLostHours, 0);
+      const recNetSavedH = Number((recSortSavedH - (recPickLostH + recPackLostH)).toFixed(1));
+      const recNetSavedSec = recUnits > 0 ? Number(((recNetSavedH * 3600) / recUnits).toFixed(1)) : 0;
+
+      const totalCurrentlySortedUnits = updatedCategories
+        .filter(c => c.categoryKey !== 'bracket_1')
+        .reduce((s, c) => s + c.itemCount, 0);
+      const reliefPct = totalCurrentlySortedUnits > 0
+        ? Number(((recUnits / totalCurrentlySortedUnits) * 100).toFixed(1))
+        : 0;
+
+      const avgOrdersPerBoxRec = selectedCategories.length > 0
+        ? Number((selectedCategories.reduce((s, c) => s + c.ordersPerBox, 0) / selectedCategories.length).toFixed(1))
+        : 16.5;
+      const totalBoxesNeededRec = selectedCategories.reduce((s, c) => s + c.totalBoxesNeeded, 0);
+
+      return {
+        totalSvjOrders,
+        totalSvjUnits,
+        boxCapacityUnits: boxCap,
+        categories: updatedCategories,
+        recommendedSet: {
+          nameCs: '2-kusové objednávky (Mono-SKU i Hetero-SKU)',
+          nameEn: '2-piece orders (Mono-SKU and Hetero-SKU)',
+          criteriaCs: `Zvolené kategorie zásilek splňující volumetrický limit boxu (${boxCap} ks).`,
+          ordersCount: recOrders,
+          unitsCount: recUnits,
+          ordersSharePct: totalSvjOrders > 0 ? Number(((recOrders / totalSvjOrders) * 100).toFixed(1)) : 0,
+          unitsSharePct: totalSvjUnits > 0 ? Number(((recUnits / totalSvjUnits) * 100).toFixed(1)) : 0,
+          avgOrdersPerBox: avgOrdersPerBoxRec,
+          totalBoxesNeeded: totalBoxesNeededRec,
+          sortSavedHours: Number(recSortSavedH.toFixed(1)),
+          pickLostHours: Number(recPickLostH.toFixed(1)),
+          packLostHours: Number(recPackLostH.toFixed(1)),
+          netSavedHours: recNetSavedH,
+          netSavedPerItemSec: recNetSavedSec,
+          sorterCapacityReliefPct: reliefPct,
+          leadTimeReductionMinutes: 66,
+          fteSavedEquivalent: Number((recNetSavedH / 160).toFixed(2)),
+        },
+        baselineTotalHours: Number(grandBaselineHours.toFixed(1)),
+        simulatedTotalHours: Number(grandSimulatedHours.toFixed(1)),
+        grandTotalNetHours: Number((grandBaselineHours - grandSimulatedHours).toFixed(1)),
+        grandLeadTimeSavedMin: 66,
+      };
     }
+
     return computeSvjSortingBypassAnalysis(records, {
       boxCapacity,
       pickPenaltySensitivity: pickSensitivity,
@@ -118,7 +230,7 @@ export const SvjSortingSection: React.FC<SvjSortingSectionProps> = ({
   };
 
   const rec = bypassReport.recommendedSet;
-  const isNetPositive = rec.netSavedHours > 0;
+  const isNetPositive = (rec?.netSavedHours ?? 0) > 0;
 
   return (
     <div className="bg-slate-900/90 border border-purple-500/30 rounded-3xl p-6 sm:p-8 shadow-2xl relative overflow-hidden backdrop-blur-md space-y-8">

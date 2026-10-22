@@ -904,6 +904,12 @@ export async function getCachedStats(cacheKey: string, expectedCount?: number): 
         if (expectedCount === undefined || dbCount === expectedCount) {
           const parsed = JSON.parse(row.stats_json);
           if (parsed && Number(parsed.recordCount) > 0) {
+            // Ověření schématu pro SVJ bypass (ochrana před starším formátem v cache)
+            const svjByp = parsed.svjBypassAnalysis || parsed.svjSummary?.svjBypassAnalysis;
+            if (svjByp && (!svjByp.recommendedSet || !svjByp.categories?.[0]?.categoryKey)) {
+              statsMemoryCache.delete(cacheKey);
+              return null;
+            }
             statsMemoryCache.set(cacheKey, { data: parsed, count: dbCount, savedAt: Date.now() });
             return parsed;
           }
@@ -936,7 +942,7 @@ function compactStatsForCache(stats: any): any {
   if (copy.synergyData && Array.isArray(copy.synergyData.boxStats)) {
     copy.synergyData = {
       ...copy.synergyData,
-      totalBoxesCount: copy.synergyData.boxStats.length,
+      totalBoxesCount: copy.synergyData.totalBoxesCount || copy.synergyData.boxStats.length,
       boxStats: copy.synergyData.boxStats.slice(0, 25),
     };
   }

@@ -49,13 +49,31 @@ export const MultipickSimulationSection: React.FC<MultipickSimulationSectionProp
   }, [cachedSimulation, records]);
 
   // Capacity limit override state
-  const [capacityOverride, setCapacityOverride] = useState<number>(initialReport.boxCapacityLimit);
+  const [capacityOverride, setCapacityOverride] = useState<number>(initialReport.boxCapacityLimit || 35);
   const [displayUnit, setDisplayUnit] = useState<'hours' | 'tableUnit'>('hours');
 
-  // Re-run simulation when capacity limit changes
-  const report = useMemo(() => {
+  // Synchronize capacityOverride when cachedSimulation changes (e.g. tab switch between Ruse & SVJ)
+  React.useEffect(() => {
+    if (cachedSimulation?.boxCapacityLimit) {
+      setCapacityOverride(cachedSimulation.boxCapacityLimit);
+    }
+  }, [cachedSimulation?.boxCapacityLimit]);
+
+  // Re-run simulation when capacity limit changes (preserve full DB numbers when cachedSimulation exists)
+  const report = useMemo((): MultipickSimulationReport => {
+    if (cachedSimulation && Array.isArray(cachedSimulation.bracketResults) && cachedSimulation.bracketResults.length > 0) {
+      const baseCap = cachedSimulation.boxCapacityLimit || 35;
+      const cap = capacityOverride > 0 ? capacityOverride : baseCap;
+      if (cap === baseCap) return cachedSimulation;
+      const scaledBoxes = Math.max(1, Math.round((cachedSimulation.totalBoxesSimulated * baseCap) / cap));
+      return {
+        ...cachedSimulation,
+        boxCapacityLimit: cap,
+        totalBoxesSimulated: scaledBoxes,
+      };
+    }
     return runMultipickSlotSimulation(records, capacityOverride);
-  }, [records, capacityOverride]);
+  }, [cachedSimulation, records, capacityOverride]);
 
   const detailedBrackets = report.bracketResults.filter(b => b.bracket !== 'all');
   const allResult = report.bracketResults.find(b => b.bracket === 'all') || report.bracketResults[report.bracketResults.length - 1];

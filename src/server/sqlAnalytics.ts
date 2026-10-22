@@ -1302,7 +1302,7 @@ export async function computeAnalyticsFromMariaDb(
         grandSimH += catSimH;
 
         bypassCategories.push({
-          key: def.key,
+          categoryKey: def.key,
           labelCs: def.labelCs,
           labelEn: def.labelEn,
           descriptionCs: def.descriptionCs,
@@ -1324,40 +1324,67 @@ export async function computeAnalyticsFromMariaDb(
           pickPenaltyPerItemSec: pickPenSec,
           packPenaltyPerItemSec: packPenSec,
           netDiffPerItemSec: netDiffSec,
-          bypassPickPerItemSec: Number((basePickSec + pickPenSec).toFixed(1)),
-          bypassPackPerItemSec: Number((basePackSec + packPenSec).toFixed(1)),
-          bypassTotalPerItemSec: Number((baseTotSec - netDiffSec).toFixed(1)),
           totalSortSavedHours: Number(((g.items * sortSavedSec) / 3600).toFixed(1)),
           totalPickLostHours: Number(((g.items * pickPenSec) / 3600).toFixed(1)),
           totalPackLostHours: Number(((g.items * packPenSec) / 3600).toFixed(1)),
           totalNetSavedHours: Number(((g.items * netDiffSec) / 3600).toFixed(1)),
-          netSavingsPct: baseTotSec > 0 ? Number(((netDiffSec / baseTotSec) * 100).toFixed(1)) : 0,
+          netSavingsPct: def.key === 'bracket_1' || baseTotSec <= 0 ? 0 : Number(((netDiffSec / baseTotSec) * 100).toFixed(1)),
           recommendation: def.recommendation,
           recommendationReasonCs: def.reasonCs,
           recommendationReasonEn: def.reasonEn,
         });
       }
 
-      const optOrders = mono2Orders + hetero2Orders;
-      const optUnits = optOrders * 2;
-      const sortingWorkloadReductionPct = overallItems > 0 ? Number(((optUnits / overallItems) * 100).toFixed(1)) : 0;
+      const targetKeys: SvjBypassCategoryKey[] = ['bracket_2_mono', 'bracket_2_hetero'];
+      const selectedCategories = bypassCategories.filter(c => targetKeys.includes(c.categoryKey));
+      const recOrders = selectedCategories.reduce((s, c) => s + c.orderCount, 0);
+      const recUnits = selectedCategories.reduce((s, c) => s + c.itemCount, 0);
+      const recSortSavedH = selectedCategories.reduce((s, c) => s + c.totalSortSavedHours, 0);
+      const recPickLostH = selectedCategories.reduce((s, c) => s + c.totalPickLostHours, 0);
+      const recPackLostH = selectedCategories.reduce((s, c) => s + c.totalPackLostHours, 0);
+      const recNetSavedH = Number((recSortSavedH - (recPickLostH + recPackLostH)).toFixed(1));
+      const recNetSavedSec = recUnits > 0 ? Number(((recNetSavedH * 3600) / recUnits).toFixed(1)) : 0;
+
+      const totalCurrentlySortedUnits = bypassCategories
+        .filter(c => c.categoryKey !== 'bracket_1')
+        .reduce((s, c) => s + c.itemCount, 0);
+      const reliefPct = totalCurrentlySortedUnits > 0
+        ? Number(((recUnits / totalCurrentlySortedUnits) * 100).toFixed(1))
+        : 0;
+
+      const avgOrdersPerBoxRec = selectedCategories.length > 0
+        ? Number((selectedCategories.reduce((s, c) => s + c.ordersPerBox, 0) / selectedCategories.length).toFixed(1))
+        : 16.5;
+      const totalBoxesNeededRec = selectedCategories.reduce((s, c) => s + c.totalBoxesNeeded, 0);
 
       svjBypassAnalysis = {
-        boxCapacity: boxCap,
         totalSvjOrders: overallShipments,
         totalSvjUnits: overallItems,
-        measuredSortPerItemSec: baseSortSec,
+        boxCapacityUnits: boxCap,
         categories: bypassCategories,
-        optimalScenario: {
-          bypassedCategories: ['2 ks Mono-SKU', '2 ks Hetero-SKU'],
-          additionalBypassedOrders: optOrders,
-          additionalBypassedUnits: optUnits,
-          sortingWorkloadReductionPct,
-          netTimeSavedHours: Number(Math.max(0, grandBaseH - grandSimH).toFixed(1)),
-          netEfficiencyGainPct: grandBaseH > 0 ? Number((((grandBaseH - grandSimH) / grandBaseH) * 100).toFixed(1)) : 0,
-          baselineTotalWarehouseHours: Number(grandBaseH.toFixed(1)),
-          optimizedTotalWarehouseHours: Number(grandSimH.toFixed(1)),
+        recommendedSet: {
+          nameCs: '2-kusové objednávky (Mono-SKU i Hetero-SKU)',
+          nameEn: '2-piece orders (Mono-SKU and Hetero-SKU)',
+          criteriaCs: 'Všechny objednávky s přesně 2 kusy v zásilce splňující volumetrický limit boxu (35 ks).',
+          ordersCount: recOrders,
+          unitsCount: recUnits,
+          ordersSharePct: overallShipments > 0 ? Number(((recOrders / overallShipments) * 100).toFixed(1)) : 0,
+          unitsSharePct: overallItems > 0 ? Number(((recUnits / overallItems) * 100).toFixed(1)) : 0,
+          avgOrdersPerBox: avgOrdersPerBoxRec,
+          totalBoxesNeeded: totalBoxesNeededRec,
+          sortSavedHours: Number(recSortSavedH.toFixed(1)),
+          pickLostHours: Number(recPickLostH.toFixed(1)),
+          packLostHours: Number(recPackLostH.toFixed(1)),
+          netSavedHours: recNetSavedH,
+          netSavedPerItemSec: recNetSavedSec,
+          sorterCapacityReliefPct: reliefPct,
+          leadTimeReductionMinutes: 66,
+          fteSavedEquivalent: Number((recNetSavedH / 160).toFixed(2)),
         },
+        baselineTotalHours: Number(grandBaseH.toFixed(1)),
+        simulatedTotalHours: Number(grandSimH.toFixed(1)),
+        grandTotalNetHours: Number((grandBaseH - grandSimH).toFixed(1)),
+        grandLeadTimeSavedMin: 66,
       };
     }
 
