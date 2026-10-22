@@ -202,26 +202,28 @@ app.get('/api/db/status', async (req, res) => {
 
 app.post('/api/db/test', async (req, res) => {
   const { host, port, user, password, database, ssl } = req.body;
+  const parsedSsl = ssl === true || ssl === 'true' || ssl === 1 || ssl === '1';
   const status = await setDbConfig({
     host,
     port: Number(port) || 3306,
     user,
     password,
     database,
-    ssl: Boolean(ssl),
+    ssl: parsedSsl,
   });
   res.json(status);
 });
 
 app.post('/api/db/save', async (req, res) => {
   const { host, port, user, password, database, ssl } = req.body;
+  const parsedSsl = ssl === true || ssl === 'true' || ssl === 1 || ssl === '1';
   const status = await setDbConfig({
     host,
     port: Number(port) || 3306,
     user,
     password,
     database,
-    ssl: Boolean(ssl),
+    ssl: parsedSsl,
   });
   res.json({ success: true, status });
 });

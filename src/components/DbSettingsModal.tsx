@@ -41,7 +41,7 @@ export const DbSettingsModal: React.FC<DbSettingsModalProps> = ({
             port: data.port || 3306,
             user: data.user || 'fhb_crm',
             database: data.database || 'fhb_crm',
-            ssl: Boolean(data.ssl),
+            ssl: data.ssl === true || data.ssl === 'true',
           }));
         })
         .catch(() => {

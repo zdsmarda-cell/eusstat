@@ -21,6 +21,25 @@ try {
   // ignore
 }
 
+function parseSslFlag(val: any): boolean {
+  if (typeof val === 'boolean') return val;
+  if (typeof val === 'string') {
+    const normalized = val.trim().toLowerCase();
+    return normalized === 'true' || normalized === '1' || normalized === 'yes';
+  }
+  if (typeof val === 'number') return val === 1;
+  return false;
+}
+
+function isNoSslSupportError(err: any): boolean {
+  const msg = String(err?.message || err || '');
+  return (
+    err?.code === 'HANDSHAKE_NO_SSL_SUPPORT' ||
+    msg.includes('Server does not support secure connection') ||
+    msg.includes('does not support SSL')
+  );
+}
+
 function loadSavedConfig(): MariaDbConfig {
   let fileConfig: Partial<MariaDbConfig> = {};
   if (fs.existsSync(CONFIG_FILE_PATH)) {
@@ -32,8 +51,14 @@ function loadSavedConfig(): MariaDbConfig {
     }
   }
 
+  const host = fileConfig.host || process.env.DB_HOST || process.env.MARIADB_HOST || 'db.mobilgroup.cz';
+  // db.mobilgroup.cz standardně běží bez SSL na portu 3306
+  const rawSsl = fileConfig.ssl !== undefined
+    ? parseSslFlag(fileConfig.ssl)
+    : (parseSslFlag(process.env.DB_SSL) || parseSslFlag(process.env.MARIADB_SSL));
+
   return {
-    host: fileConfig.host || process.env.DB_HOST || process.env.MARIADB_HOST || 'db.mobilgroup.cz',
+    host,
     port: Number(
       fileConfig.port ||
       process.env.DB_PORT ||
@@ -43,7 +68,7 @@ function loadSavedConfig(): MariaDbConfig {
     user: fileConfig.user || process.env.DB_USER || process.env.MARIADB_USER || 'fhb_crm',
     password: fileConfig.password !== undefined ? fileConfig.password : (process.env.DB_PASSWORD || process.env.MARIADB_PASSWORD || ''),
     database: fileConfig.database || process.env.DB_NAME || process.env.DB_DATABASE || process.env.MARIADB_DATABASE || 'fhb_crm',
-    ssl: fileConfig.ssl !== undefined ? Boolean(fileConfig.ssl) : (process.env.DB_SSL === 'true' || process.env.MARIADB_SSL === 'true'),
+    ssl: rawSsl,
   };
 }
 
@@ -68,7 +93,7 @@ function saveConfigToFile(config: MariaDbConfig): void {
       DB_USER: config.user,
       DB_PASSWORD: config.password || '',
       DB_NAME: config.database,
-      DB_SSL: String(config.ssl),
+      DB_SSL: String(Boolean(config.ssl)),
     };
 
     for (const [k, v] of Object.entries(updates)) {
@@ -129,6 +154,7 @@ export async function setDbConfig(config: Partial<MariaDbConfig>): Promise<DbSta
   currentConfig = {
     ...currentConfig,
     ...config,
+    ssl: config.ssl !== undefined ? parseSslFlag(config.ssl) : currentConfig.ssl,
     password: newPassword,
   };
 
@@ -149,6 +175,23 @@ export async function setDbConfig(config: Partial<MariaDbConfig>): Promise<DbSta
 
 let schemaInitialized = false;
 
+function createMysqlPoolInstance(useSsl: boolean): mysql.Pool {
+  return mysql.createPool({
+    host: currentConfig.host,
+    port: currentConfig.port,
+    user: currentConfig.user,
+    password: currentConfig.password,
+    database: currentConfig.database,
+    ssl: useSsl ? { rejectUnauthorized: false } : undefined,
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0,
+    connectTimeout: 7000,
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 10000,
+  });
+}
+
 export async function getPool(): Promise<mysql.Pool | null> {
   if (pool) return pool;
   if (!currentConfig.host || !currentConfig.user || !currentConfig.database) {
@@ -160,34 +203,49 @@ export async function getPool(): Promise<mysql.Pool | null> {
     return null;
   }
 
-  try {
-    const newPool = mysql.createPool({
-      host: currentConfig.host,
-      port: currentConfig.port,
-      user: currentConfig.user,
-      password: currentConfig.password,
-      database: currentConfig.database,
-      ssl: currentConfig.ssl ? { rejectUnauthorized: false } : undefined,
-      waitForConnections: true,
-      connectionLimit: 10,
-      queueLimit: 0,
-      connectTimeout: 7000,
-      enableKeepAlive: true,
-      keepAliveInitialDelay: 10000,
-    });
+  let newPool = createMysqlPoolInstance(Boolean(currentConfig.ssl));
 
+  try {
     if (!schemaInitialized) {
       try {
         await initMariaDbSchema(newPool);
-        schemaInitialized = true;
-        lastConnectionError = null;
-        console.log(`✅ MariaDB spojení a schéma ověřeno: ${currentConfig.user}@${currentConfig.host}:${currentConfig.port}/${currentConfig.database}`);
-
-        // V produkci a při připojení k MariaDB se lokální paměť nesynchronizuje
-        // Schéma je inicializováno přímo v MariaDB
-      } catch (schemaErr: any) {
-        lastConnectionError = schemaErr?.message || 'Chyba inicializace MariaDB schématu';
-        console.warn('Warning: Could not auto-initialize schema on pool creation:', lastConnectionError);
+      } catch (firstErr: any) {
+        if (currentConfig.ssl && isNoSslSupportError(firstErr)) {
+          console.warn(`⚠️ Server ${currentConfig.host} nepodporuje SSL spojení (Server does not support secure connection). Automaticky vypínám SSL a opakuji připojení...`);
+          try {
+            await newPool.end();
+          } catch {
+            // ignore
+          }
+          currentConfig.ssl = false;
+          saveConfigToFile(currentConfig);
+          newPool = createMysqlPoolInstance(false);
+          await initMariaDbSchema(newPool);
+        } else {
+          throw firstErr;
+        }
+      }
+      schemaInitialized = true;
+      lastConnectionError = null;
+      console.log(`✅ MariaDB spojení a schéma ověřeno: ${currentConfig.user}@${currentConfig.host}:${currentConfig.port}/${currentConfig.database} (SSL: ${currentConfig.ssl ? 'ANO' : 'NE'})`);
+    } else {
+      try {
+        await newPool.query('SELECT 1');
+      } catch (pingErr: any) {
+        if (currentConfig.ssl && isNoSslSupportError(pingErr)) {
+          console.warn(`⚠️ Server ${currentConfig.host} nepodporuje SSL spojení. Automaticky vypínám SSL a opakuji připojení...`);
+          try {
+            await newPool.end();
+          } catch {
+            // ignore
+          }
+          currentConfig.ssl = false;
+          saveConfigToFile(currentConfig);
+          newPool = createMysqlPoolInstance(false);
+          await newPool.query('SELECT 1');
+        } else {
+          throw pingErr;
+        }
       }
     }
 
@@ -195,7 +253,12 @@ export async function getPool(): Promise<mysql.Pool | null> {
     return pool;
   } catch (err: any) {
     lastConnectionError = err?.message || 'Chyba při vytváření MariaDB poolu';
-    console.error('Failed to create MariaDB pool:', lastConnectionError);
+    console.error('Failed to initialize MariaDB pool:', lastConnectionError);
+    try {
+      await newPool.end();
+    } catch {
+      // ignore
+    }
     pool = null;
     return null;
   }
@@ -916,8 +979,28 @@ export async function getWarehouseRecords(
       }
       sql += ' ORDER BY zacatek_pickovani DESC';
 
-      const [rows]: any = await p.query(sql, params);
-      return rows as MovementRecord[];
+      try {
+        const [rows]: any = await p.query(sql, params);
+        return rows as MovementRecord[];
+      } catch (queryErr: any) {
+        if (currentConfig.ssl && isNoSslSupportError(queryErr)) {
+          console.warn('⚠️ getWarehouseRecords zjistil chybu SSL podpory serveru – vypínám SSL a opakuji dotaz...');
+          try {
+            await p.end();
+          } catch {
+            // ignore
+          }
+          pool = null;
+          currentConfig.ssl = false;
+          saveConfigToFile(currentConfig);
+          const retryPool = await getPool();
+          if (retryPool) {
+            const [retryRows]: any = await retryPool.query(sql, params);
+            return retryRows as MovementRecord[];
+          }
+        }
+        throw queryErr;
+      }
     } catch (err: any) {
       console.warn('Chyba při dotazu getWarehouseRecords z MariaDB:', err?.message || err);
       if (isProductionEnv && currentConfig.password) {
