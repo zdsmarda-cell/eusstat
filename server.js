@@ -107,7 +107,10 @@ if (fs.existsSync(PERSISTENT_DATA_PATH)) {
   }
 }
 var pool = null;
+var poolInitPromise = null;
 var lastConnectionError = null;
+var schemaInitialized = false;
+var tableHasWarehouseColumn = true;
 function getDbConfig() {
   return {
     ...currentConfig,
@@ -123,6 +126,7 @@ async function setDbConfig(config) {
     password: newPassword
   };
   saveConfigToFile(currentConfig);
+  statsMemoryCache.clear();
   if (pool) {
     try {
       await pool.end();
@@ -130,10 +134,10 @@ async function setDbConfig(config) {
     }
     pool = null;
   }
+  poolInitPromise = null;
   schemaInitialized = false;
   return await testConnection();
 }
-var schemaInitialized = false;
 function createMysqlPoolInstance(useSsl) {
   return mysql.createPool({
     host: currentConfig.host,
@@ -143,15 +147,18 @@ function createMysqlPoolInstance(useSsl) {
     database: currentConfig.database,
     ssl: useSsl ? { rejectUnauthorized: false } : void 0,
     waitForConnections: true,
-    connectionLimit: 10,
+    connectionLimit: 5,
     queueLimit: 0,
-    connectTimeout: 7e3,
+    connectTimeout: 1e4,
     enableKeepAlive: true,
-    keepAliveInitialDelay: 1e4
+    keepAliveInitialDelay: 1e4,
+    dateStrings: true,
+    decimalNumbers: true
   });
 }
 async function getPool() {
   if (pool) return pool;
+  if (poolInitPromise) return await poolInitPromise;
   if (!currentConfig.host || !currentConfig.user || !currentConfig.database) {
     lastConnectionError = "Chyb\xED host, u\u017Eivatel nebo n\xE1zev datab\xE1ze.";
     return null;
@@ -160,60 +167,65 @@ async function getPool() {
     lastConnectionError = "Chyb\xED heslo k datab\xE1zi fhb_crm na db.mobilgroup.cz. Zadejte heslo v Nastaven\xED DB pro trval\xE9 ukl\xE1d\xE1n\xED.";
     return null;
   }
-  let newPool = createMysqlPoolInstance(Boolean(currentConfig.ssl));
-  try {
-    if (!schemaInitialized) {
-      try {
-        await initMariaDbSchema(newPool);
-      } catch (firstErr) {
-        if (currentConfig.ssl && isNoSslSupportError(firstErr)) {
-          console.warn(`\u26A0\uFE0F Server ${currentConfig.host} nepodporuje SSL spojen\xED (Server does not support secure connection). Automaticky vyp\xEDn\xE1m SSL a opakuji p\u0159ipojen\xED...`);
-          try {
-            await newPool.end();
-          } catch {
-          }
-          currentConfig.ssl = false;
-          saveConfigToFile(currentConfig);
-          newPool = createMysqlPoolInstance(false);
-          await initMariaDbSchema(newPool);
-        } else {
-          throw firstErr;
-        }
-      }
-      schemaInitialized = true;
-      lastConnectionError = null;
-      console.log(`\u2705 MariaDB spojen\xED a sch\xE9ma ov\u011B\u0159eno: ${currentConfig.user}@${currentConfig.host}:${currentConfig.port}/${currentConfig.database} (SSL: ${currentConfig.ssl ? "ANO" : "NE"})`);
-    } else {
-      try {
-        await newPool.query("SELECT 1");
-      } catch (pingErr) {
-        if (currentConfig.ssl && isNoSslSupportError(pingErr)) {
-          console.warn(`\u26A0\uFE0F Server ${currentConfig.host} nepodporuje SSL spojen\xED. Automaticky vyp\xEDn\xE1m SSL a opakuji p\u0159ipojen\xED...`);
-          try {
-            await newPool.end();
-          } catch {
-          }
-          currentConfig.ssl = false;
-          saveConfigToFile(currentConfig);
-          newPool = createMysqlPoolInstance(false);
-          await newPool.query("SELECT 1");
-        } else {
-          throw pingErr;
-        }
-      }
-    }
-    pool = newPool;
-    return pool;
-  } catch (err) {
-    lastConnectionError = err?.message || "Chyba p\u0159i vytv\xE1\u0159en\xED MariaDB poolu";
-    console.error("Failed to initialize MariaDB pool:", lastConnectionError);
+  poolInitPromise = (async () => {
+    let newPool = createMysqlPoolInstance(Boolean(currentConfig.ssl));
     try {
-      await newPool.end();
-    } catch {
+      if (!schemaInitialized) {
+        try {
+          await initMariaDbSchema(newPool);
+        } catch (firstErr) {
+          if (currentConfig.ssl && isNoSslSupportError(firstErr)) {
+            console.warn(`\u26A0\uFE0F Server ${currentConfig.host} nepodporuje SSL spojen\xED (Server does not support secure connection). Automaticky vyp\xEDn\xE1m SSL a opakuji p\u0159ipojen\xED...`);
+            try {
+              await newPool.end();
+            } catch {
+            }
+            currentConfig.ssl = false;
+            saveConfigToFile(currentConfig);
+            newPool = createMysqlPoolInstance(false);
+            await initMariaDbSchema(newPool);
+          } else {
+            throw firstErr;
+          }
+        }
+        schemaInitialized = true;
+        lastConnectionError = null;
+        console.log(`\u2705 MariaDB spojen\xED a sch\xE9ma ov\u011B\u0159eno: ${currentConfig.user}@${currentConfig.host}:${currentConfig.port}/${currentConfig.database} (SSL: ${currentConfig.ssl ? "ANO" : "NE"})`);
+      } else {
+        try {
+          await newPool.query("SELECT 1");
+        } catch (pingErr) {
+          if (currentConfig.ssl && isNoSslSupportError(pingErr)) {
+            console.warn(`\u26A0\uFE0F Server ${currentConfig.host} nepodporuje SSL spojen\xED. Automaticky vyp\xEDn\xE1m SSL a opakuji p\u0159ipojen\xED...`);
+            try {
+              await newPool.end();
+            } catch {
+            }
+            currentConfig.ssl = false;
+            saveConfigToFile(currentConfig);
+            newPool = createMysqlPoolInstance(false);
+            await newPool.query("SELECT 1");
+          } else {
+            throw pingErr;
+          }
+        }
+      }
+      pool = newPool;
+      return pool;
+    } catch (err) {
+      lastConnectionError = err?.message || "Chyba p\u0159i vytv\xE1\u0159en\xED MariaDB poolu";
+      console.error("Failed to initialize MariaDB pool:", lastConnectionError);
+      try {
+        await newPool.end();
+      } catch {
+      }
+      pool = null;
+      return null;
+    } finally {
+      poolInitPromise = null;
     }
-    pool = null;
-    return null;
-  }
+  })();
+  return await poolInitPromise;
 }
 async function initMariaDbSchema(p) {
   const createTableSql = `
@@ -263,7 +275,7 @@ async function initMariaDbSchema(p) {
   await p.query(createTableSql);
   const createCacheTableSql = `
     CREATE TABLE IF NOT EXISTS warehouse_stats_cache (
-      cache_key VARCHAR(100) NOT NULL PRIMARY KEY,
+      cache_key VARCHAR(190) NOT NULL PRIMARY KEY,
       warehouse VARCHAR(50) NOT NULL,
       record_count INT NOT NULL DEFAULT 0,
       stats_json LONGTEXT NOT NULL,
@@ -274,30 +286,44 @@ async function initMariaDbSchema(p) {
   `;
   await p.query(createCacheTableSql);
   try {
-    await p.query("ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS warehouse VARCHAR(50) NOT NULL DEFAULT 'ruse' AFTER id");
-    await p.query("ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS box_id VARCHAR(100) NULL AFTER warehouse");
-    await p.query("ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS cycle_no INT NULL DEFAULT 1 AFTER sberny_box");
-    await p.query("ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS zacatek_sortingu DATETIME NULL AFTER konec_pickovani");
-    await p.query("ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS konec_sortingu DATETIME NULL AFTER zacatek_sortingu");
-    await p.query("ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS sort_duration_s DECIMAL(10,2) NULL DEFAULT 0 AFTER pick_duration_s");
-    await p.query("ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS sort_per_item_s DECIMAL(10,2) NULL DEFAULT 0 AFTER pick_per_item_s");
-    await p.query("ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS station VARCHAR(50) NULL AFTER packer");
-    await p.query("ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS wait_after_picking_min DECIMAL(10,2) NULL AFTER sec_per_scan");
-    await p.query("ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS wait_sort_to_pack_min DECIMAL(10,2) NULL AFTER wait_after_picking_min");
-    await p.query("ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS wait_pick_to_pack_min DECIMAL(10,2) NULL AFTER wait_sort_to_pack_min");
-    await p.query("ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS is_sorted TINYINT(1) DEFAULT 1 AFTER wait_pick_to_pack_min");
-    await p.query("ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS is_packed TINYINT(1) DEFAULT 1 AFTER is_sorted");
-    await p.query("ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS units_sorted INT DEFAULT 0 AFTER is_packed");
-    await p.query("ALTER TABLE warehouse_movements ADD COLUMN IF NOT EXISTS box_units_sorted INT DEFAULT 0 AFTER units_sorted");
-    await p.query("ALTER TABLE warehouse_movements MODIFY COLUMN zacatek_baleni DATETIME NULL");
-    await p.query("ALTER TABLE warehouse_movements MODIFY COLUMN konec_baleni DATETIME NULL");
-    await p.query("ALTER TABLE warehouse_movements MODIFY COLUMN pack_duration_s DECIMAL(10,2) NULL DEFAULT 0");
-    await p.query("ALTER TABLE warehouse_movements MODIFY COLUMN pack_per_item_s DECIMAL(10,2) NULL DEFAULT 0");
-    await p.query("ALTER TABLE warehouse_movements ADD INDEX IF NOT EXISTS idx_wh_pick (warehouse, zacatek_pickovani)");
-  } catch {
+    const [cols] = await p.query("SHOW COLUMNS FROM warehouse_movements");
+    const existingCols = new Set(
+      Array.isArray(cols) ? cols.map((c) => String(c.Field || "").toLowerCase()) : []
+    );
+    const columnMigrations = [
+      { col: "warehouse", sql: "ALTER TABLE warehouse_movements ADD COLUMN warehouse VARCHAR(50) NOT NULL DEFAULT 'ruse'" },
+      { col: "box_id", sql: "ALTER TABLE warehouse_movements ADD COLUMN box_id VARCHAR(100) NULL" },
+      { col: "cycle_no", sql: "ALTER TABLE warehouse_movements ADD COLUMN cycle_no INT NULL DEFAULT 1" },
+      { col: "zacatek_sortingu", sql: "ALTER TABLE warehouse_movements ADD COLUMN zacatek_sortingu DATETIME NULL" },
+      { col: "konec_sortingu", sql: "ALTER TABLE warehouse_movements ADD COLUMN konec_sortingu DATETIME NULL" },
+      { col: "sort_duration_s", sql: "ALTER TABLE warehouse_movements ADD COLUMN sort_duration_s DECIMAL(10,2) NULL DEFAULT 0" },
+      { col: "sort_per_item_s", sql: "ALTER TABLE warehouse_movements ADD COLUMN sort_per_item_s DECIMAL(10,2) NULL DEFAULT 0" },
+      { col: "station", sql: "ALTER TABLE warehouse_movements ADD COLUMN station VARCHAR(50) NULL" },
+      { col: "wait_after_picking_min", sql: "ALTER TABLE warehouse_movements ADD COLUMN wait_after_picking_min DECIMAL(10,2) NULL" },
+      { col: "wait_sort_to_pack_min", sql: "ALTER TABLE warehouse_movements ADD COLUMN wait_sort_to_pack_min DECIMAL(10,2) NULL" },
+      { col: "wait_pick_to_pack_min", sql: "ALTER TABLE warehouse_movements ADD COLUMN wait_pick_to_pack_min DECIMAL(10,2) NULL" },
+      { col: "is_sorted", sql: "ALTER TABLE warehouse_movements ADD COLUMN is_sorted TINYINT(1) DEFAULT 1" },
+      { col: "is_packed", sql: "ALTER TABLE warehouse_movements ADD COLUMN is_packed TINYINT(1) DEFAULT 1" },
+      { col: "units_sorted", sql: "ALTER TABLE warehouse_movements ADD COLUMN units_sorted INT DEFAULT 0" },
+      { col: "box_units_sorted", sql: "ALTER TABLE warehouse_movements ADD COLUMN box_units_sorted INT DEFAULT 0" }
+    ];
+    for (const mig of columnMigrations) {
+      if (!existingCols.has(mig.col)) {
+        try {
+          await p.query(mig.sql);
+          existingCols.add(mig.col);
+        } catch (migErr) {
+          console.warn(`Pozn\xE1mka k migraci sloupce ${mig.col}:`, migErr?.message || migErr);
+        }
+      }
+    }
+    tableHasWarehouseColumn = existingCols.has("warehouse");
+  } catch (err) {
+    console.warn("Nelze ov\u011B\u0159it sloupce warehouse_movements:", err?.message || err);
   }
 }
 async function testConnection() {
+  statsMemoryCache.clear();
   if (!currentConfig.host || !currentConfig.user || !currentConfig.database) {
     return {
       connected: false,
@@ -514,6 +540,69 @@ async function insertMovements(records) {
   await clearStatsCache(records[0]?.warehouse);
   return { count: records.length, destination: "memory" };
 }
+function formatDbDateStr(val) {
+  if (!val) return "";
+  if (typeof val === "string") {
+    return val.trim().replace(" ", "T").substring(0, 19);
+  }
+  if (val instanceof Date && !isNaN(val.getTime())) {
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${val.getFullYear()}-${pad(val.getMonth() + 1)}-${pad(val.getDate())}T${pad(val.getHours())}:${pad(val.getMinutes())}:${pad(val.getSeconds())}`;
+  }
+  return String(val);
+}
+function normalizeDbRow(row) {
+  const units = Math.max(1, Number(row.pocet_produktu) || Number(row.pocet_ks) || 1);
+  const pickDur = Number(row.pick_duration_s) || 0;
+  const sortDur = Number(row.sort_duration_s) || 0;
+  const packDur = Number(row.pack_duration_s) || 0;
+  const pickPerItem = row.pick_per_item_s !== null && row.pick_per_item_s !== void 0 ? Number(row.pick_per_item_s) || 0 : Number((pickDur / units).toFixed(2));
+  const sortPerItem = row.sort_per_item_s !== null && row.sort_per_item_s !== void 0 ? Number(row.sort_per_item_s) || 0 : sortDur > 0 ? Number((sortDur / units).toFixed(2)) : 0;
+  const packPerItem = row.pack_per_item_s !== null && row.pack_per_item_s !== void 0 ? Number(row.pack_per_item_s) || 0 : packDur > 0 ? Number((packDur / units).toFixed(2)) : 0;
+  const totalPerItem = Number((pickPerItem + sortPerItem + packPerItem).toFixed(2));
+  const rawWh = row.warehouse ? String(row.warehouse).trim().toLowerCase() : "ruse";
+  const warehouse = rawWh === "svj" ? "svj" : "ruse";
+  let bracket = String(row.bracket || "").trim();
+  if (!["1", "2", "3", "4", "5", "6+"].includes(bracket)) {
+    bracket = units >= 6 ? "6+" : String(units);
+  }
+  return {
+    id: row.id,
+    warehouse,
+    box_id: row.box_id !== null && row.box_id !== void 0 ? String(row.box_id) : void 0,
+    sberny_box: String(row.sberny_box || ""),
+    cycle_no: Number(row.cycle_no) || 1,
+    obsah_objednavek: String(row.obsah_objednavek || ""),
+    pocet_produktu: units,
+    ean_produktu: String(row.ean_produktu || ""),
+    pocet_ks: Number(row.pocet_ks) || 1,
+    zacatek_pickovani: formatDbDateStr(row.zacatek_pickovani),
+    konec_pickovani: formatDbDateStr(row.konec_pickovani),
+    zacatek_sortingu: row.zacatek_sortingu ? formatDbDateStr(row.zacatek_sortingu) : void 0,
+    konec_sortingu: row.konec_sortingu ? formatDbDateStr(row.konec_sortingu) : void 0,
+    zacatek_baleni: formatDbDateStr(row.zacatek_baleni),
+    konec_baleni: formatDbDateStr(row.konec_baleni),
+    pick_duration_s: pickDur,
+    sort_duration_s: sortDur,
+    pack_duration_s: packDur,
+    pick_per_item_s: pickPerItem,
+    sort_per_item_s: sortPerItem,
+    pack_per_item_s: packPerItem,
+    total_per_item_s: totalPerItem,
+    bracket,
+    packer: row.packer !== null && row.packer !== void 0 ? String(row.packer) : void 0,
+    station: row.station !== null && row.station !== void 0 ? String(row.station) : void 0,
+    sec_per_scan: row.sec_per_scan !== null && row.sec_per_scan !== void 0 ? Number(row.sec_per_scan) : void 0,
+    wait_after_picking_min: row.wait_after_picking_min !== null && row.wait_after_picking_min !== void 0 ? Number(row.wait_after_picking_min) : void 0,
+    wait_sort_to_pack_min: row.wait_sort_to_pack_min !== null && row.wait_sort_to_pack_min !== void 0 ? Number(row.wait_sort_to_pack_min) : void 0,
+    wait_pick_to_pack_min: row.wait_pick_to_pack_min !== null && row.wait_pick_to_pack_min !== void 0 ? Number(row.wait_pick_to_pack_min) : void 0,
+    is_sorted: row.is_sorted !== null && row.is_sorted !== void 0 ? Boolean(Number(row.is_sorted)) : void 0,
+    is_packed: row.is_packed !== null && row.is_packed !== void 0 ? Boolean(Number(row.is_packed)) : true,
+    units_sorted: row.units_sorted !== null && row.units_sorted !== void 0 ? Number(row.units_sorted) : void 0,
+    box_units_sorted: row.box_units_sorted !== null && row.box_units_sorted !== void 0 ? Number(row.box_units_sorted) : void 0,
+    created_at: row.created_at ? formatDbDateStr(row.created_at) : void 0
+  };
+}
 async function getMovements(params) {
   const p = await getPool();
   if (p) {
@@ -521,11 +610,15 @@ async function getMovements(params) {
       let conditions = [];
       let queryParams = [];
       if (params.warehouse && params.warehouse !== "all") {
-        if (params.warehouse === "ruse") {
-          conditions.push("(warehouse = 'ruse' OR warehouse IS NULL OR warehouse = '')");
+        if (!tableHasWarehouseColumn) {
+          if (params.warehouse === "svj") {
+            return { records: [], total: 0, source: "mariadb" };
+          }
+        } else if (params.warehouse === "ruse") {
+          conditions.push("(LOWER(TRIM(warehouse)) = 'ruse' OR warehouse IS NULL OR TRIM(warehouse) = '')");
         } else {
-          conditions.push("warehouse = ?");
-          queryParams.push(params.warehouse);
+          conditions.push("LOWER(TRIM(warehouse)) = ?");
+          queryParams.push(params.warehouse.toLowerCase());
         }
       }
       if (params.dateFrom) {
@@ -533,8 +626,8 @@ async function getMovements(params) {
         queryParams.push(`${params.dateFrom} 00:00:00`);
       }
       if (params.dateTo) {
-        conditions.push("konec_baleni <= ?");
-        queryParams.push(`${params.dateTo} 23:59:59`);
+        conditions.push("(konec_baleni <= ? OR (konec_baleni IS NULL AND konec_pickovani <= ?))");
+        queryParams.push(`${params.dateTo} 23:59:59`, `${params.dateTo} 23:59:59`);
       }
       if (params.bracket && params.bracket !== "all") {
         conditions.push("bracket = ?");
@@ -558,45 +651,19 @@ async function getMovements(params) {
       const limit2 = params.limit !== void 0 && params.limit > 0 ? params.limit : 5e5;
       const offset2 = params.offset || 0;
       const [rows] = await p.query(
-        `SELECT 
-          id, warehouse, box_id, sberny_box, cycle_no, obsah_objednavek, pocet_produktu, ean_produktu, pocet_ks,
-          DATE_FORMAT(zacatek_pickovani, '%Y-%m-%dT%H:%i:%s') as zacatek_pickovani,
-          DATE_FORMAT(konec_pickovani, '%Y-%m-%dT%H:%i:%s') as konec_pickovani,
-          DATE_FORMAT(zacatek_sortingu, '%Y-%m-%dT%H:%i:%s') as zacatek_sortingu,
-          DATE_FORMAT(konec_sortingu, '%Y-%m-%dT%H:%i:%s') as konec_sortingu,
-          DATE_FORMAT(zacatek_baleni, '%Y-%m-%dT%H:%i:%s') as zacatek_baleni,
-          DATE_FORMAT(konec_baleni, '%Y-%m-%dT%H:%i:%s') as konec_baleni,
-          CAST(pick_duration_s AS DOUBLE) as pick_duration_s,
-          CAST(sort_duration_s AS DOUBLE) as sort_duration_s,
-          CAST(pack_duration_s AS DOUBLE) as pack_duration_s,
-          CAST(pick_per_item_s AS DOUBLE) as pick_per_item_s,
-          CAST(sort_per_item_s AS DOUBLE) as sort_per_item_s,
-          CAST(pack_per_item_s AS DOUBLE) as pack_per_item_s,
-          ROUND(CAST(pick_per_item_s AS DOUBLE) + CAST(sort_per_item_s AS DOUBLE) + CAST(pack_per_item_s AS DOUBLE), 2) as total_per_item_s,
-          bracket,
-          packer,
-          station,
-          CAST(sec_per_scan AS DOUBLE) as sec_per_scan,
-          CAST(wait_after_picking_min AS DOUBLE) as wait_after_picking_min,
-          CAST(wait_sort_to_pack_min AS DOUBLE) as wait_sort_to_pack_min,
-          CAST(wait_pick_to_pack_min AS DOUBLE) as wait_pick_to_pack_min,
-          is_sorted,
-          is_packed,
-          units_sorted,
-          box_units_sorted,
-          created_at
-        FROM warehouse_movements ${whereClause}
-        ORDER BY zacatek_pickovani DESC
-        LIMIT ? OFFSET ?`,
+        `SELECT * FROM warehouse_movements ${whereClause}
+         ORDER BY zacatek_pickovani DESC
+         LIMIT ? OFFSET ?`,
         [...queryParams, limit2, offset2]
       );
+      const mapped = Array.isArray(rows) ? rows.map(normalizeDbRow) : [];
       return {
-        records: rows,
+        records: mapped,
         total: total2,
         source: "mariadb"
       };
     } catch (err) {
-      console.error("Chyba p\u0159i dotazu MariaDB:", err?.message || err);
+      console.error("Chyba p\u0159i dotazu MariaDB (getMovements):", err?.message || err);
       lastConnectionError = err?.message || "Chyba dotazu do MariaDB";
       if (isProductionEnv && currentConfig.password) {
         return {
@@ -670,12 +737,6 @@ async function clearMovements(warehouse) {
 }
 var statsMemoryCache = /* @__PURE__ */ new Map();
 async function getCachedStats(cacheKey, expectedCount) {
-  const mem = statsMemoryCache.get(cacheKey);
-  if (mem) {
-    if (expectedCount === void 0 || mem.count === expectedCount) {
-      return mem.data;
-    }
-  }
   const p = await getPool();
   if (p) {
     try {
@@ -685,24 +746,64 @@ async function getCachedStats(cacheKey, expectedCount) {
       );
       if (rows && rows.length > 0) {
         const row = rows[0];
-        if (expectedCount === void 0 || Number(row.record_count) === expectedCount) {
-          const parsed = JSON.parse(row.stats_json);
-          statsMemoryCache.set(cacheKey, { data: parsed, count: Number(row.record_count), savedAt: Date.now() });
-          return parsed;
+        const dbCount = Number(row.record_count || 0);
+        if (dbCount <= 0) {
+          statsMemoryCache.delete(cacheKey);
+          return null;
         }
+        if (expectedCount === void 0 || dbCount === expectedCount) {
+          const parsed = JSON.parse(row.stats_json);
+          if (parsed && Number(parsed.recordCount) > 0) {
+            statsMemoryCache.set(cacheKey, { data: parsed, count: dbCount, savedAt: Date.now() });
+            return parsed;
+          }
+        }
+      } else {
+        statsMemoryCache.delete(cacheKey);
+        return null;
       }
     } catch (err) {
       console.warn("Chyba p\u0159i \u010Dten\xED z warehouse_stats_cache:", err?.message || err);
     }
+    return null;
+  }
+  const mem = statsMemoryCache.get(cacheKey);
+  if (mem && mem.count > 0) {
+    if (expectedCount === void 0 || mem.count === expectedCount) {
+      return mem.data;
+    }
   }
   return null;
 }
+function compactStatsForCache(stats) {
+  if (!stats || typeof stats !== "object") return stats;
+  const copy = { ...stats };
+  if (copy.synergyData && Array.isArray(copy.synergyData.boxStats)) {
+    copy.synergyData = {
+      ...copy.synergyData,
+      totalBoxesCount: copy.synergyData.boxStats.length,
+      boxStats: copy.synergyData.boxStats.slice(0, 25)
+    };
+  }
+  if (copy.ruseSummary && typeof copy.ruseSummary === "object") {
+    copy.ruseSummary = compactStatsForCache(copy.ruseSummary);
+  }
+  if (copy.svjSummary && typeof copy.svjSummary === "object") {
+    copy.svjSummary = compactStatsForCache(copy.svjSummary);
+  }
+  return copy;
+}
 async function saveCachedStats(cacheKey, warehouse, recordCount, stats) {
-  statsMemoryCache.set(cacheKey, { data: stats, count: recordCount, savedAt: Date.now() });
+  if (!recordCount || recordCount <= 0) {
+    statsMemoryCache.delete(cacheKey);
+    return;
+  }
+  const compacted = compactStatsForCache(stats);
+  statsMemoryCache.set(cacheKey, { data: compacted, count: recordCount, savedAt: Date.now() });
   const p = await getPool();
   if (p) {
     try {
-      const statsJson = typeof stats === "string" ? stats : JSON.stringify(stats);
+      const statsJson = typeof compacted === "string" ? compacted : JSON.stringify(compacted);
       await p.query(
         `INSERT INTO warehouse_stats_cache (cache_key, warehouse, record_count, stats_json)
          VALUES (?, ?, ?, ?)
@@ -710,7 +811,7 @@ async function saveCachedStats(cacheKey, warehouse, recordCount, stats) {
         [cacheKey, warehouse, recordCount, statsJson]
       );
     } catch (err) {
-      console.warn("Chyba p\u0159i z\xE1pisu do warehouse_stats_cache:", err?.message || err);
+      console.error("Chyba p\u0159i z\xE1pisu do warehouse_stats_cache:", err?.message || err);
     }
   }
 }
@@ -732,46 +833,23 @@ async function getWarehouseRecords(warehouse, filters) {
   const p = await getPool();
   if (p) {
     try {
-      let sql = `SELECT 
-        id, warehouse, box_id, sberny_box, cycle_no, obsah_objednavek, pocet_produktu, ean_produktu, pocet_ks,
-        DATE_FORMAT(zacatek_pickovani, '%Y-%m-%dT%H:%i:%s') as zacatek_pickovani,
-        DATE_FORMAT(konec_pickovani, '%Y-%m-%dT%H:%i:%s') as konec_pickovani,
-        DATE_FORMAT(zacatek_sortingu, '%Y-%m-%dT%H:%i:%s') as zacatek_sortingu,
-        DATE_FORMAT(konec_sortingu, '%Y-%m-%dT%H:%i:%s') as konec_sortingu,
-        DATE_FORMAT(zacatek_baleni, '%Y-%m-%dT%H:%i:%s') as zacatek_baleni,
-        DATE_FORMAT(konec_baleni, '%Y-%m-%dT%H:%i:%s') as konec_baleni,
-        CAST(pick_duration_s AS DOUBLE) as pick_duration_s,
-        CAST(sort_duration_s AS DOUBLE) as sort_duration_s,
-        CAST(pack_duration_s AS DOUBLE) as pack_duration_s,
-        CAST(pick_per_item_s AS DOUBLE) as pick_per_item_s,
-        CAST(sort_per_item_s AS DOUBLE) as sort_per_item_s,
-        CAST(pack_per_item_s AS DOUBLE) as pack_per_item_s,
-        ROUND(CAST(pick_per_item_s AS DOUBLE) + CAST(sort_per_item_s AS DOUBLE) + CAST(pack_per_item_s AS DOUBLE), 2) as total_per_item_s,
-        bracket,
-        packer,
-        station,
-        CAST(sec_per_scan AS DOUBLE) as sec_per_scan,
-        CAST(wait_after_picking_min AS DOUBLE) as wait_after_picking_min,
-        CAST(wait_sort_to_pack_min AS DOUBLE) as wait_sort_to_pack_min,
-        CAST(wait_pick_to_pack_min AS DOUBLE) as wait_pick_to_pack_min,
-        is_sorted,
-        is_packed,
-        units_sorted,
-        box_units_sorted,
-        created_at
-      FROM warehouse_movements`;
+      let sql = `SELECT * FROM warehouse_movements`;
       const conditions = [];
       const params = [];
       if (warehouse !== "all") {
-        if (warehouse === "ruse") {
-          conditions.push("(warehouse = 'ruse' OR warehouse IS NULL OR warehouse = '')");
+        if (!tableHasWarehouseColumn) {
+          if (warehouse === "svj") {
+            return [];
+          }
+        } else if (warehouse === "ruse") {
+          conditions.push("(LOWER(TRIM(warehouse)) = 'ruse' OR warehouse IS NULL OR TRIM(warehouse) = '')");
         } else {
-          conditions.push("warehouse = ?");
-          params.push(warehouse);
+          conditions.push("LOWER(TRIM(warehouse)) = ?");
+          params.push(warehouse.toLowerCase());
         }
       }
       if (filters?.excludeOutliers) {
-        conditions.push("pick_duration_s <= 1800 AND pack_duration_s <= 1800");
+        conditions.push("(pick_duration_s <= 1800 AND (pack_duration_s IS NULL OR pack_duration_s <= 1800))");
       }
       if (filters?.bracket && filters.bracket !== "all") {
         conditions.push("bracket = ?");
@@ -801,8 +879,8 @@ async function getWarehouseRecords(warehouse, filters) {
             params.push(`${filters.dateFrom} 00:00:00`);
           }
           if (filters.dateTo) {
-            conditions.push("konec_baleni <= ?");
-            params.push(`${filters.dateTo} 23:59:59`);
+            conditions.push("(konec_baleni <= ? OR (konec_baleni IS NULL AND konec_pickovani <= ?))");
+            params.push(`${filters.dateTo} 23:59:59`, `${filters.dateTo} 23:59:59`);
           }
         }
       }
@@ -812,7 +890,7 @@ async function getWarehouseRecords(warehouse, filters) {
       sql += " ORDER BY zacatek_pickovani DESC";
       try {
         const [rows] = await p.query(sql, params);
-        return rows;
+        return Array.isArray(rows) ? rows.map(normalizeDbRow) : [];
       } catch (queryErr) {
         if (currentConfig.ssl && isNoSslSupportError(queryErr)) {
           console.warn("\u26A0\uFE0F getWarehouseRecords zjistil chybu SSL podpory serveru \u2013 vyp\xEDn\xE1m SSL a opakuji dotaz...");
@@ -826,13 +904,13 @@ async function getWarehouseRecords(warehouse, filters) {
           const retryPool = await getPool();
           if (retryPool) {
             const [retryRows] = await retryPool.query(sql, params);
-            return retryRows;
+            return Array.isArray(retryRows) ? retryRows.map(normalizeDbRow) : [];
           }
         }
         throw queryErr;
       }
     } catch (err) {
-      console.warn("Chyba p\u0159i dotazu getWarehouseRecords z MariaDB:", err?.message || err);
+      console.error("Chyba p\u0159i dotazu getWarehouseRecords z MariaDB:", err?.message || err);
       if (isProductionEnv && currentConfig.password) {
         throw new Error(err?.message || "Chyba p\u0159i dotazu do MariaDB");
       }
@@ -3098,10 +3176,10 @@ app.get("/api/analytics/summary", async (req, res) => {
         simulation: runMultipickSlotSimulation(svjRecords),
         updatedAt: (/* @__PURE__ */ new Date()).toISOString()
       };
-      saveCachedStats(`summary_ruse${filterSuffix}`, "ruse", ruseRecords.length, ruseSummary).catch(() => {
-      });
-      saveCachedStats(`summary_svj${filterSuffix}`, "svj", svjRecords.length, svjSummary).catch(() => {
-      });
+      await Promise.all([
+        saveCachedStats(`summary_ruse${filterSuffix}`, "ruse", ruseRecords.length, ruseSummary),
+        saveCachedStats(`summary_svj${filterSuffix}`, "svj", svjRecords.length, svjSummary)
+      ]);
     }
     const payload = {
       warehouse,

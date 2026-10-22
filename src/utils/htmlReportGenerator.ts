@@ -810,7 +810,7 @@ export function generateHtmlReport(data: HtmlReportData): string {
     <div style="background: rgba(15, 23, 42, 0.8); border: 1px solid #334155; border-radius: 14px; padding: 14px 18px; margin-bottom: 18px;">
       <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: 600; color: #ffffff; margin-bottom: 6px;">
         <span>${isCs ? 'Zastoupení kategorií ve zkoumaném vzorku' : 'Category distribution in sample'}:</span>
-        <span class="font-mono" style="color: #94a3b8;">${synergyData.boxStats.length} ${isCs ? 'boxů' : 'totes'} (${((high.totalUnits || 0) + (med.totalUnits || 0) + (low.totalUnits || 0)).toLocaleString('cs-CZ')} ${isCs ? 'kusů' : 'units'})</span>
+        <span class="font-mono" style="color: #94a3b8;">${(synergyData.totalBoxesCount || ((high.count || 0) + (med.count || 0) + (low.count || 0)) || synergyData.boxStats.length).toLocaleString('cs-CZ')} ${isCs ? 'boxů' : 'totes'} (${((high.totalUnits || 0) + (med.totalUnits || 0) + (low.totalUnits || 0)).toLocaleString('cs-CZ')} ${isCs ? 'kusů' : 'units'})</span>
       </div>
       <div class="distribution-bar">
         <div class="dist-bar-seg" style="width: ${Math.max(3, high.sharePct)}%; background: #10b981;" title="High: ${high.sharePct}%"></div>

@@ -146,11 +146,8 @@ function Dashboard() {
   const fetchData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const activeWh = activeTab === 'summary' ? 'all' : activeTab;
-      const [statusRes, ruseSummaryRes, svjSummaryRes, allSummaryRes, movementsRes] = await Promise.all([
+      const [statusRes, allSummaryRes, movementsRes] = await Promise.all([
         authFetch(apiUrl('/api/db/status')),
-        authFetch(apiUrl('/api/analytics/summary?warehouse=ruse')),
-        authFetch(apiUrl('/api/analytics/summary?warehouse=svj')),
         authFetch(apiUrl('/api/analytics/summary?warehouse=all')),
         authFetch(apiUrl('/api/movements?limit=5000&warehouse=all')),
       ]);
@@ -181,25 +178,28 @@ function Dashboard() {
         }
       }
 
-      if (ruseSummaryRes.ok) {
-        try {
-          const ruseData = await ruseSummaryRes.json();
-          if (ruseData.success) {
-            newAnalytics.ruse = ruseData;
+      // Pokud souhrn "all" z cache neobsahoval vnořené ruseSummary / svjSummary,
+      // načteme aktivní záložku napřímo
+      if (!newAnalytics.ruse || !newAnalytics.svj) {
+        const [ruseRes, svjRes] = await Promise.all([
+          !newAnalytics.ruse ? authFetch(apiUrl('/api/analytics/summary?warehouse=ruse')) : Promise.resolve(null),
+          !newAnalytics.svj ? authFetch(apiUrl('/api/analytics/summary?warehouse=svj')) : Promise.resolve(null),
+        ]);
+        if (ruseRes && ruseRes.ok) {
+          try {
+            const rData = await ruseRes.json();
+            if (rData.success) newAnalytics.ruse = rData;
+          } catch {
+            // ignore
           }
-        } catch {
-          // ignore
         }
-      }
-
-      if (svjSummaryRes.ok) {
-        try {
-          const svjData = await svjSummaryRes.json();
-          if (svjData.success) {
-            newAnalytics.svj = svjData;
+        if (svjRes && svjRes.ok) {
+          try {
+            const sData = await svjRes.json();
+            if (sData.success) newAnalytics.svj = sData;
+          } catch {
+            // ignore
           }
-        } catch {
-          // ignore
         }
       }
 
@@ -224,7 +224,7 @@ function Dashboard() {
     } finally {
       setIsLoading(false);
     }
-  }, [activeTab, isCs]);
+  }, [isCs]);
 
   useEffect(() => {
     fetchData();
@@ -349,51 +349,61 @@ function Dashboard() {
     || (activeTab === 'svj' ? (serverAnalytics.all?.svjSummary || serverAnalytics.svj) : undefined)
     || (activeTab === 'summary' ? serverAnalytics.all : undefined);
 
+  const hasValidServerAnalytics = Boolean(
+    currentServerAnalytics && (currentServerAnalytics.recordCount > 0 || activeTabRecords.length === 0)
+  );
+
   // Celkový počet záznamů skladu před filtrací (zabraňuje zobrazení 716 na záložce Ruse)
   const activeWarehouseTotalAllCount = useMemo(() => {
     if (activeTab === 'ruse') {
-      return serverAnalytics.all?.ruseCount ?? currentServerAnalytics?.ruseCount ?? ruseRecords.length;
+      const srv = serverAnalytics.all?.ruseCount ?? currentServerAnalytics?.ruseCount;
+      return srv && srv > 0 ? srv : ruseRecords.length;
     }
     if (activeTab === 'svj') {
-      return serverAnalytics.all?.svjCount ?? currentServerAnalytics?.svjCount ?? svjRecords.length;
+      const srv = serverAnalytics.all?.svjCount ?? currentServerAnalytics?.svjCount;
+      return srv && srv > 0 ? srv : svjRecords.length;
     }
-    return serverAnalytics.all?.recordCount ?? (ruseRecords.length + svjRecords.length);
+    const srvAll = serverAnalytics.all?.recordCount;
+    return srvAll && srvAll > 0 ? srvAll : (ruseRecords.length + svjRecords.length);
   }, [activeTab, serverAnalytics, currentServerAnalytics, ruseRecords.length, svjRecords.length]);
 
   // Počet záznamů odpovídající aplikovaným filtrům
   const activeWarehouseFilteredCount = useMemo(() => {
-    return currentServerAnalytics?.recordCount ?? activeTabRecords.length;
+    if (currentServerAnalytics && currentServerAnalytics.recordCount > 0) {
+      return currentServerAnalytics.recordCount;
+    }
+    return activeTabRecords.length;
   }, [currentServerAnalytics, activeTabRecords.length]);
 
   // Compute or read stats for active tab dataset – VŽDY preferujeme data přímo z databáze
   const bracketStats = useMemo(() => {
-    if (currentServerAnalytics?.bracketStats?.length) {
+    if (hasValidServerAnalytics && currentServerAnalytics?.bracketStats?.length) {
       return currentServerAnalytics.bracketStats;
     }
     return computeBracketStatistics(activeTabRecords);
-  }, [currentServerAnalytics, activeTabRecords]);
+  }, [hasValidServerAnalytics, currentServerAnalytics, activeTabRecords]);
 
   const dailyStats = useMemo(() => {
-    if (currentServerAnalytics?.dailyStats?.length) {
+    if (hasValidServerAnalytics && currentServerAnalytics?.dailyStats?.length) {
       return currentServerAnalytics.dailyStats;
     }
     return computeDailyStatistics(activeTabRecords);
-  }, [currentServerAnalytics, activeTabRecords]);
+  }, [hasValidServerAnalytics, currentServerAnalytics, activeTabRecords]);
 
   const synergyData = useMemo(() => {
-    if (currentServerAnalytics?.synergyData) {
+    if (hasValidServerAnalytics && currentServerAnalytics?.synergyData) {
       return currentServerAnalytics.synergyData;
     }
     return computeBoxSynergyAndHypothesis(activeTabRecords);
-  }, [currentServerAnalytics, activeTabRecords]);
+  }, [hasValidServerAnalytics, currentServerAnalytics, activeTabRecords]);
 
   // Sumární bilance za zkoumané období – načtena z DB
   const periodSummary = useMemo(() => {
-    if (currentServerAnalytics?.periodSummary) {
+    if (hasValidServerAnalytics && currentServerAnalytics?.periodSummary) {
       return currentServerAnalytics.periodSummary;
     }
     return computePeriodSummary(activeTabRecords);
-  }, [currentServerAnalytics, activeTabRecords]);
+  }, [hasValidServerAnalytics, currentServerAnalytics, activeTabRecords]);
 
   // Export HTML report – VŽDY předáváme kompletní databázovou mezipaměť a aktivní sklad
   const handleExportHtml = () => {

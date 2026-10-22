@@ -333,9 +333,11 @@ app.get('/api/analytics/summary', async (req, res) => {
         updatedAt: new Date().toISOString(),
       };
 
-      // Uložíme i dílčí sklady do mezipaměti
-      saveCachedStats(`summary_ruse${filterSuffix}`, 'ruse', ruseRecords.length, ruseSummary).catch(() => {});
-      saveCachedStats(`summary_svj${filterSuffix}`, 'svj', svjRecords.length, svjSummary).catch(() => {});
+      // Uložíme i dílčí sklady do mezipaměti v MariaDB
+      await Promise.all([
+        saveCachedStats(`summary_ruse${filterSuffix}`, 'ruse', ruseRecords.length, ruseSummary),
+        saveCachedStats(`summary_svj${filterSuffix}`, 'svj', svjRecords.length, svjSummary),
+      ]);
     }
 
     const payload = {

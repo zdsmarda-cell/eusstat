@@ -16,6 +16,7 @@ export const BoxSynergyAnalysis: React.FC<BoxSynergyAnalysisProps> = ({ synergyD
   const { lang, t } = useLanguage();
   const { boxStats, hypothesis } = synergyData;
   const { highOverlapBoxes: high, mediumOverlapBoxes: med, lowOverlapBoxes: low, bracketComparisons } = hypothesis;
+  const totalAnalyzedBoxes = (synergyData as any).totalBoxesCount || ((high.count || 0) + (med.count || 0) + (low.count || 0)) || boxStats.length;
 
   return (
     <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 shadow-2xl backdrop-blur-sm space-y-6">
@@ -31,7 +32,7 @@ export const BoxSynergyAnalysis: React.FC<BoxSynergyAnalysisProps> = ({ synergyD
                 {t.synergy.title}
               </h2>
               <span className="text-[11px] font-semibold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
-                {t.synergy.verifiedTag} ({boxStats.length} {t.synergy.boxesCount})
+                {t.synergy.verifiedTag} ({totalAnalyzedBoxes.toLocaleString()} {t.synergy.boxesCount})
               </span>
             </div>
           </div>
@@ -97,7 +98,7 @@ export const BoxSynergyAnalysis: React.FC<BoxSynergyAnalysisProps> = ({ synergyD
             {t.synergy.sampleDistributionTitle}:
           </span>
           <span className="text-[11px] text-slate-400 font-mono">
-            {lang === 'cs' ? 'Celkem analyzováno' : 'Total analyzed'}: <strong className="text-white">{boxStats.length}</strong> {t.synergy.boxesCount} ({((high.totalUnits || 0) + (med.totalUnits || 0) + (low.totalUnits || 0)).toLocaleString()} {lang === 'cs' ? 'kusů' : 'units'})
+            {lang === 'cs' ? 'Celkem analyzováno' : 'Total analyzed'}: <strong className="text-white">{totalAnalyzedBoxes.toLocaleString()}</strong> {t.synergy.boxesCount} ({((high.totalUnits || 0) + (med.totalUnits || 0) + (low.totalUnits || 0)).toLocaleString()} {lang === 'cs' ? 'kusů' : 'units'})
           </span>
         </div>
 
