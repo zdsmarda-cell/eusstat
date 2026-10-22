@@ -149,7 +149,7 @@ function Dashboard() {
       const [statusRes, allSummaryRes, movementsRes] = await Promise.all([
         authFetch(apiUrl('/api/db/status')),
         authFetch(apiUrl('/api/analytics/summary?warehouse=all')),
-        authFetch(apiUrl('/api/movements?limit=5000&warehouse=all')),
+        authFetch(apiUrl('/api/movements?limit=200&warehouse=all')),
       ]);
 
       let statusData: DbStatus = { connected: false, type: 'memory' };

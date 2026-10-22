@@ -20,7 +20,9 @@ import {
   saveCachedStats,
   clearStatsCache,
   getWarehouseRecords,
+  getPool,
 } from './src/server/db.js';
+import { computeAnalyticsFromMariaDb } from './src/server/sqlAnalytics.js';
 import {
   computeBracketStatistics,
   computeDailyStatistics,
@@ -228,10 +230,11 @@ app.post('/api/db/save', async (req, res) => {
   res.json({ success: true, status });
 });
 
+const inFlightSummaryMap = new Map<string, Promise<{ allPayload: any; ruseSummary: any; svjSummary: any }>>();
+
 // =========================================================================
-// ULTRA-FAST CACHED ANALYTICS ENDPOINT (Uses MariaDB helper table & RAM cache)
-// Podporuje všechny filtry (extrémní hodnoty, rozsah dat, bracket, vyhledávání)
-// a počítá statistiky VÝHRADNĚ z databáze MariaDB.
+// ULTRA-FAST CACHED ANALYTICS ENDPOINT (Uses SQL GROUP BY & MariaDB helper table)
+// Využívá přímé SQL agregace v MariaDB bez načítání surových řádků do RAM Node.js
 // =========================================================================
 app.get('/api/analytics/summary', async (req, res) => {
   try {
@@ -269,7 +272,42 @@ app.get('/api/analytics/summary', async (req, res) => {
       }
     }
 
-    // Compute from warehouse records with DB filters applied directly in SQL
+    // 1. Pokud je připojená MariaDB, spočítáme vše přímo pomocí SQL GROUP BY agregací v MariaDB (< 20 MB RAM)
+    const p = await getPool();
+    if (p) {
+      let job = inFlightSummaryMap.get(filterSuffix);
+      if (!job) {
+        job = (async () => {
+          const result = await computeAnalyticsFromMariaDb(p, filterObj);
+          await Promise.all([
+            saveCachedStats(`summary_all${filterSuffix}`, 'all', result.allPayload.recordCount, result.allPayload),
+            saveCachedStats(`summary_ruse${filterSuffix}`, 'ruse', result.ruseSummary.recordCount, result.ruseSummary),
+            saveCachedStats(`summary_svj${filterSuffix}`, 'svj', result.svjSummary.recordCount, result.svjSummary),
+          ]);
+          return result;
+        })();
+        inFlightSummaryMap.set(filterSuffix, job);
+      }
+
+      try {
+        const { allPayload, ruseSummary, svjSummary } = await job;
+        const targetPayload = warehouse === 'ruse'
+          ? ruseSummary
+          : warehouse === 'svj'
+          ? svjSummary
+          : allPayload;
+
+        return res.json({
+          success: true,
+          source: 'computed',
+          ...targetPayload,
+        });
+      } finally {
+        inFlightSummaryMap.delete(filterSuffix);
+      }
+    }
+
+    // 2. Fallback: Lokální paměť (pouze pokud není aktivní MariaDB)
     const [ruseRecords, svjRecords] = await Promise.all([
       warehouse === 'svj' ? [] : getWarehouseRecords('ruse', filterObj),
       warehouse === 'ruse' ? [] : getWarehouseRecords('svj', filterObj),
@@ -291,8 +329,6 @@ app.get('/api/analytics/summary', async (req, res) => {
     const svjBypassAnalysis = warehouse === 'ruse' ? null : computeSvjSortingBypassAnalysis(svjRecords.length > 0 ? svjRecords : activeRecords);
     const simulation = runMultipickSlotSimulation(activeRecords);
 
-    // Pokud počítáme warehouse='all', rovnou vytvoříme i čisté souhrny pro jednotlivé sklady
-    // Tím zajistíme, že Ruse nikdy nedostane data SVJ a naopak!
     let ruseSummary: any = null;
     let svjSummary: any = null;
 
@@ -333,7 +369,6 @@ app.get('/api/analytics/summary', async (req, res) => {
         updatedAt: new Date().toISOString(),
       };
 
-      // Uložíme i dílčí sklady do mezipaměti v MariaDB
       await Promise.all([
         saveCachedStats(`summary_ruse${filterSuffix}`, 'ruse', ruseRecords.length, ruseSummary),
         saveCachedStats(`summary_svj${filterSuffix}`, 'svj', svjRecords.length, svjSummary),
@@ -360,7 +395,6 @@ app.get('/api/analytics/summary', async (req, res) => {
       updatedAt: new Date().toISOString(),
     };
 
-    // Save to MariaDB warehouse_stats_cache table and RAM cache
     await saveCachedStats(cacheKey, warehouse, activeRecords.length, payload);
 
     return res.json({
@@ -378,6 +412,7 @@ app.get('/api/analytics/summary', async (req, res) => {
 app.get('/api/movements', async (req, res) => {
   try {
     const { warehouse, dateFrom, dateTo, bracket, box, query, limit, offset } = req.query;
+    const safeLimit = Math.min(limit ? Number(limit) : 250, 1000);
     const result = await getMovements({
       warehouse: warehouse as string,
       dateFrom: dateFrom as string,
@@ -385,7 +420,7 @@ app.get('/api/movements', async (req, res) => {
       bracket: bracket as string,
       box: box as string,
       query: query as string,
-      limit: limit ? Number(limit) : 1000,
+      limit: safeLimit,
       offset: offset ? Number(offset) : 0,
     });
     res.json(result);
