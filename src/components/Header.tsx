@@ -158,15 +158,17 @@ export const Header: React.FC<HeaderProps> = ({
               <button
                 onClick={onExportHtml}
                 disabled={totalRecordsCount === 0 || isLoading}
-                className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-40"
+                className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-40 cursor-pointer"
                 title={
                   lang === 'cs'
                     ? activeTab === 'summary'
-                      ? 'Uložit kompletní srovnávací report skladů Ruse vs SVJ jako samostatný HTML dokument'
+                      ? 'Uložit kompletní srovnávací report skladů Ruse vs SVJ s nastavenými přepínači jako HTML dokument'
+                      : activeTab === 'gate'
+                      ? 'Uložit stávající zobrazenou záložku Sklad Gate s nastavenými přepínači jako HTML dokument'
                       : activeTab === 'svj'
-                      ? 'Uložit report skladu SVJ (včetně sortingu) jako samostatný HTML dokument'
-                      : 'Uložit report skladu Ruse jako samostatný HTML dokument'
-                    : 'Save outputs as standalone HTML document'
+                      ? 'Uložit stávající zobrazenou záložku Sklad SVJ s nastavenými přepínači jako HTML dokument'
+                      : 'Uložit stávající zobrazenou záložku Sklad Ruse s nastavenými přepínači jako HTML dokument'
+                    : 'Save currently displayed tab with active switches as standalone HTML document'
                 }
               >
                 <FileCode className="w-4 h-4 text-emerald-400" />

@@ -4380,6 +4380,7 @@ function getDefaultSvjBenchmarkRates(svjBracketStats) {
       bypassSingleItemSort: true,
       monthlyFteHoursNorm: 160,
       palletPickSecPerUnit: defaultPick["6+"] || 19.8,
+      boxMoveSecPerBox: 60,
       replenishTriggerPct: 30,
       pickSecByBracket: defaultPick,
       sortSecByBracket: defaultSort,
@@ -4392,6 +4393,7 @@ function getDefaultSvjBenchmarkRates(svjBracketStats) {
     bypassSingleItemSort: true,
     monthlyFteHoursNorm: 160,
     palletPickSecPerUnit: defaultPick["6+"] || 19.8,
+    boxMoveSecPerBox: 60,
     replenishTriggerPct: 30,
     pickSecByBracket: defaultPick,
     sortSecByBracket: defaultSort,
@@ -4423,6 +4425,10 @@ function computeMonthlyFteFromBrackets(brackets, rates, replenishOpts) {
     0,
     replenishOpts?.palletPickSecPerUnit ?? rates.palletPickSecPerUnit ?? rates.pickSecByBracket["6+"] ?? 19.8
   );
+  const boxMoveSecRate = Math.max(
+    0,
+    replenishOpts?.boxMoveSecPerBox ?? rates.boxMoveSecPerBox ?? 60
+  );
   const replenishUnits = monthUnits;
   const avgMonthUnits = replenishOpts?.avgMonthlyUnitsTotal && replenishOpts.avgMonthlyUnitsTotal > 0 ? replenishOpts.avgMonthlyUnitsTotal : monthUnits;
   const activeSkus = replenishOpts?.activeSkusCount && replenishOpts.activeSkusCount > 0 ? replenishOpts.activeSkusCount : 1e4;
@@ -4431,7 +4437,16 @@ function computeMonthlyFteFromBrackets(brackets, rates, replenishOpts) {
     0,
     Math.round(activeSkus / Math.max(0.1, batchMonthsEquivalent) * seasonFactor)
   );
-  const replenishSec = replenishUnits * palletPickSecRate;
+  const waveBoxes = replenishOpts?.boxesPerWave && replenishOpts.boxesPerWave > 0 ? replenishOpts.boxesPerWave : activeSkus;
+  const replenishBoxMoves = Math.max(
+    0,
+    Math.round(waveBoxes / Math.max(0.1, batchMonthsEquivalent) * seasonFactor)
+  );
+  const replenishPickSec = replenishUnits * palletPickSecRate;
+  const replenishBoxMoveSec = replenishBoxMoves * boxMoveSecRate;
+  const replenishSec = replenishPickSec + replenishBoxMoveSec;
+  const replenishPickHours = Number((replenishPickSec / 3600).toFixed(1));
+  const replenishBoxMoveHours = Number((replenishBoxMoveSec / 3600).toFixed(1));
   const replenishHours = Number((replenishSec / 3600).toFixed(1));
   const replenishFte = Number((replenishHours / normHours).toFixed(2));
   const pickHours = Number((pickSec / 3600).toFixed(1));
@@ -4450,6 +4465,8 @@ function computeMonthlyFteFromBrackets(brackets, rates, replenishOpts) {
     sortHours,
     packHours,
     replenishHours,
+    replenishPickHours,
+    replenishBoxMoveHours,
     totalHours: includeReplenish ? totalHoursWithReplenish : baseTotalHours,
     totalHoursWithReplenish,
     pickFte,
@@ -4459,7 +4476,8 @@ function computeMonthlyFteFromBrackets(brackets, rates, replenishOpts) {
     totalFte: includeReplenish ? totalFteWithReplenish : baseTotalFte,
     totalFteWithReplenish,
     replenishUnits,
-    replenishCycles
+    replenishCycles,
+    replenishBoxMoves
   };
 }
 function packSkuVolumesOntoPalletsNoSplit(skuVolumesM3, usablePalletVolM3) {
@@ -4482,42 +4500,103 @@ function packSkuVolumesOntoPalletsNoSplit(skuVolumesM3, usablePalletVolM3) {
       remainderBlocks.push(v);
     }
   }
+  if (remainderBlocks.length === 0) {
+    return {
+      palletsNeeded: fullMonoPallets,
+      monoSkuPalletsCount: fullMonoPallets,
+      mixedSkuPalletsCount: 0,
+      totalGoodsVolumeM3
+    };
+  }
   remainderBlocks.sort((a, b) => b - a);
-  const openPallets = [];
-  let firstOpenIdx = 0;
-  const minBlockVol = remainderBlocks.length > 0 ? remainderBlocks[remainderBlocks.length - 1] : 0;
+  const NUM_BUCKETS = 100;
+  const buckets = Array.from(
+    { length: NUM_BUCKETS + 1 },
+    () => []
+  );
+  const fullSharedPallets = [];
+  const getFreeBucket = (freeVol) => {
+    if (freeVol <= 1e-6) return 0;
+    return Math.min(NUM_BUCKETS, Math.max(0, Math.floor(freeVol / cap * NUM_BUCKETS)));
+  };
   for (let i = 0; i < remainderBlocks.length; i++) {
     const blockVol = remainderBlocks[i];
+    const minBucket = Math.min(NUM_BUCKETS, Math.max(0, Math.floor(blockVol / cap * NUM_BUCKETS)));
     let placed = false;
-    const searchLimit = Math.min(openPallets.length, firstOpenIdx + 450);
-    for (let p = firstOpenIdx; p < searchLimit; p++) {
-      const pal = openPallets[p];
-      const remSpace = cap - pal.usedVol;
-      if (remSpace + 1e-7 >= blockVol) {
-        pal.usedVol += blockVol;
-        pal.skuCount += 1;
-        placed = true;
-        if (p === firstOpenIdx && cap - pal.usedVol < minBlockVol) {
-          firstOpenIdx += 1;
+    for (let b = minBucket; b <= NUM_BUCKETS; b++) {
+      const bucketList = buckets[b];
+      if (bucketList.length === 0) continue;
+      const lastIdx = bucketList.length - 1;
+      const candidate = bucketList[lastIdx];
+      if (cap - candidate.usedVol + 1e-7 >= blockVol) {
+        bucketList.pop();
+        candidate.usedVol += blockVol;
+        candidate.skuCount += 1;
+        const newFree = cap - candidate.usedVol;
+        if (newFree <= cap * 0.015) {
+          fullSharedPallets.push(candidate);
+        } else {
+          buckets[getFreeBucket(newFree)].push(candidate);
         }
+        placed = true;
         break;
       }
     }
     if (!placed) {
-      openPallets.push({ usedVol: blockVol, skuCount: 1 });
-      if (openPallets.length - 1 === firstOpenIdx && cap - blockVol < minBlockVol) {
-        firstOpenIdx += 1;
+      const newPal = { usedVol: blockVol, skuCount: 1 };
+      const free = cap - blockVol;
+      if (free <= cap * 0.015) {
+        fullSharedPallets.push(newPal);
+      } else {
+        buckets[getFreeBucket(free)].push(newPal);
       }
+    }
+  }
+  const partialPallets = [];
+  for (let b = 0; b <= NUM_BUCKETS; b++) {
+    const list = buckets[b];
+    for (let j = 0; j < list.length; j++) {
+      partialPallets.push(list[j]);
+    }
+  }
+  partialPallets.sort((a, b) => b.usedVol - a.usedVol);
+  let left = 0;
+  let right = partialPallets.length - 1;
+  while (left < right) {
+    const palLeft = partialPallets[left];
+    const palRight = partialPallets[right];
+    const freeLeft = cap - palLeft.usedVol;
+    if (freeLeft <= cap * 0.015) {
+      left += 1;
+      continue;
+    }
+    if (palRight.usedVol <= 1e-6) {
+      right -= 1;
+      continue;
+    }
+    if (palRight.usedVol <= freeLeft + 1e-7) {
+      palLeft.usedVol += palRight.usedVol;
+      palLeft.skuCount += palRight.skuCount;
+      palRight.usedVol = 0;
+      palRight.skuCount = 0;
+      right -= 1;
+    } else {
+      palLeft.usedVol = cap;
+      palLeft.skuCount += 1;
+      palRight.usedVol -= freeLeft;
+      left += 1;
     }
   }
   let monoFromBlocks = 0;
   let mixedFromBlocks = 0;
-  for (let i = 0; i < openPallets.length; i++) {
-    if (openPallets[i].skuCount <= 1) {
-      monoFromBlocks += 1;
-    } else {
-      mixedFromBlocks += 1;
-    }
+  for (let i = 0; i < fullSharedPallets.length; i++) {
+    if (fullSharedPallets[i].skuCount <= 1) monoFromBlocks += 1;
+    else mixedFromBlocks += 1;
+  }
+  for (let i = 0; i < partialPallets.length; i++) {
+    if (partialPallets[i].usedVol <= 1e-5) continue;
+    if (partialPallets[i].skuCount <= 1) monoFromBlocks += 1;
+    else mixedFromBlocks += 1;
   }
   const monoSkuPalletsCount = fullMonoPallets + monoFromBlocks;
   const mixedSkuPalletsCount = mixedFromBlocks;
@@ -4639,7 +4718,8 @@ function buildVolumetricSummaryFromClassData(params) {
 }
 function recomputeGateVolumetryFromSummary(abc, boxMaxFillPct = 80, palletMaxFillPct = 80, coverageMonthsTarget = 3, stockScaleFactor = 1, overrideClassTargets, overrideClassStocks) {
   const baseVol = abc.volumetry;
-  const avgUnitVol = baseVol?.avgUnitVolumeM3 || 385e-5;
+  const rawAvgUnitVol = baseVol?.avgUnitVolumeM3 || 385e-5;
+  const avgUnitVol = rawAvgUnitVol > 0 && rawAvgUnitVol <= 0.012 ? rawAvgUnitVol : 385e-5;
   const avgUnitWeight = baseVol?.avgUnitWeightKg || 0.72;
   const BOX_GROSS_VOL_M3 = 0.6 * 0.4 * 0.22;
   const PALLET_GROSS_VOL_M3 = 1.2 * 0.8 * 1.8;
@@ -4648,7 +4728,7 @@ function recomputeGateVolumetryFromSummary(abc, boxMaxFillPct = 80, palletMaxFil
   const boxUsableVolumeM3 = BOX_GROSS_VOL_M3 * (clampedBoxPct / 100);
   const palletUsableVolumeM3 = PALLET_GROSS_VOL_M3 * (clampedPalPct / 100);
   const expectedBoxUnits = overrideClassTargets ? overrideClassTargets.A + overrideClassTargets.B + overrideClassTargets.C : abc.threeMonthDemandUnits;
-  if (baseVol && Math.abs(clampedBoxPct - baseVol.boxMaxFillPct) < 0.01 && Math.abs(clampedPalPct - baseVol.palletMaxFillPct) < 0.01 && Math.abs(coverageMonthsTarget - 3) < 0.01 && Math.abs(stockScaleFactor - 1) < 1e-3 && Math.abs(baseVol.totalBoxUnits - expectedBoxUnits) <= 10) {
+  if (baseVol && Math.abs(clampedBoxPct - baseVol.boxMaxFillPct) < 0.01 && Math.abs(clampedPalPct - baseVol.palletMaxFillPct) < 0.01 && Math.abs(coverageMonthsTarget - 3) < 0.01 && Math.abs(stockScaleFactor - 1) < 1e-3 && Math.abs(baseVol.totalBoxUnits - expectedBoxUnits) <= 10 && baseVol.avgPalletFillOfUsablePct >= 92 && rawAvgUnitVol <= 0.012) {
     return baseVol;
   }
   const monthFactor = coverageMonthsTarget / 3;
@@ -4692,7 +4772,8 @@ function recomputeGateVolumetryFromSummary(abc, boxMaxFillPct = 80, palletMaxFil
     adjustedClassBreakdown[cls].coveredThreeMonthUnits = coveredUnits;
     adjustedClassBreakdown[cls].excessUnits = excessUnits;
     adjustedClassBreakdown[cls].excessSkusCount = excessSkusCount;
-    const clsUnitVol = baseClsVol && baseClsVol.boxUnits + baseClsVol.palletUnits > 0 ? (baseClsVol.boxGoodsVolumeM3 + baseClsVol.palletGoodsVolumeM3) / (baseClsVol.boxUnits + baseClsVol.palletUnits) : avgUnitVol;
+    const rawClsUnitVol = baseClsVol && baseClsVol.boxUnits + baseClsVol.palletUnits > 0 ? (baseClsVol.boxGoodsVolumeM3 + baseClsVol.palletGoodsVolumeM3) / (baseClsVol.boxUnits + baseClsVol.palletUnits) : avgUnitVol;
+    const clsUnitVol = rawClsUnitVol > 0 && rawClsUnitVol <= avgUnitVol * 1.6 && rawClsUnitVol <= 0.012 ? rawClsUnitVol : avgUnitVol;
     totalStockVol += scaledStockUnits * clsUnitVol;
     totalStockW += scaledStockUnits * avgUnitWeight;
     if (coveredUnits > 0 && skusCount > 0) {

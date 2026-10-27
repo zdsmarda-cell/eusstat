@@ -106,6 +106,7 @@ export function getDefaultSvjBenchmarkRates(svjBracketStats?: BracketStat[]): Ga
       bypassSingleItemSort: true,
       monthlyFteHoursNorm: 160,
       palletPickSecPerUnit: defaultPick['6+'] || 19.8,
+      boxMoveSecPerBox: 60,
       replenishTriggerPct: 30,
       pickSecByBracket: defaultPick,
       sortSecByBracket: defaultSort,
@@ -119,6 +120,7 @@ export function getDefaultSvjBenchmarkRates(svjBracketStats?: BracketStat[]): Ga
     bypassSingleItemSort: true,
     monthlyFteHoursNorm: 160,
     palletPickSecPerUnit: defaultPick['6+'] || 19.8,
+    boxMoveSecPerBox: 60,
     replenishTriggerPct: 30,
     pickSecByBracket: defaultPick,
     sortSecByBracket: defaultSort,
@@ -130,6 +132,8 @@ export interface ReplenishFteOptions {
   coverageMonthsTarget?: number;
   replenishTriggerPct?: number;
   palletPickSecPerUnit?: number;
+  boxMoveSecPerBox?: number;
+  boxesPerWave?: number;
   activeSkusCount?: number;
   avgMonthlyUnitsTotal?: number;
   includeReplenishInTotal?: boolean;
@@ -161,7 +165,7 @@ export function computeMonthlyFteFromBrackets(
 
   // Průběžné doskladňování: vždy když 3měsíční zásoba klesne pod 30 % (triggerPct),
   // doskladní se zpět na 100 % (dávka = 70 % z 3M zásoby = 2,1 průměrného měsíce výdeje).
-  // Čas doskladnění se počítá jako z paletového pickingu (výchozí dle SVJ 6+ / paletového pickingu).
+  // Čas doskladnění = paletový picking kusů (s/ks) + přemístění vypickovaného boxu na skladovou pozici (výchozí 60 s/box).
   const coverageMonths = Math.max(1, replenishOpts?.coverageMonthsTarget ?? 3);
   const triggerPct = Math.min(90, Math.max(5, replenishOpts?.replenishTriggerPct ?? rates.replenishTriggerPct ?? 30));
   const batchFraction = Math.max(0.1, (100 - triggerPct) / 100); // 0.70 při 30% prahu
@@ -169,6 +173,10 @@ export function computeMonthlyFteFromBrackets(
   const palletPickSecRate = Math.max(
     0,
     replenishOpts?.palletPickSecPerUnit ?? rates.palletPickSecPerUnit ?? rates.pickSecByBracket['6+'] ?? 19.8
+  );
+  const boxMoveSecRate = Math.max(
+    0,
+    replenishOpts?.boxMoveSecPerBox ?? rates.boxMoveSecPerBox ?? 60
   );
 
   const replenishUnits = monthUnits;
@@ -183,8 +191,20 @@ export function computeMonthlyFteFromBrackets(
     0,
     Math.round((activeSkus / Math.max(0.1, batchMonthsEquivalent)) * seasonFactor)
   );
+  const waveBoxes = replenishOpts?.boxesPerWave && replenishOpts.boxesPerWave > 0
+    ? replenishOpts.boxesPerWave
+    : activeSkus;
+  const replenishBoxMoves = Math.max(
+    0,
+    Math.round((waveBoxes / Math.max(0.1, batchMonthsEquivalent)) * seasonFactor)
+  );
 
-  const replenishSec = replenishUnits * palletPickSecRate;
+  const replenishPickSec = replenishUnits * palletPickSecRate;
+  const replenishBoxMoveSec = replenishBoxMoves * boxMoveSecRate;
+  const replenishSec = replenishPickSec + replenishBoxMoveSec;
+
+  const replenishPickHours = Number((replenishPickSec / 3600).toFixed(1));
+  const replenishBoxMoveHours = Number((replenishBoxMoveSec / 3600).toFixed(1));
   const replenishHours = Number((replenishSec / 3600).toFixed(1));
   const replenishFte = Number((replenishHours / normHours).toFixed(2));
 
@@ -207,6 +227,8 @@ export function computeMonthlyFteFromBrackets(
     sortHours,
     packHours,
     replenishHours,
+    replenishPickHours,
+    replenishBoxMoveHours,
     totalHours: includeReplenish ? totalHoursWithReplenish : baseTotalHours,
     totalHoursWithReplenish,
     pickFte,
@@ -217,6 +239,7 @@ export function computeMonthlyFteFromBrackets(
     totalFteWithReplenish,
     replenishUnits,
     replenishCycles,
+    replenishBoxMoves,
   };
 }
 
@@ -974,12 +997,15 @@ export async function parseGateCsvFilesStreaming(
         let unitVol = 0;
         if (idxVolume >= 0 && cols[idxVolume]) {
           const vStr = cols[idxVolume].trim().replace(/^"|"$/g, '').replace(',', '.');
-          const vNum = parseFloat(vStr);
-          if (!isNaN(vNum) && vNum > 0 && vNum < 5) {
-            unitVol = vNum;
-            hasExplicitVolumeData = true;
-            explicitVolumeSum += vNum;
-            explicitVolumeCount += 1;
+          // Ochrana proti zkorumpovanému datumu z Excelu (např. "01.Aug", "04.Apr")
+          if (!/[a-zA-Z]/.test(vStr)) {
+            const vNum = parseFloat(vStr);
+            if (!isNaN(vNum) && vNum > 0 && vNum <= 0.15) {
+              unitVol = vNum;
+              hasExplicitVolumeData = true;
+              explicitVolumeSum += vNum;
+              explicitVolumeCount += 1;
+            }
           }
         }
 
@@ -1217,7 +1243,7 @@ export async function parseGateCsvFilesStreaming(
     DEAD: { skusCount: 0, skuSharePct: 0, annualUnits: 0, unitSharePct: 0, threeMonthTargetUnits: 0, currentStockUnits: 0, coveredThreeMonthUnits: 0, excessUnits: 0, excessSkusCount: 0 },
   };
 
-  // Kolekce objemů jednotlivých SKU pro paletizaci (bez dělení 1 SKU mezi více mixovaných palet)
+  // Kolekce objemů jednotlivých SKU pro paletizaci (konsolidace SKU na co nejmenší počet sdílených palet)
   const palletSkuVolumesByClass: Record<'A' | 'B' | 'C' | 'DEAD', number[]> = {
     A: [],
     B: [],
@@ -1408,8 +1434,15 @@ export async function parseGateCsvFilesStreaming(
     // Pokud by v jednodenním snímku stock.csv většina sezónních SKU měla nové kódy (zařazené do DEAD)
     // a součet spárované aktivní zásoby byl nižší než 3měsíční potřeba, přesuneme potřebnou 3M zásobu
     if (rawActiveStockTotal < threeMonthDemandUnits && deadStockUnits > 0) {
+      const prevDeadUnits = deadStockUnits;
       const transfer = Math.min(deadStockUnits, threeMonthDemandUnits - rawActiveStockTotal);
       deadStockUnits -= transfer;
+      const deadScale = prevDeadUnits > 0 ? deadStockUnits / prevDeadUnits : 0;
+      totalStockVolumeM3 *= deadScale;
+      totalStockWeightKg *= deadScale;
+      for (let i = 0; i < palletSkuVolumesByClass.DEAD.length; i++) {
+        palletSkuVolumesByClass.DEAD[i] *= deadScale;
+      }
       classBreakdown.DEAD.currentStockUnits = deadStockUnits;
       classBreakdown.DEAD.excessUnits = deadStockUnits;
       rawActiveStockTotal += transfer;
@@ -1593,7 +1626,7 @@ export async function parseGateCsvFilesStreaming(
       boxesFor3M: boxesForSku,
       boxFillPct: boxFillPctForSku,
       excessVolumeM3: Number(excessVolM3.toFixed(4)),
-      palletsForExcess: excess > 0 ? Math.max(1, Math.ceil(excessVolM3 / palletUsableVolM3)) : 0,
+      palletsForExcess: excess > 0 ? Number((excessVolM3 / palletUsableVolM3).toFixed(2)) : 0,
     };
 
     if (topActiveSkus.length < 40) {
@@ -1614,7 +1647,7 @@ export async function parseGateCsvFilesStreaming(
       : 0;
   }
 
-  // Sestavení volumetrického souhrnu (boxy 60x40x22 cm + palety 120x80x180 cm s No-Split SKU algoritmem)
+  // Sestavení volumetrického souhrnu (boxy 60x40x22 cm + palety 120x80x180 cm s konsolidací SKU)
   const volumetry = buildVolumetricSummaryFromClassData({
     hasExplicitVolumeData,
     avgUnitVolumeM3,
@@ -1704,13 +1737,16 @@ export async function parseGateCsvFilesStreaming(
 }
 
 /**
- * Paletizace bez dělení 1 SKU mezi více mixovaných palet (No-Split SKU / Single-SKU Priority):
- * - Paleta: 120 * 80 * 180 cm = 1.728 m3, využitelných např. 80 % = 1.3824 m3.
- * - Pokud má 1 SKU objem >= usablePalletVol, nejprve naplní celočíselný počet čistých Mono-SKU palet
- *   a jeho zbytek (< usablePalletVol) zůstane pohromadě jako 1 nedělitelný blok.
- * - Všechny nedělitelné bloky SKU (< usablePalletVol) se seřadí sestupně (First-Fit Decreasing)
- *   a skládají se na palety tak, že se 1 SKU nikdy nerozdělí mezi více palet (musí se vejít celé, jinak se otevře nová paleta).
- * - Paleta, na které zůstane jen 1 SKU, se započítá jako Mono-SKU paleta (rychlý paletový picking pro doskladnění).
+ * Konsolidovaná paletizace SKU (120 * 80 * 180 cm = 1.728 m3, využitelných např. 80 % = 1.3824 m3):
+ * - Smyslem je nerozmělňovat kusy 1 SKU po 1 ks na desítky různých palet, ale umístit každé SKU
+ *   na co nejmenší počet palet a nevyužité místo na paletě sdílet s ostatními SKU tak, aby palety
+ *   nezůstávaly poloprázdné.
+ * - Krok 1: Pokud má SKU objem >= usablePalletVol, naplní nejprve celočíselný počet plných 1-SKU palet
+ *   a zbývající objem (< usablePalletVol) jde do sdílené konsolidace.
+ * - Krok 2: Sdílené bloky se nejprve naskládají přes rychlý 100-bucket Best-Fit Decreasing algoritmus
+ *   napříč VŠEMI otevřenými paletami (pokud se celé SKU vejde do volného místa palety, zůstane 100% pohromadě).
+ * - Krok 3: Zbylé částečně zaplněné palety se kompaktně sloučí (větší zbytek SKU se může rozložit
+ *   mezi 2–3 sdílené palety společně s jinými SKU), aby se plně využila 80% kapacita palety bez plýtvání místem.
  */
 export function packSkuVolumesOntoPalletsNoSplit(
   skuVolumesM3: number[],
@@ -1743,49 +1779,122 @@ export function packSkuVolumesOntoPalletsNoSplit(
     }
   }
 
-  // Seřadíme bloky sestupně (First-Fit Decreasing bez dělení bloků)
+  if (remainderBlocks.length === 0) {
+    return {
+      palletsNeeded: fullMonoPallets,
+      monoSkuPalletsCount: fullMonoPallets,
+      mixedSkuPalletsCount: 0,
+      totalGoodsVolumeM3,
+    };
+  }
+
+  // Seřadíme bloky sestupně (Best-Fit Decreasing přes 100 kapacitních košů volného místa)
   remainderBlocks.sort((a, b) => b - a);
 
-  const openPallets: { usedVol: number; skuCount: number }[] = [];
-  let firstOpenIdx = 0;
-  const minBlockVol = remainderBlocks.length > 0 ? remainderBlocks[remainderBlocks.length - 1] : 0;
+  const NUM_BUCKETS = 100;
+  const buckets: { usedVol: number; skuCount: number }[][] = Array.from(
+    { length: NUM_BUCKETS + 1 },
+    () => []
+  );
+  const fullSharedPallets: { usedVol: number; skuCount: number }[] = [];
+
+  const getFreeBucket = (freeVol: number): number => {
+    if (freeVol <= 1e-6) return 0;
+    return Math.min(NUM_BUCKETS, Math.max(0, Math.floor((freeVol / cap) * NUM_BUCKETS)));
+  };
 
   for (let i = 0; i < remainderBlocks.length; i++) {
     const blockVol = remainderBlocks[i];
+    const minBucket = Math.min(NUM_BUCKETS, Math.max(0, Math.floor((blockVol / cap) * NUM_BUCKETS)));
     let placed = false;
 
-    // Prohledáme otevřené palety (omezené okno pro garantovanou rychlost i při 30 000+ SKU)
-    const searchLimit = Math.min(openPallets.length, firstOpenIdx + 450);
-    for (let p = firstOpenIdx; p < searchLimit; p++) {
-      const pal = openPallets[p];
-      const remSpace = cap - pal.usedVol;
-      if (remSpace + 1e-7 >= blockVol) {
-        pal.usedVol += blockVol;
-        pal.skuCount += 1;
-        placed = true;
-        if (p === firstOpenIdx && cap - pal.usedVol < minBlockVol) {
-          firstOpenIdx += 1;
+    for (let b = minBucket; b <= NUM_BUCKETS; b++) {
+      const bucketList = buckets[b];
+      if (bucketList.length === 0) continue;
+
+      // Zkontrolujeme konec koše (O(1) operace)
+      const lastIdx = bucketList.length - 1;
+      const candidate = bucketList[lastIdx];
+      if (cap - candidate.usedVol + 1e-7 >= blockVol) {
+        bucketList.pop();
+        candidate.usedVol += blockVol;
+        candidate.skuCount += 1;
+        const newFree = cap - candidate.usedVol;
+        if (newFree <= cap * 0.015) {
+          fullSharedPallets.push(candidate);
+        } else {
+          buckets[getFreeBucket(newFree)].push(candidate);
         }
+        placed = true;
         break;
       }
     }
 
     if (!placed) {
-      openPallets.push({ usedVol: blockVol, skuCount: 1 });
-      if (openPallets.length - 1 === firstOpenIdx && cap - blockVol < minBlockVol) {
-        firstOpenIdx += 1;
+      const newPal = { usedVol: blockVol, skuCount: 1 };
+      const free = cap - blockVol;
+      if (free <= cap * 0.015) {
+        fullSharedPallets.push(newPal);
+      } else {
+        buckets[getFreeBucket(free)].push(newPal);
       }
+    }
+  }
+
+  // Shromáždíme všechny zbylé částečně zaplněné palety a kompaktně je sloučíme,
+  // aby nevznikaly poloprázdné 1-SKU palety (větší zbytek SKU může být na 2-3 paletách společně s jinými SKU)
+  const partialPallets: { usedVol: number; skuCount: number }[] = [];
+  for (let b = 0; b <= NUM_BUCKETS; b++) {
+    const list = buckets[b];
+    for (let j = 0; j < list.length; j++) {
+      partialPallets.push(list[j]);
+    }
+  }
+
+  partialPallets.sort((a, b) => b.usedVol - a.usedVol);
+
+  let left = 0;
+  let right = partialPallets.length - 1;
+  while (left < right) {
+    const palLeft = partialPallets[left];
+    const palRight = partialPallets[right];
+    const freeLeft = cap - palLeft.usedVol;
+
+    if (freeLeft <= cap * 0.015) {
+      left += 1;
+      continue;
+    }
+    if (palRight.usedVol <= 1e-6) {
+      right -= 1;
+      continue;
+    }
+
+    if (palRight.usedVol <= freeLeft + 1e-7) {
+      palLeft.usedVol += palRight.usedVol;
+      palLeft.skuCount += palRight.skuCount;
+      palRight.usedVol = 0;
+      palRight.skuCount = 0;
+      right -= 1;
+    } else {
+      // Doplníme paletu vlevo do 100 % využitelné kapacity a zbytek SKU necháme pohromadě na další paletě
+      palLeft.usedVol = cap;
+      palLeft.skuCount += 1;
+      palRight.usedVol -= freeLeft;
+      left += 1;
     }
   }
 
   let monoFromBlocks = 0;
   let mixedFromBlocks = 0;
-  for (let i = 0; i < openPallets.length; i++) {
-    if (openPallets[i].skuCount <= 1) {
-      monoFromBlocks += 1;
-    } else {
-      mixedFromBlocks += 1;
-    }
+
+  for (let i = 0; i < fullSharedPallets.length; i++) {
+    if (fullSharedPallets[i].skuCount <= 1) monoFromBlocks += 1;
+    else mixedFromBlocks += 1;
+  }
+  for (let i = 0; i < partialPallets.length; i++) {
+    if (partialPallets[i].usedVol <= 1e-5) continue;
+    if (partialPallets[i].skuCount <= 1) monoFromBlocks += 1;
+    else mixedFromBlocks += 1;
   }
 
   const monoSkuPalletsCount = fullMonoPallets + monoFromBlocks;
@@ -1967,7 +2076,8 @@ export function recomputeGateVolumetryFromSummary(
   overrideClassStocks?: { A: number; B: number; C: number; DEAD: number }
 ): GateVolumetricSummary {
   const baseVol = abc.volumetry;
-  const avgUnitVol = baseVol?.avgUnitVolumeM3 || 0.00385;
+  const rawAvgUnitVol = baseVol?.avgUnitVolumeM3 || 0.00385;
+  const avgUnitVol = rawAvgUnitVol > 0 && rawAvgUnitVol <= 0.012 ? rawAvgUnitVol : 0.00385;
   const avgUnitWeight = baseVol?.avgUnitWeightKg || 0.72;
   const BOX_GROSS_VOL_M3 = 0.60 * 0.40 * 0.22;
   const PALLET_GROSS_VOL_M3 = 1.20 * 0.80 * 1.80;
@@ -1980,15 +2090,17 @@ export function recomputeGateVolumetryFromSummary(
     ? overrideClassTargets.A + overrideClassTargets.B + overrideClassTargets.C
     : abc.threeMonthDemandUnits;
 
-  // Pokud máme uložený přesný výsledek pro 80 % / 3M / scale=1 A součet kusů v boxech odpovídá
-  // aproximované 3měsíční potřebě (3 * průměrný měsíční výdej), vrátíme ho přímo
+  // Pokud máme uložený přesný výsledek pro 80 % / 3M / scale=1, součet kusů v boxech odpovídá
+  // aproximované 3M potřebě A palety jsou konsolidované (využití >= 92 %), vrátíme ho přímo
   if (
     baseVol &&
     Math.abs(clampedBoxPct - baseVol.boxMaxFillPct) < 0.01 &&
     Math.abs(clampedPalPct - baseVol.palletMaxFillPct) < 0.01 &&
     Math.abs(coverageMonthsTarget - 3) < 0.01 &&
     Math.abs(stockScaleFactor - 1) < 0.001 &&
-    Math.abs(baseVol.totalBoxUnits - expectedBoxUnits) <= 10
+    Math.abs(baseVol.totalBoxUnits - expectedBoxUnits) <= 10 &&
+    baseVol.avgPalletFillOfUsablePct >= 92 &&
+    rawAvgUnitVol <= 0.012
   ) {
     return baseVol;
   }
@@ -2056,9 +2168,12 @@ export function recomputeGateVolumetryFromSummary(
     adjustedClassBreakdown[cls].excessUnits = excessUnits;
     adjustedClassBreakdown[cls].excessSkusCount = excessSkusCount;
 
-    // Objem zboží v této třídě
-    const clsUnitVol = (baseClsVol && (baseClsVol.boxUnits + baseClsVol.palletUnits) > 0)
+    // Objem zboží v této třídě (ošetřeno proti případným zkorumpovaným hodnotám ze starého importu)
+    const rawClsUnitVol = (baseClsVol && (baseClsVol.boxUnits + baseClsVol.palletUnits) > 0)
       ? (baseClsVol.boxGoodsVolumeM3 + baseClsVol.palletGoodsVolumeM3) / (baseClsVol.boxUnits + baseClsVol.palletUnits)
+      : avgUnitVol;
+    const clsUnitVol = (rawClsUnitVol > 0 && rawClsUnitVol <= avgUnitVol * 1.6 && rawClsUnitVol <= 0.012)
+      ? rawClsUnitVol
       : avgUnitVol;
 
     totalStockVol += scaledStockUnits * clsUnitVol;

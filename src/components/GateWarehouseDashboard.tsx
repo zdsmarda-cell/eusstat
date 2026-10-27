@@ -36,6 +36,7 @@ interface GateWarehouseDashboardProps {
   svjBracketStats?: BracketStat[];
   onOpenImport: () => void;
   onLoadSampleGate: () => void;
+  onExportHtml?: () => void;
   isLoading?: boolean;
 }
 
@@ -44,6 +45,7 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
   svjBracketStats,
   onOpenImport,
   onLoadSampleGate,
+  onExportHtml,
   isLoading,
 }) => {
   const { lang } = useLanguage();
@@ -63,6 +65,7 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
   const [palletMaxFillPct, setPalletMaxFillPct] = useState<number>(80); // Paleta 120x80x180 cm (max 80 % využitelných = 1 382,4 l)
   const [replenishTriggerPct, setReplenishTriggerPct] = useState<number>(30); // Pokles pod 30 % -> doskladnění na 100 % (dávka 70 %)
   const [customPalletPickSec, setCustomPalletPickSec] = useState<number | null>(null);
+  const [boxMoveSecPerBox, setBoxMoveSecPerBox] = useState<number>(60); // Čas přemístění vypickovaného boxu na skladovou pozici (výchozí 60 s)
   const [includeReplenishInFte, setIncludeReplenishInFte] = useState<boolean>(true);
   const [customTotalStockUnits, setCustomTotalStockUnits] = useState<number | null>(null);
   const [customDeadSkusCount, setCustomDeadSkusCount] = useState<number | null>(null);
@@ -86,7 +89,7 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
     pack?: Partial<Record<ItemBracket, number>>;
   }>({});
 
-  // Aktuální SVJ normočasy (sekundy na 1 ks podle velikosti objednávky 1..6+) + čas paletového pickingu pro doskladnění
+  // Aktuální SVJ normočasy (sekundy na 1 ks podle velikosti objednávky 1..6+) + čas paletového pickingu a přesunu boxu pro doskladnění
   const activeSvjRates: GateSvjBenchmarkRates = useMemo(() => {
     const base =
       svjBracketStats && svjBracketStats.length > 0
@@ -154,6 +157,7 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
       bypassSingleItemSort: bypassSingleSort,
       monthlyFteHoursNorm: monthlyFteHours,
       palletPickSecPerUnit,
+      boxMoveSecPerBox,
       replenishTriggerPct,
       pickSecByBracket,
       sortSecByBracket,
@@ -168,113 +172,11 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
     monthlyFteHours,
     customRateOverrides,
     customPalletPickSec,
+    boxMoveSecPerBox,
     replenishTriggerPct,
   ]);
 
-  // Dynamický přepočet měsíčních FTE podle zvolených SVJ časů, paletového pickingu doskladnění a fondu pracovní doby
-  const enrichedMonths = useMemo(() => {
-    const months = report?.monthlyBreakdown || [];
-    const avgMonthlyUnitsTotal =
-      months.length > 0
-        ? months.reduce((s, x) => s + x.totalUnits, 0) / months.length
-        : 0;
-    const globalActiveSkus = report?.totalActiveSkus || 18450;
-
-    return months.map(m => ({
-      ...m,
-      fte: computeMonthlyFteFromBrackets(m.brackets, activeSvjRates, {
-        coverageMonthsTarget,
-        replenishTriggerPct,
-        palletPickSecPerUnit: activeSvjRates.palletPickSecPerUnit,
-        activeSkusCount: globalActiveSkus,
-        avgMonthlyUnitsTotal,
-        includeReplenishInTotal: includeReplenishInFte,
-      }),
-    }));
-  }, [
-    report?.monthlyBreakdown,
-    report?.totalActiveSkus,
-    activeSvjRates,
-    coverageMonthsTarget,
-    replenishTriggerPct,
-    includeReplenishInFte,
-  ]);
-
-  // Souhrn FTE za celý rok / průměrný měsíc / špičkový měsíc (včetně průběžného doskladňování)
-  const fteSummary = useMemo(() => {
-    if (enrichedMonths.length === 0) {
-      return {
-        avgPickFte: 0,
-        avgSortFte: 0,
-        avgPackFte: 0,
-        avgReplenishFte: 0,
-        avgBaseTotalFte: 0,
-        avgTotalFte: 0,
-        peakTotalFte: 0,
-        peakMonthLabel: '-',
-        totalYearHours: 0,
-        totalPickHours: 0,
-        totalSortHours: 0,
-        totalPackHours: 0,
-        totalReplenishHours: 0,
-        totalReplenishCycles: 0,
-      };
-    }
-    const n = enrichedMonths.length;
-    const totalPickHours = Number(enrichedMonths.reduce((s, m) => s + m.fte.pickHours, 0).toFixed(1));
-    const totalSortHours = Number(enrichedMonths.reduce((s, m) => s + m.fte.sortHours, 0).toFixed(1));
-    const totalPackHours = Number(enrichedMonths.reduce((s, m) => s + m.fte.packHours, 0).toFixed(1));
-    const totalReplenishHours = Number(
-      enrichedMonths.reduce((s, m) => s + (m.fte.replenishHours || 0), 0).toFixed(1)
-    );
-    const totalReplenishCycles = enrichedMonths.reduce(
-      (s, m) => s + (m.fte.replenishCycles || 0),
-      0
-    );
-    const totalYearHours = Number(
-      (
-        totalPickHours +
-        totalSortHours +
-        totalPackHours +
-        (includeReplenishInFte ? totalReplenishHours : 0)
-      ).toFixed(1)
-    );
-
-    const avgPickFte = Number((enrichedMonths.reduce((s, m) => s + m.fte.pickFte, 0) / n).toFixed(2));
-    const avgSortFte = Number((enrichedMonths.reduce((s, m) => s + m.fte.sortFte, 0) / n).toFixed(2));
-    const avgPackFte = Number((enrichedMonths.reduce((s, m) => s + m.fte.packFte, 0) / n).toFixed(2));
-    const avgReplenishFte = Number(
-      (enrichedMonths.reduce((s, m) => s + (m.fte.replenishFte || 0), 0) / n).toFixed(2)
-    );
-    const avgBaseTotalFte = Number((avgPickFte + avgSortFte + avgPackFte).toFixed(2));
-    const avgTotalFte = Number(
-      (avgBaseTotalFte + (includeReplenishInFte ? avgReplenishFte : 0)).toFixed(2)
-    );
-
-    let peakM = enrichedMonths[0];
-    for (const m of enrichedMonths) {
-      if (m.fte.totalFte > peakM.fte.totalFte) peakM = m;
-    }
-
-    return {
-      avgPickFte,
-      avgSortFte,
-      avgPackFte,
-      avgReplenishFte,
-      avgBaseTotalFte,
-      avgTotalFte,
-      peakTotalFte: peakM.fte.totalFte,
-      peakMonthLabel: isCs ? peakM.monthLabelCs : peakM.monthLabelEn,
-      totalYearHours,
-      totalPickHours,
-      totalSortHours,
-      totalPackHours,
-      totalReplenishHours,
-      totalReplenishCycles,
-    };
-  }, [enrichedMonths, isCs, includeReplenishInFte]);
-
-  // Dynamický přepočet ABC analýzy + průběžného doskladňování + Volumetrie boxů (60x40x22 cm) a palet (120x80x180 cm)
+  // Dynamický přepočet ABC analýzy + průběžného doskladňování (paletový picking + přesun boxu 60 s) + Volumetrie boxů a palet
   const dynamicAbc = useMemo(() => {
     const emptyClass = {
       skusCount: 0,
@@ -288,10 +190,15 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
       excessSkusCount: 0,
       replenishBatchUnits: 0,
       avgSkuBatchUnits: 0,
+      boxesPerWave: 0,
       annualReplenishCycles: 0,
       monthlyReplenishCycles: 0,
+      annualReplenishedBoxes: 0,
+      monthlyReplenishedBoxes: 0,
       annualReplenishUnits: 0,
       excessCoveredWaves: 0,
+      replenishPickHoursYear: 0,
+      replenishBoxMoveHoursYear: 0,
       replenishHoursYear: 0,
       replenishHoursMonthAvg: 0,
       replenishFteMonthly: 0,
@@ -333,13 +240,19 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
         netCyclesAfterInitialFill: 0,
         totalReplenishBatchUnits: 0,
         avgUnitsPerReplenishTask: 0,
+        totalBoxesPerWave: 0,
         totalAnnualReplenishCycles: 0,
         avgMonthlyReplenishCycles: 0,
+        totalAnnualReplenishedBoxes: 0,
+        avgMonthlyReplenishedBoxes: 0,
         excessCoveredWaves: 0,
+        totalReplenishPickHoursYear: 0,
+        totalReplenishBoxMoveHoursYear: 0,
         totalReplenishHoursYear: 0,
         avgMonthlyReplenishHours: 0,
         avgMonthlyReplenishFte: 0,
         palletPickSecPerUnit: palletPickSec,
+        boxMoveSecPerBox,
         volumetry: null,
         classBreakdown: {
           A: emptyClass,
@@ -432,7 +345,7 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
     const skuScaleFactor =
       baseActiveStockSum > 0 ? activeTargetStock / baseActiveStockSum : 1;
 
-    // Přepočet volumetrie (boxy 60x40x22 cm s 1 SKU/box & palety 120x80x180 cm s No-Split SKU)
+    // Přepočet volumetrie (boxy 60x40x22 cm s 1 SKU/box & palety 120x80x180 cm se sdílenou konsolidací)
     const volumetry = recomputeGateVolumetryFromSummary(
       base,
       boxMaxFillPct,
@@ -466,22 +379,30 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
             )
           : 0;
 
+      const vCls = volumetry.byClass[clsKey];
+      const activeBoxSkus = vCls.boxSkusCount || baseCls.skusCount;
+      const extraMultiBoxes = Math.max(0, vCls.boxesNeeded - activeBoxSkus);
+      // Počet boxů (beden) přemístěných na pozici v 1 vlně doskladnění (30 % -> 100 %)
+      const boxesPerWave = activeBoxSkus + Math.round(extraMultiBoxes * batchFraction);
+
       // 1 dávka doskladnění (z 30 % na 100 % = 70 % cílové 3M zásoby v picku)
       const replenishBatchUnits = Math.round(coveredUnits * batchFraction);
       const avgSkuBatchUnits =
         baseCls.skusCount > 0 ? Math.max(1, Math.round(replenishBatchUnits / baseCls.skusCount)) : 0;
       const annualReplenishCycles = Math.round(baseCls.skusCount * cyclesPerSkuPerYear);
       const monthlyReplenishCycles = Math.round(annualReplenishCycles / monthsCount);
+      const annualReplenishedBoxes = Math.round(boxesPerWave * cyclesPerSkuPerYear);
+      const monthlyReplenishedBoxes = Math.round(annualReplenishedBoxes / monthsCount);
       const annualReplenishUnits = baseCls.annualUnits;
       const excessCoveredWaves =
         replenishBatchUnits > 0 ? Number((excessUnits / replenishBatchUnits).toFixed(2)) : 0;
 
-      // Čas doskladňování paletovým pickingem (s / ks -> hodiny za rok a FTE/měs.)
-      const replenishHoursYear = Number(((annualReplenishUnits * palletPickSec) / 3600).toFixed(1));
+      // Čas doskladňování = paletový picking kusů (s/ks) + přemístění vypickovaného boxu na pozici (s/box)
+      const replenishPickHoursYear = Number(((annualReplenishUnits * palletPickSec) / 3600).toFixed(1));
+      const replenishBoxMoveHoursYear = Number(((annualReplenishedBoxes * boxMoveSecPerBox) / 3600).toFixed(1));
+      const replenishHoursYear = Number((replenishPickHoursYear + replenishBoxMoveHoursYear).toFixed(1));
       const replenishHoursMonthAvg = Number((replenishHoursYear / monthsCount).toFixed(1));
       const replenishFteMonthly = Number((replenishHoursMonthAvg / normHours).toFixed(2));
-
-      const vCls = volumetry.byClass[clsKey];
 
       return {
         ...baseCls,
@@ -492,10 +413,15 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
         excessSkusCount,
         replenishBatchUnits,
         avgSkuBatchUnits,
+        boxesPerWave,
         annualReplenishCycles,
         monthlyReplenishCycles,
+        annualReplenishedBoxes,
+        monthlyReplenishedBoxes,
         annualReplenishUnits,
         excessCoveredWaves,
+        replenishPickHoursYear,
+        replenishBoxMoveHoursYear,
         replenishHoursYear,
         replenishHoursMonthAvg,
         replenishFteMonthly,
@@ -522,15 +448,6 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
       currentStockUnits: deadUnits,
       excessUnits: deadUnits,
       excessSkusCount: deadSkus,
-      replenishBatchUnits: 0,
-      avgSkuBatchUnits: 0,
-      annualReplenishCycles: 0,
-      monthlyReplenishCycles: 0,
-      annualReplenishUnits: 0,
-      excessCoveredWaves: 0,
-      replenishHoursYear: 0,
-      replenishHoursMonthAvg: 0,
-      replenishFteMonthly: 0,
       boxesFor3M: 0,
       boxVolumeM3: 0,
       palletsForExcess: vDead.palletsNeeded,
@@ -558,15 +475,26 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
       classA.replenishBatchUnits + classB.replenishBatchUnits + classC.replenishBatchUnits;
     const avgUnitsPerReplenishTask =
       base.activeSkusCount > 0 ? Math.max(1, Math.round(totalReplenishBatchUnits / base.activeSkusCount)) : 0;
+    const totalBoxesPerWave =
+      classA.boxesPerWave + classB.boxesPerWave + classC.boxesPerWave;
     const totalAnnualReplenishCycles =
       classA.annualReplenishCycles + classB.annualReplenishCycles + classC.annualReplenishCycles;
     const avgMonthlyReplenishCycles = Math.round(totalAnnualReplenishCycles / monthsCount);
+    const totalAnnualReplenishedBoxes =
+      classA.annualReplenishedBoxes + classB.annualReplenishedBoxes + classC.annualReplenishedBoxes;
+    const avgMonthlyReplenishedBoxes = Math.round(totalAnnualReplenishedBoxes / monthsCount);
     const excessCoveredWaves =
       totalReplenishBatchUnits > 0
         ? Number((excessReplenishUnits / totalReplenishBatchUnits).toFixed(2))
         : 0;
+    const totalReplenishPickHoursYear = Number(
+      (classA.replenishPickHoursYear + classB.replenishPickHoursYear + classC.replenishPickHoursYear).toFixed(1)
+    );
+    const totalReplenishBoxMoveHoursYear = Number(
+      (classA.replenishBoxMoveHoursYear + classB.replenishBoxMoveHoursYear + classC.replenishBoxMoveHoursYear).toFixed(1)
+    );
     const totalReplenishHoursYear = Number(
-      (classA.replenishHoursYear + classB.replenishHoursYear + classC.replenishHoursYear).toFixed(1)
+      (totalReplenishPickHoursYear + totalReplenishBoxMoveHoursYear).toFixed(1)
     );
     const avgMonthlyReplenishHours = Number((totalReplenishHoursYear / monthsCount).toFixed(1));
     const avgMonthlyReplenishFte = Number((avgMonthlyReplenishHours / normHours).toFixed(2));
@@ -589,13 +517,19 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
       netCyclesAfterInitialFill,
       totalReplenishBatchUnits,
       avgUnitsPerReplenishTask,
+      totalBoxesPerWave,
       totalAnnualReplenishCycles,
       avgMonthlyReplenishCycles,
+      totalAnnualReplenishedBoxes,
+      avgMonthlyReplenishedBoxes,
       excessCoveredWaves,
+      totalReplenishPickHoursYear,
+      totalReplenishBoxMoveHoursYear,
       totalReplenishHoursYear,
       avgMonthlyReplenishHours,
       avgMonthlyReplenishFte,
       palletPickSecPerUnit: palletPickSec,
+      boxMoveSecPerBox,
       volumetry,
       classBreakdown: {
         A: classA,
@@ -607,16 +541,141 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
   }, [
     report?.abcAnalysis,
     report?.monthsCount,
+    report?.totalUnits,
     coverageMonthsTarget,
     boxMaxFillPct,
     palletMaxFillPct,
     replenishTriggerPct,
     activeSvjRates.palletPickSecPerUnit,
+    boxMoveSecPerBox,
     monthlyFteHours,
     customTotalStockUnits,
     customDeadSkusCount,
     customDeadUnitsCount,
   ]);
+
+  // Dynamický přepočet měsíčních FTE podle zvolených SVJ časů, paletového pickingu + přesunu boxu a fondu pracovní doby
+  const enrichedMonths = useMemo(() => {
+    const months = report?.monthlyBreakdown || [];
+    const avgMonthlyUnitsTotal =
+      months.length > 0
+        ? months.reduce((s, x) => s + x.totalUnits, 0) / months.length
+        : 0;
+    const globalActiveSkus = report?.totalActiveSkus || 18450;
+
+    return months.map(m => ({
+      ...m,
+      fte: computeMonthlyFteFromBrackets(m.brackets, activeSvjRates, {
+        coverageMonthsTarget,
+        replenishTriggerPct,
+        palletPickSecPerUnit: activeSvjRates.palletPickSecPerUnit,
+        boxMoveSecPerBox,
+        boxesPerWave: dynamicAbc.totalBoxesPerWave || globalActiveSkus,
+        activeSkusCount: globalActiveSkus,
+        avgMonthlyUnitsTotal,
+        includeReplenishInTotal: includeReplenishInFte,
+      }),
+    }));
+  }, [
+    report?.monthlyBreakdown,
+    report?.totalActiveSkus,
+    activeSvjRates,
+    coverageMonthsTarget,
+    replenishTriggerPct,
+    boxMoveSecPerBox,
+    dynamicAbc.totalBoxesPerWave,
+    includeReplenishInFte,
+  ]);
+
+  // Souhrn FTE za celý rok / průměrný měsíc / špičkový měsíc (včetně průběžného doskladňování a přesunu boxů)
+  const fteSummary = useMemo(() => {
+    if (enrichedMonths.length === 0) {
+      return {
+        avgPickFte: 0,
+        avgSortFte: 0,
+        avgPackFte: 0,
+        avgReplenishFte: 0,
+        avgBaseTotalFte: 0,
+        avgTotalFte: 0,
+        peakTotalFte: 0,
+        peakMonthLabel: '-',
+        totalYearHours: 0,
+        totalPickHours: 0,
+        totalSortHours: 0,
+        totalPackHours: 0,
+        totalReplenishHours: 0,
+        totalReplenishPickHours: 0,
+        totalReplenishBoxMoveHours: 0,
+        totalReplenishCycles: 0,
+        totalReplenishBoxMoves: 0,
+      };
+    }
+    const n = enrichedMonths.length;
+    const totalPickHours = Number(enrichedMonths.reduce((s, m) => s + m.fte.pickHours, 0).toFixed(1));
+    const totalSortHours = Number(enrichedMonths.reduce((s, m) => s + m.fte.sortHours, 0).toFixed(1));
+    const totalPackHours = Number(enrichedMonths.reduce((s, m) => s + m.fte.packHours, 0).toFixed(1));
+    const totalReplenishHours = Number(
+      enrichedMonths.reduce((s, m) => s + (m.fte.replenishHours || 0), 0).toFixed(1)
+    );
+    const totalReplenishPickHours = Number(
+      enrichedMonths.reduce((s, m) => s + (m.fte.replenishPickHours || 0), 0).toFixed(1)
+    );
+    const totalReplenishBoxMoveHours = Number(
+      enrichedMonths.reduce((s, m) => s + (m.fte.replenishBoxMoveHours || 0), 0).toFixed(1)
+    );
+    const totalReplenishCycles = enrichedMonths.reduce(
+      (s, m) => s + (m.fte.replenishCycles || 0),
+      0
+    );
+    const totalReplenishBoxMoves = enrichedMonths.reduce(
+      (s, m) => s + (m.fte.replenishBoxMoves || 0),
+      0
+    );
+    const totalYearHours = Number(
+      (
+        totalPickHours +
+        totalSortHours +
+        totalPackHours +
+        (includeReplenishInFte ? totalReplenishHours : 0)
+      ).toFixed(1)
+    );
+
+    const avgPickFte = Number((enrichedMonths.reduce((s, m) => s + m.fte.pickFte, 0) / n).toFixed(2));
+    const avgSortFte = Number((enrichedMonths.reduce((s, m) => s + m.fte.sortFte, 0) / n).toFixed(2));
+    const avgPackFte = Number((enrichedMonths.reduce((s, m) => s + m.fte.packFte, 0) / n).toFixed(2));
+    const avgReplenishFte = Number(
+      (enrichedMonths.reduce((s, m) => s + (m.fte.replenishFte || 0), 0) / n).toFixed(2)
+    );
+    const avgBaseTotalFte = Number((avgPickFte + avgSortFte + avgPackFte).toFixed(2));
+    const avgTotalFte = Number(
+      (avgBaseTotalFte + (includeReplenishInFte ? avgReplenishFte : 0)).toFixed(2)
+    );
+
+    let peakM = enrichedMonths[0];
+    for (const m of enrichedMonths) {
+      if (m.fte.totalFte > peakM.fte.totalFte) peakM = m;
+    }
+
+    return {
+      avgPickFte,
+      avgSortFte,
+      avgPackFte,
+      avgReplenishFte,
+      avgBaseTotalFte,
+      avgTotalFte,
+      peakTotalFte: peakM.fte.totalFte,
+      peakMonthLabel: isCs ? peakM.monthLabelCs : peakM.monthLabelEn,
+      totalYearHours,
+      totalPickHours,
+      totalSortHours,
+      totalPackHours,
+      totalReplenishHours,
+      totalReplenishPickHours,
+      totalReplenishBoxMoveHours,
+      totalReplenishCycles,
+      totalReplenishBoxMoves,
+    };
+  }, [enrichedMonths, isCs, includeReplenishInFte]);
 
   // Filtrované země podle zvoleného měsíce nebo celého roku
   const displayedCountries = useMemo(() => {
@@ -787,7 +846,17 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {onExportHtml && (
+            <button
+              onClick={onExportHtml}
+              className="flex items-center space-x-1.5 px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-500/30 rounded-xl font-semibold transition-colors cursor-pointer whitespace-nowrap shrink-0"
+              title={isCs ? 'Uložit aktuálně zobrazený report skladu Gate s nastavenými přepínači jako HTML' : 'Save current Gate report with active switches as HTML'}
+            >
+              <Download className="w-4 h-4 text-emerald-400" />
+              <span>{isCs ? 'Uložit jako HTML' : 'Save as HTML'}</span>
+            </button>
+          )}
           <button
             onClick={onOpenImport}
             className="flex items-center space-x-1.5 px-3.5 py-2 bg-teal-600 hover:bg-teal-500 text-white rounded-xl font-semibold transition-colors cursor-pointer whitespace-nowrap shrink-0"
@@ -1550,8 +1619,8 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
                 </div>
                 <p className="text-xs text-slate-400 max-w-4xl leading-relaxed">
                   {isCs
-                    ? `1 box má rozměr 60×40×22 cm (${(dynamicAbc.volumetry.boxGrossVolumeM3 * 1000).toFixed(1)} l / ${dynamicAbc.volumetry.boxGrossVolumeM3} m³), využitelných je ${boxMaxFillPct} % (${(dynamicAbc.volumetry.boxUsableVolumeM3 * 1000).toFixed(2)} l). V každém boxu smí být max. 1 SKU (žádné mísení produktů – i 1 ks SKU zabere celý box). Nadzásoba a bezobraty jsou uloženy na paletách 120×80×180 cm (${dynamicAbc.volumetry.palletGrossVolumeM3} m³), využitelných ${palletMaxFillPct} % (${dynamicAbc.volumetry.palletUsableVolumeM3} m³). Na paletě jsou povolené mixy, ale 1 SKU se nikdy nerozděluje kusově mezi více mixovaných palet (snaha vždy seskládat paletu z 1 SKU a vměstnat SKU na co nejmenší počet palet pro rychlý picking).`
-                    : `Boxes (60×40×22 cm = 0.0528 m³, ${boxMaxFillPct}% usable) hold max 1 SKU per box (no mixing). Excess & dead stock use pallets (120×80×180 cm = 1.728 m³, ${palletMaxFillPct}% usable) with No-Split SKU packing to maximize units per pallet for fast replenishment picking.`}
+                    ? `1 box má rozměr 60×40×22 cm (${(dynamicAbc.volumetry.boxGrossVolumeM3 * 1000).toFixed(1)} l / ${dynamicAbc.volumetry.boxGrossVolumeM3} m³), využitelných je ${boxMaxFillPct} % (${(dynamicAbc.volumetry.boxUsableVolumeM3 * 1000).toFixed(2)} l). V každém boxu smí být max. 1 SKU (žádné mísení produktů – i 1 ks SKU zabere celý box). Nadzásoba a bezobraty jsou uloženy na paletách 120×80×180 cm (${dynamicAbc.volumetry.palletGrossVolumeM3} m³), využitelných ${palletMaxFillPct} % (${dynamicAbc.volumetry.palletUsableVolumeM3} m³). Na paletě jsou povolené produktové mixy: každé SKU je drženo pohromadě na co nejmenším počtu palet (např. 40 ks není rozeseto na 40 paletách) a neúplné palety jsou konsolidovány společně s dalšími SKU až do ${palletMaxFillPct}% kapacity.`
+                    : `Boxes (60×40×22 cm = 0.0528 m³, ${boxMaxFillPct}% usable) hold max 1 SKU per box (no mixing). Excess & dead stock use pallets (120×80×180 cm = 1.728 m³, ${palletMaxFillPct}% usable) keeping each SKU consolidated on the minimum number of pallets while sharing remaining space with other SKUs.`}
                 </p>
               </div>
 
@@ -1736,18 +1805,18 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
                 <Shuffle className="w-4 h-4 text-amber-400 shrink-0" />
                 <span>
                   {isCs
-                    ? `Průběžné doskladňování ${coverageMonthsTarget}měsíční zásoby (pokles pod ${replenishTriggerPct} % → doplnění na 100 % časy paletového pickingu)`
-                    : `Continuous Replenishment of ${coverageMonthsTarget}M Stock (Drop Below ${replenishTriggerPct}% → Refill to 100% Using Pallet Picking Times)`}
+                    ? `Průběžné doskladňování ${coverageMonthsTarget}měsíční zásoby (pokles pod ${replenishTriggerPct} % → doplnění na 100 %: paletový picking + přesun boxu na pozici)`
+                    : `Continuous Replenishment of ${coverageMonthsTarget}M Stock (Drop Below ${replenishTriggerPct}% → Refill to 100%: Pallet Pick + Box Putaway)`}
                 </span>
               </div>
               <p className="text-xs text-slate-400 max-w-4xl leading-relaxed">
                 {isCs
-                  ? `Kdykoliv zásoba položky v pickovací zóně (${coverageMonthsTarget} průměrné měsíce = 100 %) klesne pod ${replenishTriggerPct} %, spustí se doskladnění z nadzásoby zpět na 100 %. Jedna doskladňovací dávka tedy činí ${dynamicAbc.batchFractionPct} % z ${coverageMonthsTarget}měsíční zásoby (odpovídá ${dynamicAbc.batchMonthsEquivalent} průměrného měsíce odbytu). Časová náročnost a potřeba lidí (FTE) se počítá časy z paletového / velkoobjemového pickingu.`
-                  : `Whenever a SKU's ${coverageMonthsTarget}-month active stock drops below ${replenishTriggerPct}%, it is replenished back to 100% (a ${dynamicAbc.batchFractionPct}% refill batch = ${dynamicAbc.batchMonthsEquivalent} average months of demand), evaluated using pallet picking cycle times.`}
+                  ? `Kdykoliv zásoba položky v pickovací zóně (${coverageMonthsTarget} průměrné měsíce = 100 %) klesne pod ${replenishTriggerPct} %, spustí se doskladnění z nadzásoby zpět na 100 %. Jedna doskladňovací dávka činí ${dynamicAbc.batchFractionPct} % z ${coverageMonthsTarget}měsíční zásoby (= ${dynamicAbc.batchMonthsEquivalent} průměrného měsíce odbytu). Časová náročnost a potřeba lidí (FTE) zahrnuje jak čas paletového pickingu (${activeSvjRates.palletPickSecPerUnit} s/ks), tak čas přemístění vypickovaného boxu na skladovou pozici (${boxMoveSecPerBox} s/box).`
+                  : `Whenever a SKU's ${coverageMonthsTarget}-month active stock drops below ${replenishTriggerPct}%, it is replenished back to 100% (a ${dynamicAbc.batchFractionPct}% refill batch). Workforce FTE includes both pallet picking (${activeSvjRates.palletPickSecPerUnit} s/pc) and moving the picked box to its storage location (${boxMoveSecPerBox} s/box).`}
               </p>
             </div>
 
-            {/* Nastavení prahu doskladnění (default 30 %) a času paletového pickingu */}
+            {/* Nastavení prahu doskladnění (default 30 %), času paletového pickingu a sliceru pro přesun boxu (default 60 s) */}
             <div className="flex flex-wrap items-center gap-3 self-start lg:self-auto text-xs">
               <div className="flex items-center gap-1.5 bg-slate-900 px-3 py-1.5 rounded-xl border border-slate-800">
                 <span className="text-slate-400 font-medium">
@@ -1771,7 +1840,7 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
               <div className="flex items-center gap-2 bg-slate-900 px-3 py-1.5 rounded-xl border border-amber-500/30">
                 <Clock className="w-3.5 h-3.5 text-amber-400" />
                 <span className="text-slate-300 font-medium">
-                  {isCs ? 'Čas paletového pickingu (s/ks):' : 'Pallet picking time (s/pc):'}
+                  {isCs ? 'Paletový picking (s/ks):' : 'Pallet pick (s/pc):'}
                 </span>
                 <input
                   type="number"
@@ -1793,6 +1862,73 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
                     {isCs ? 'Dle SVJ' : 'Reset'}
                   </button>
                 )}
+              </div>
+            </div>
+          </div>
+
+          {/* SLICER PRO POČET SEKUND NA PŘEMÍSTĚNÍ VYPICKOVANÉHO BOXU NA SKLADOVOU POZICI (DEFAULT 60 S) */}
+          <div className="bg-slate-900/95 border border-cyan-500/35 rounded-xl p-3.5 flex flex-col md:flex-row md:items-center justify-between gap-4 text-xs">
+            <div className="space-y-0.5">
+              <div className="font-bold text-cyan-300 flex items-center gap-2">
+                <Sliders className="w-3.5 h-3.5 text-cyan-400" />
+                <span>
+                  {isCs
+                    ? 'Čas na přemístění vypickovaného boxu na skladovou pozici (s/box):'
+                    : 'Time to move picked replenishment box to storage location (s/box):'}
+                </span>
+                <span className="font-mono text-sm px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-200 border border-cyan-500/40">
+                  {boxMoveSecPerBox} s / box
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-400">
+                {isCs
+                  ? `Každý doskladněný box (celkem ~${dynamicAbc.annualReplenishedBoxes.toLocaleString('cs-CZ')} boxů/rok, Ø ${dynamicAbc.avgMonthlyReplenishedBoxes.toLocaleString('cs-CZ')} boxů/měs.) vyžaduje po paletovém vypickování přesun a založení do regálové pozice.`
+                  : `Each replenished box (~${dynamicAbc.annualReplenishedBoxes.toLocaleString()} boxes/year) requires putaway transport to its picking slot after pallet picking.`}
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] text-slate-400 font-mono">0 s</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={180}
+                  step={5}
+                  value={boxMoveSecPerBox}
+                  onChange={e => setBoxMoveSecPerBox(Math.max(0, parseInt(e.target.value || '0', 10)))}
+                  className="w-36 sm:w-48 accent-cyan-400 cursor-pointer"
+                />
+                <span className="text-[11px] text-slate-400 font-mono">180 s</span>
+              </div>
+
+              <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-lg border border-slate-800">
+                {[30, 60, 90, 120].map(sec => (
+                  <button
+                    key={sec}
+                    onClick={() => setBoxMoveSecPerBox(sec)}
+                    className={`px-2 py-0.5 rounded font-mono font-bold transition-colors cursor-pointer ${
+                      boxMoveSecPerBox === sec
+                        ? 'bg-cyan-500 text-slate-950'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {sec}s
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex items-center gap-1">
+                <input
+                  type="number"
+                  min={0}
+                  max={600}
+                  step={5}
+                  value={boxMoveSecPerBox}
+                  onChange={e => setBoxMoveSecPerBox(Math.max(0, parseInt(e.target.value || '0', 10)))}
+                  className="w-16 bg-slate-950 border border-cyan-500/50 rounded px-2 py-0.5 text-right font-mono font-bold text-cyan-300 focus:outline-none"
+                />
+                <span className="text-slate-400 font-mono">s</span>
               </div>
             </div>
           </div>
@@ -1819,28 +1955,28 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
               </div>
             </div>
 
-            {/* 2. Frekvence a počet cyklů doskladnění za rok / měsíc */}
+            {/* 2. Frekvence, cykly a počet přesunutých boxů za rok / měsíc */}
             <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-4 space-y-1.5">
               <div className="text-xs text-teal-300 font-semibold">
-                {isCs ? '2. POČET CYKLŮ DOSKLADNĚNÍ' : '2. REPLENISHMENT CYCLES'}
+                {isCs ? '2. CYKLY & PŘESUNUTÉ BOXY' : '2. CYCLES & MOVED BOXES'}
               </div>
               <div className="text-xl font-bold text-teal-300 font-mono tabular-nums">
-                {dynamicAbc.cyclesPerSkuPerYear}×{' '}
+                {dynamicAbc.annualReplenishedBoxes.toLocaleString('cs-CZ')}{' '}
                 <span className="text-xs font-normal text-slate-400">
-                  {isCs ? 'ročně / 1 SKU' : 'per SKU / year'}
+                  {isCs ? 'boxů / rok' : 'boxes / year'}
                 </span>
               </div>
               <div className="text-[11px] text-slate-400 font-mono tabular-nums">
                 {isCs
-                  ? `Celkem ${dynamicAbc.totalAnnualReplenishCycles.toLocaleString('cs-CZ')} úkolů/rok (Ø ${dynamicAbc.avgMonthlyReplenishCycles.toLocaleString('cs-CZ')}/měs.) • Nadzásoba kryje ${dynamicAbc.excessCoveredWaves}× plných vln`
-                  : `${dynamicAbc.totalAnnualReplenishCycles.toLocaleString()} tasks/yr (${dynamicAbc.avgMonthlyReplenishCycles.toLocaleString()}/mo) • Excess covers ${dynamicAbc.excessCoveredWaves}x waves`}
+                  ? `Ø ${dynamicAbc.avgMonthlyReplenishedBoxes.toLocaleString('cs-CZ')} boxů/měs. (${dynamicAbc.totalAnnualReplenishCycles.toLocaleString('cs-CZ')} úkolů/rok, ${dynamicAbc.cyclesPerSkuPerYear}×/SKU)`
+                  : `Avg ${dynamicAbc.avgMonthlyReplenishedBoxes.toLocaleString()} boxes/mo (${dynamicAbc.totalAnnualReplenishCycles.toLocaleString()} tasks/yr)`}
               </div>
             </div>
 
-            {/* 3. Čas paletového pickingu na průběžné doskladňování */}
+            {/* 3. Čas paletového pickingu + přesunu boxu na průběžné doskladňování */}
             <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-4 space-y-1.5">
               <div className="text-xs text-purple-300 font-semibold">
-                {isCs ? '3. ČAS DOSKLADŇOVÁNÍ (PALET. PICK)' : '3. PALLET PICK REPLENISHMENT TIME'}
+                {isCs ? '3. ČAS DOSKLADNĚNÍ (PICK + PŘESUN)' : '3. REPLENISHMENT TIME (PICK + MOVE)'}
               </div>
               <div className="text-xl font-bold text-purple-300 font-mono tabular-nums">
                 {dynamicAbc.totalReplenishHoursYear.toLocaleString('cs-CZ')}{' '}
@@ -1848,8 +1984,8 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
               </div>
               <div className="text-[11px] text-slate-400 font-mono tabular-nums">
                 {isCs
-                  ? `Ø ${dynamicAbc.avgMonthlyReplenishHours.toLocaleString('cs-CZ')} hod / měsíc při normě ${dynamicAbc.palletPickSecPerUnit} s/ks`
-                  : `Avg ${dynamicAbc.avgMonthlyReplenishHours.toLocaleString()} h/month at ${dynamicAbc.palletPickSecPerUnit} s/pc`}
+                  ? `Palet. pick: ${dynamicAbc.replenishPickHoursYear.toLocaleString('cs-CZ')} h + Přesun boxů (${boxMoveSecPerBox}s): ${dynamicAbc.replenishBoxMoveHoursYear.toLocaleString('cs-CZ')} h`
+                  : `Pallet pick: ${dynamicAbc.replenishPickHoursYear.toLocaleString()} h + Box move (${boxMoveSecPerBox}s): ${dynamicAbc.replenishBoxMoveHoursYear.toLocaleString()} h`}
               </div>
             </div>
 
@@ -1864,8 +2000,8 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
               </div>
               <div className="text-[11px] text-slate-400 font-mono tabular-nums">
                 {isCs
-                  ? `Při fondu ${monthlyFteHours} h/měs. (promítnuto i do měsíční tabulky FTE níže)`
-                  : `At ${monthlyFteHours} h/month norm (included in monthly FTE model below)`}
+                  ? `Ø ${dynamicAbc.avgMonthlyReplenishHours.toLocaleString('cs-CZ')} h/měs. při fondu ${monthlyFteHours} h/FTE (vč. přesunu boxů)`
+                  : `Avg ${dynamicAbc.avgMonthlyReplenishHours.toLocaleString()} h/mo at ${monthlyFteHours} h/FTE norm`}
               </div>
             </div>
           </div>
@@ -1953,7 +2089,9 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
                       ) : (
                         <>
                           <span className="font-bold">{c.replenishHoursYear.toLocaleString('cs-CZ')} h</span>
-                          <span className="block text-[10px] text-slate-400">{c.annualReplenishCycles.toLocaleString('cs-CZ')}× cyklů</span>
+                          <span className="block text-[10px] text-slate-400">
+                            {c.replenishPickHoursYear ?? c.replenishHoursYear}h pick + {c.replenishBoxMoveHoursYear ?? 0}h přesun
+                          </span>
                         </>
                       )}
                     </td>
@@ -2071,7 +2209,7 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
                   const palletUsableVol = 1.20 * 0.80 * 1.80 * (palletMaxFillPct / 100);
                   const boxesForSku = coveredUnits > 0 ? Math.max(1, Math.ceil((coveredUnits * unitVol) / boxUsableVol)) : 0;
                   const excessVolM3 = excessUnits * unitVol;
-                  const minPalletsForSku = excessUnits > 0 ? Math.max(1, Math.ceil(excessVolM3 / palletUsableVol)) : 0;
+                  const exactPalletShare = excessUnits > 0 ? Number((excessVolM3 / palletUsableVol).toFixed(2)) : 0;
                   return (
                     <tr key={item.sku} className="hover:bg-slate-800/40">
                       <td className="py-2 px-4 font-bold text-white">{item.sku}</td>
@@ -2097,7 +2235,7 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
                       <td className="py-2 px-3 text-right text-white">{stockUnits.toLocaleString('cs-CZ')} ks</td>
                       <td className="py-2 px-3 text-right font-bold text-amber-300">{excessUnits.toLocaleString('cs-CZ')} ks</td>
                       <td className="py-2 px-4 text-right text-indigo-300">
-                        {excessUnits > 0 ? `${excessVolM3.toFixed(3)} m³ (${minPalletsForSku} pal.)` : '-'}
+                        {excessUnits > 0 ? `${excessVolM3.toFixed(3)} m³ (${exactPalletShare} pal.)` : '-'}
                       </td>
                     </tr>
                   );
@@ -2196,10 +2334,36 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
               >
                 {includeReplenishInFte
                   ? (isCs
-                      ? `Započteno (${replenishTriggerPct}%→100%, palet. pick ${activeSvjRates.palletPickSecPerUnit} s/ks)`
-                      : `Included (${replenishTriggerPct}%→100%, ${activeSvjRates.palletPickSecPerUnit} s/pc)`)
+                      ? `Započteno (${replenishTriggerPct}%→100%, pick ${activeSvjRates.palletPickSecPerUnit}s/ks + přesun ${boxMoveSecPerBox}s/box)`
+                      : `Included (${replenishTriggerPct}%→100%, ${activeSvjRates.palletPickSecPerUnit}s/pc + ${boxMoveSecPerBox}s/box)`)
                   : (isCs ? 'Nezapočteno do CELKEM FTE' : 'Excluded from Total FTE')}
               </button>
+            </div>
+
+            {/* Slicer pro čas přesunu vypickovaného boxu na skladovou pozici (default 60 s) */}
+            <div className="flex items-center gap-2 bg-slate-900 px-3 py-1 rounded-lg border border-cyan-500/30">
+              <span className="text-cyan-300 font-medium">
+                {isCs ? 'Přesun boxu na pozici:' : 'Box move to slot:'}
+              </span>
+              <input
+                type="range"
+                min={0}
+                max={180}
+                step={5}
+                value={boxMoveSecPerBox}
+                onChange={e => setBoxMoveSecPerBox(Math.max(0, parseInt(e.target.value || '0', 10)))}
+                className="w-24 accent-cyan-400 cursor-pointer"
+              />
+              <input
+                type="number"
+                min={0}
+                max={600}
+                step={5}
+                value={boxMoveSecPerBox}
+                onChange={e => setBoxMoveSecPerBox(Math.max(0, parseInt(e.target.value || '0', 10)))}
+                className="w-14 bg-slate-950 border border-cyan-500/40 rounded px-1.5 py-0.5 text-right font-mono font-bold text-cyan-300"
+              />
+              <span className="text-slate-400 font-mono">s/box</span>
             </div>
           </div>
 
@@ -2235,10 +2399,11 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
                 onClick={() => {
                   setCustomRateOverrides({});
                   setCustomPalletPickSec(null);
+                  setBoxMoveSecPerBox(60);
                 }}
                 className="text-slate-400 hover:text-white underline cursor-pointer"
               >
-                {isCs ? 'Obnovit výchozí časy SVJ' : 'Reset to SVJ defaults'}
+                {isCs ? 'Obnovit výchozí časy SVJ (vč. 60 s/box)' : 'Reset to SVJ defaults (incl. 60s/box)'}
               </button>
             </div>
             <div className="overflow-x-auto">
@@ -2343,6 +2508,40 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
                       </div>
                     </td>
                   </tr>
+                  <tr className="bg-cyan-950/15">
+                    <td className="py-2 px-3 font-sans font-semibold text-cyan-300">
+                      {isCs
+                        ? '5. Přemístění vypickovaného boxu na skladovou pozici (s/box)'
+                        : '5. Move picked box to storage location (s/box)'}
+                    </td>
+                    <td colSpan={6} className="py-2 px-3 text-right">
+                      <div className="flex items-center justify-end gap-3">
+                        <span className="font-sans text-slate-400">
+                          {isCs
+                            ? 'Čas přesunu a založení 1 doskladňovaného boxu na pozici (výchozí 60 s):'
+                            : 'Putaway move time per replenished box (default 60 s):'}
+                        </span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={180}
+                          step={5}
+                          value={boxMoveSecPerBox}
+                          onChange={e => setBoxMoveSecPerBox(Math.max(0, parseInt(e.target.value || '0', 10)))}
+                          className="w-28 accent-cyan-400 cursor-pointer"
+                        />
+                        <input
+                          type="number"
+                          step="5"
+                          min="0"
+                          max="600"
+                          value={boxMoveSecPerBox}
+                          onChange={e => setBoxMoveSecPerBox(Math.max(0, parseInt(e.target.value || '0', 10)))}
+                          className="w-20 bg-slate-900 border border-cyan-500/50 rounded px-1.5 py-0.5 text-right text-cyan-300 font-bold"
+                        />
+                      </div>
+                    </td>
+                  </tr>
                 </tbody>
               </table>
             </div>
@@ -2390,8 +2589,8 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
             </div>
             <div className="mt-1 text-xs text-slate-400 font-mono tabular-nums">
               {isCs
-                ? `Celkem ${fteSummary.totalReplenishHours.toLocaleString('cs-CZ')} h/rok (palet. pick ${activeSvjRates.palletPickSecPerUnit} s/ks)`
-                : `Total ${fteSummary.totalReplenishHours.toLocaleString()} h/yr (${activeSvjRates.palletPickSecPerUnit} s/pc)`}
+                ? `${fteSummary.totalReplenishHours.toLocaleString('cs-CZ')} h/rok (${fteSummary.totalReplenishPickHours.toLocaleString('cs-CZ')}h pick + ${fteSummary.totalReplenishBoxMoveHours.toLocaleString('cs-CZ')}h přesun boxů)`
+                : `Total ${fteSummary.totalReplenishHours.toLocaleString()} h/yr (${fteSummary.totalReplenishPickHours}h pick + ${fteSummary.totalReplenishBoxMoveHours}h box move)`}
             </div>
           </div>
 

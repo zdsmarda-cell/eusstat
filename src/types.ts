@@ -536,6 +536,8 @@ export interface GateMonthlyFte {
   sortHours: number;
   packHours: number;
   replenishHours?: number;
+  replenishPickHours?: number;
+  replenishBoxMoveHours?: number;
   totalHours: number;
   totalHoursWithReplenish?: number;
   pickFte: number;
@@ -546,6 +548,7 @@ export interface GateMonthlyFte {
   totalFteWithReplenish?: number;
   replenishUnits?: number;
   replenishCycles?: number;
+  replenishBoxMoves?: number;
 }
 
 export interface GateMonthlyBreakdown {
@@ -626,8 +629,11 @@ export interface GateAbcClassSummary {
   excessSkusCount: number;
   replenishBatchUnits?: number;
   annualReplenishCycles?: number;
+  annualReplenishedBoxes?: number;
   annualReplenishUnits?: number;
   replenishHoursYear?: number;
+  replenishPickHoursYear?: number;
+  replenishBoxMoveHoursYear?: number;
   replenishFteMonthly?: number;
   boxesFor3M?: number;
   boxVolumeM3?: number;
@@ -738,6 +744,7 @@ export interface GateSvjBenchmarkRates {
   bypassSingleItemSort: boolean;
   monthlyFteHoursNorm: number;
   palletPickSecPerUnit?: number;
+  boxMoveSecPerBox?: number;
   replenishTriggerPct?: number;
   pickSecByBracket: Record<ItemBracket, number>;
   sortSecByBracket: Record<ItemBracket, number>;

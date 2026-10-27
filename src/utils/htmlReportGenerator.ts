@@ -9,6 +9,7 @@ import {
   PeriodSummary,
   WarehouseComparisonReport,
   WarehouseComparisonBracket,
+  GateAnalyticsReport,
 } from '../types.js';
 import {
   computeBracketStatistics,
@@ -34,6 +35,7 @@ export interface HtmlReportData {
   comparisonReport?: WarehouseComparisonReport | null;
   ruseAnalytics?: any;
   svjAnalytics?: any;
+  gateReport?: GateAnalyticsReport | null;
 }
 
 function escapeHtml(str: string): string {
@@ -2144,16 +2146,175 @@ function generateComparisonHtmlReport(data: HtmlReportData): string {
 }
 
 /**
- * Triggers a browser download of the generated HTML report.
+ * Captures the currently displayed tab DOM (#active-warehouse-tab-content) including
+ * all active switches, slicers, inputs, tables, and compiled Tailwind CSS styles
+ * into a standalone offline HTML document.
+ */
+export function captureLiveTabSnapshotHtml(warehouse: string, lang: 'cs' | 'en'): string | null {
+  if (typeof document === 'undefined') return null;
+  const container = document.getElementById('active-warehouse-tab-content');
+  if (!container) return null;
+
+  const isCs = lang === 'cs';
+  const clone = container.cloneNode(true) as HTMLElement;
+
+  // Sync live input, range slider, checkbox, and select values from original DOM to cloned DOM
+  const origInputs = container.querySelectorAll('input, select, textarea');
+  const cloneInputs = clone.querySelectorAll('input, select, textarea');
+  origInputs.forEach((origEl, idx) => {
+    const cloneEl = cloneInputs[idx];
+    if (!cloneEl) return;
+    if (origEl instanceof HTMLInputElement && cloneEl instanceof HTMLInputElement) {
+      if (origEl.type === 'checkbox' || origEl.type === 'radio') {
+        if (origEl.checked) {
+          cloneEl.setAttribute('checked', 'checked');
+        } else {
+          cloneEl.removeAttribute('checked');
+        }
+      } else {
+        cloneEl.setAttribute('value', origEl.value);
+      }
+      cloneEl.setAttribute('readonly', 'readonly');
+    } else if (origEl instanceof HTMLSelectElement && cloneEl instanceof HTMLSelectElement) {
+      Array.from(cloneEl.options).forEach((opt, optIdx) => {
+        if (origEl.options[optIdx]?.selected) {
+          opt.setAttribute('selected', 'selected');
+        } else {
+          opt.removeAttribute('selected');
+        }
+      });
+    } else if (origEl instanceof HTMLTextAreaElement && cloneEl instanceof HTMLTextAreaElement) {
+      cloneEl.textContent = origEl.value;
+    }
+  });
+
+  // Remove any scrollable max-height clipping so all tables are fully visible in the exported HTML
+  clone.querySelectorAll('.max-h-80, .max-h-96').forEach(el => {
+    el.classList.remove('max-h-80', 'max-h-96');
+  });
+
+  // Collect all active CSS rules from document stylesheets
+  let compiledCss = '';
+  try {
+    for (const sheet of Array.from(document.styleSheets)) {
+      try {
+        const rules = sheet.cssRules || sheet.rules;
+        if (rules) {
+          for (const rule of Array.from(rules)) {
+            compiledCss += rule.cssText + '\n';
+          }
+        }
+      } catch {
+        // Ignore cross-origin stylesheet security errors
+      }
+    }
+  } catch {
+    // Fallback if styleSheets iteration fails
+  }
+
+  const warehouseTitle =
+    warehouse === 'gate'
+      ? isCs
+        ? 'Sklad Gate — Datová analytika, ABC zásoby, Volumetrie & FTE model'
+        : 'Gate Warehouse — Data Analytics, ABC Stock, Volumetry & FTE Model'
+      : warehouse === 'svj'
+      ? isCs
+        ? 'Sklad SVJ — Tříděná expedice (Sorting + Balení)'
+        : 'SVJ Warehouse — Sorted Fulfillment'
+      : warehouse === 'summary'
+      ? isCs
+        ? 'Srovnání skladů (Ruse vs. SVJ Summary)'
+        : 'Cross-Warehouse Comparison (Ruse vs. SVJ)'
+      : isCs
+      ? 'Sklad Ruse — Standardní přímá expedice'
+      : 'Ruse Warehouse — Direct Fulfillment';
+
+  const formattedDate = new Date().toLocaleString(isCs ? 'cs-CZ' : 'en-US', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+
+  return `<!DOCTYPE html>
+<html lang="${lang}" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${escapeHtml(warehouseTitle)} — HTML Report (${formattedDate})</title>
+  <style>
+${compiledCss}
+    body {
+      background-color: #020617;
+      color: #f1f5f9;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      margin: 0;
+      padding: 24px 16px 48px;
+      -webkit-font-smoothing: antialiased;
+    }
+    .report-export-wrapper {
+      max-width: 1280px;
+      margin: 0 auto;
+    }
+    .report-export-header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 16px 20px;
+      margin-bottom: 24px;
+      background: linear-gradient(90deg, rgba(15, 23, 42, 0.95), rgba(30, 41, 59, 0.9));
+      border: 1px solid rgba(51, 65, 85, 0.8);
+      border-radius: 16px;
+    }
+    @media print {
+      body {
+        background-color: #020617 !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 antialiased">
+  <div class="report-export-wrapper space-y-6">
+    <div class="report-export-header">
+      <div>
+        <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: #38bdf8; font-weight: 700;">
+          Warehouse Pick &amp; Pack Analytics • ${isCs ? 'Uložená záložka s aktivním nastavením přepínačů' : 'Saved Tab Snapshot with Active Switches'}
+        </div>
+        <div style="font-size: 18px; font-weight: 800; color: #ffffff; margin-top: 2px;">
+          ${escapeHtml(warehouseTitle)}
+        </div>
+      </div>
+      <div style="font-size: 12px; color: #94a3b8; font-family: monospace;">
+        ${isCs ? 'Vygenerováno:' : 'Generated:'} <strong style="color: #e2e8f0;">${escapeHtml(formattedDate)}</strong>
+      </div>
+    </div>
+    ${clone.innerHTML}
+  </div>
+</body>
+</html>`;
+}
+
+/**
+ * Triggers a browser download of the generated HTML report for the currently active tab.
+ * Prioritizes capturing the live rendered tab DOM so all active switches, slicers, and custom parameters are preserved.
  */
 export function downloadHtmlReport(data: HtmlReportData): void {
-  const htmlContent = generateHtmlReport(data);
+  const liveSnapshot = captureLiveTabSnapshotHtml(data.warehouse || 'ruse', data.lang);
+  const htmlContent = liveSnapshot || generateHtmlReport(data);
   const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   const dateStr = new Date().toISOString().slice(0, 10);
   const whSlug = data.warehouse === 'summary'
     ? '_srovnani_skladu_ruse_svj'
+    : data.warehouse === 'gate'
+    ? '_sklad_gate'
     : data.warehouse
     ? `_${data.warehouse}`
     : '';
@@ -2164,3 +2325,4 @@ export function downloadHtmlReport(data: HtmlReportData): void {
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }
+

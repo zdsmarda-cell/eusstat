@@ -440,8 +440,40 @@ function Dashboard() {
     return computePeriodSummary(activeTabRecords);
   }, [hasValidServerAnalytics, currentServerAnalytics, activeTabRecords]);
 
-  // Export HTML report – VŽDY předáváme kompletní databázovou mezipaměť a aktivní sklad
+  // Export HTML report – uloží stávající zobrazenou záložku (Gate, Ruse, SVJ nebo Summary) s nastavenými přepínači
   const handleExportHtml = () => {
+    const activeGateReport = gateReport || serverAnalytics.all?.gateReport || null;
+
+    if (activeTab === 'gate') {
+      if (!activeGateReport || activeGateReport.totalOrders === 0) {
+        showToast(
+          isCs ? 'Pro sklad Gate zatím nejsou k dispozici žádná data k exportu.' : 'No Gate warehouse data available to export.',
+          'error'
+        );
+        return;
+      }
+      try {
+        downloadHtmlReport({
+          records: [],
+          filter,
+          unit: filter.unit,
+          lang,
+          warehouse: 'gate',
+          gateReport: activeGateReport,
+        });
+        showToast(
+          isCs
+            ? `HTML report skladu Gate (${activeGateReport.totalOrders.toLocaleString('cs-CZ')} objednávek) s nastavenými přepínači byl uložen!`
+            : `Gate warehouse HTML report (${activeGateReport.totalOrders.toLocaleString()} orders) saved!`,
+          'success'
+        );
+      } catch (err: any) {
+        console.error('Chyba při exportu Gate HTML:', err);
+        showToast(isCs ? 'Chyba při generování HTML reportu skladu Gate.' : 'Error generating Gate HTML report.', 'error');
+      }
+      return;
+    }
+
     const activeAnalytics = activeTab === 'summary'
       ? (serverAnalytics.all || currentServerAnalytics)
       : activeTab === 'svj'
@@ -469,11 +501,12 @@ function Dashboard() {
         comparisonReport: serverAnalytics.all?.comparison || activeAnalytics?.comparison || computeWarehouseComparison(filteredRuseRecords, filteredSvjRecords),
         ruseAnalytics: serverAnalytics.ruse || serverAnalytics.all?.ruseSummary || activeAnalytics?.ruseSummary,
         svjAnalytics: serverAnalytics.svj || serverAnalytics.all?.svjSummary || activeAnalytics?.svjSummary,
+        gateReport: activeGateReport,
       });
       showToast(
         isCs
-          ? `Kompletní databázový HTML report (${totalCount.toLocaleString('cs-CZ')} záznamů) byl úspěšně vygenerován a stažen!`
-          : `Complete database HTML report (${totalCount.toLocaleString()} records) generated & downloaded!`,
+          ? `HTML report záložky ${activeTab.toUpperCase()} (${totalCount.toLocaleString('cs-CZ')} záznamů) s nastavenými přepínači byl uložen!`
+          : `HTML report for ${activeTab.toUpperCase()} (${totalCount.toLocaleString()} records) saved!`,
         'success'
       );
     } catch (err: any) {
@@ -759,7 +792,11 @@ function Dashboard() {
         onLoadSampleData={() => handleLoadSampleData('both')}
         onExportHtml={handleExportHtml}
         isLoading={isLoading}
-        totalRecordsCount={records.length}
+        totalRecordsCount={
+          activeTab === 'gate'
+            ? (gateReport?.totalOrders ?? serverAnalytics.all?.gateCount ?? 0)
+            : Math.max(records.length, serverAnalytics.all?.recordCount ?? 0, currentServerAnalytics?.recordCount ?? 0)
+        }
         activeTab={activeTab}
       />
 
@@ -991,18 +1028,21 @@ function Dashboard() {
           /* ========================================================
              GATE WAREHOUSE DASHBOARD (12M Order Structure, Countries, ABC Stock & FTE)
              ======================================================== */
-          <GateWarehouseDashboard
-            report={gateReport || serverAnalytics.all?.gateReport || null}
-            svjBracketStats={serverAnalytics.svj?.bracketStats || serverAnalytics.all?.svjSummary?.bracketStats}
-            onOpenImport={() => setIsImportModalOpen(true)}
-            onLoadSampleGate={() => handleLoadSampleData('gate')}
-            isLoading={isLoading}
-          />
+          <div id="active-warehouse-tab-content" className="space-y-6">
+            <GateWarehouseDashboard
+              report={gateReport || serverAnalytics.all?.gateReport || null}
+              svjBracketStats={serverAnalytics.svj?.bracketStats || serverAnalytics.all?.svjSummary?.bracketStats}
+              onOpenImport={() => setIsImportModalOpen(true)}
+              onLoadSampleGate={() => handleLoadSampleData('gate')}
+              onExportHtml={handleExportHtml}
+              isLoading={isLoading}
+            />
+          </div>
         ) : activeTab === 'summary' ? (
           /* ========================================================
              CROSS-WAREHOUSE SUMMARY TAB (Ruse vs SVJ KPI Comparison)
              ======================================================== */
-          <div className="space-y-6">
+          <div id="active-warehouse-tab-content" className="space-y-6">
             {/* Warning callout if one warehouse is missing data (pouze v lokálním vývojovém režimu) */}
             {dbStatus.type !== 'mariadb' && (ruseRecords.length === 0 || svjRecords.length === 0) && (
               <div className="p-4 bg-gradient-to-r from-indigo-950/40 via-purple-950/30 to-slate-900 border border-indigo-500/30 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
@@ -1091,7 +1131,7 @@ function Dashboard() {
           /* ========================================================
              WAREHOUSE DATA DASHBOARD (Ruse or SVJ)
              ======================================================== */
-          <>
+          <div id="active-warehouse-tab-content" className="space-y-6">
             {/* Warehouse Context Banner */}
             <div
               className={`p-3.5 border rounded-2xl flex flex-wrap items-center justify-between gap-3 text-xs ${
@@ -1187,7 +1227,7 @@ function Dashboard() {
               cachedSimulation={currentServerAnalytics?.simulation}
               unit={filter.unit}
             />
-          </>
+          </div>
         )}
       </main>
 
