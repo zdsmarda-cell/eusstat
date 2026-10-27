@@ -4379,6 +4379,8 @@ function getDefaultSvjBenchmarkRates(svjBracketStats) {
       useMedian: true,
       bypassSingleItemSort: true,
       monthlyFteHoursNorm: 160,
+      palletPickSecPerUnit: defaultPick["6+"] || 19.8,
+      replenishTriggerPct: 30,
       pickSecByBracket: defaultPick,
       sortSecByBracket: defaultSort,
       packSecByBracket: defaultPack
@@ -4389,19 +4391,23 @@ function getDefaultSvjBenchmarkRates(svjBracketStats) {
     useMedian: true,
     bypassSingleItemSort: true,
     monthlyFteHoursNorm: 160,
+    palletPickSecPerUnit: defaultPick["6+"] || 19.8,
+    replenishTriggerPct: 30,
     pickSecByBracket: defaultPick,
     sortSecByBracket: defaultSort,
     packSecByBracket: defaultPack
   };
 }
-function computeMonthlyFteFromBrackets(brackets, rates) {
+function computeMonthlyFteFromBrackets(brackets, rates, replenishOpts) {
   const normHours = Math.max(40, rates.monthlyFteHoursNorm || 160);
   let pickSec = 0;
   let sortSec = 0;
   let packSec = 0;
+  let monthUnits = 0;
   for (const b of ["1", "2", "3", "4", "5", "6+"]) {
     const units = brackets[b]?.units || 0;
     if (units <= 0) continue;
+    monthUnits += units;
     const pRate = rates.pickSecByBracket[b] ?? 25;
     const sRate = b === "1" && rates.bypassSingleItemSort ? 0 : rates.sortSecByBracket[b] ?? 13.5;
     const pkRate = rates.packSecByBracket[b] ?? 15;
@@ -4409,24 +4415,338 @@ function computeMonthlyFteFromBrackets(brackets, rates) {
     sortSec += units * sRate;
     packSec += units * pkRate;
   }
+  const coverageMonths = Math.max(1, replenishOpts?.coverageMonthsTarget ?? 3);
+  const triggerPct = Math.min(90, Math.max(5, replenishOpts?.replenishTriggerPct ?? rates.replenishTriggerPct ?? 30));
+  const batchFraction = Math.max(0.1, (100 - triggerPct) / 100);
+  const batchMonthsEquivalent = coverageMonths * batchFraction;
+  const palletPickSecRate = Math.max(
+    0,
+    replenishOpts?.palletPickSecPerUnit ?? rates.palletPickSecPerUnit ?? rates.pickSecByBracket["6+"] ?? 19.8
+  );
+  const replenishUnits = monthUnits;
+  const avgMonthUnits = replenishOpts?.avgMonthlyUnitsTotal && replenishOpts.avgMonthlyUnitsTotal > 0 ? replenishOpts.avgMonthlyUnitsTotal : monthUnits;
+  const activeSkus = replenishOpts?.activeSkusCount && replenishOpts.activeSkusCount > 0 ? replenishOpts.activeSkusCount : 1e4;
+  const seasonFactor = avgMonthUnits > 0 ? monthUnits / avgMonthUnits : 1;
+  const replenishCycles = Math.max(
+    0,
+    Math.round(activeSkus / Math.max(0.1, batchMonthsEquivalent) * seasonFactor)
+  );
+  const replenishSec = replenishUnits * palletPickSecRate;
+  const replenishHours = Number((replenishSec / 3600).toFixed(1));
+  const replenishFte = Number((replenishHours / normHours).toFixed(2));
   const pickHours = Number((pickSec / 3600).toFixed(1));
   const sortHours = Number((sortSec / 3600).toFixed(1));
   const packHours = Number((packSec / 3600).toFixed(1));
-  const totalHours = Number((pickHours + sortHours + packHours).toFixed(1));
+  const baseTotalHours = Number((pickHours + sortHours + packHours).toFixed(1));
+  const totalHoursWithReplenish = Number((baseTotalHours + replenishHours).toFixed(1));
   const pickFte = Number((pickHours / normHours).toFixed(2));
   const sortFte = Number((sortHours / normHours).toFixed(2));
   const packFte = Number((packHours / normHours).toFixed(2));
-  const totalFte = Number((pickFte + sortFte + packFte).toFixed(2));
+  const baseTotalFte = Number((pickFte + sortFte + packFte).toFixed(2));
+  const totalFteWithReplenish = Number((baseTotalFte + replenishFte).toFixed(2));
+  const includeReplenish = replenishOpts?.includeReplenishInTotal !== false;
   return {
     pickHours,
     sortHours,
     packHours,
-    totalHours,
+    replenishHours,
+    totalHours: includeReplenish ? totalHoursWithReplenish : baseTotalHours,
+    totalHoursWithReplenish,
     pickFte,
     sortFte,
     packFte,
-    totalFte
+    replenishFte,
+    totalFte: includeReplenish ? totalFteWithReplenish : baseTotalFte,
+    totalFteWithReplenish,
+    replenishUnits,
+    replenishCycles
   };
+}
+function packSkuVolumesOntoPalletsNoSplit(skuVolumesM3, usablePalletVolM3) {
+  const cap = Math.max(0.01, usablePalletVolM3);
+  let fullMonoPallets = 0;
+  let totalGoodsVolumeM3 = 0;
+  const remainderBlocks = [];
+  for (let i = 0; i < skuVolumesM3.length; i++) {
+    const v = skuVolumesM3[i];
+    if (v <= 0) continue;
+    totalGoodsVolumeM3 += v;
+    if (v >= cap) {
+      const fullCount = Math.floor(v / cap);
+      fullMonoPallets += fullCount;
+      const rem = v - fullCount * cap;
+      if (rem > 1e-6) {
+        remainderBlocks.push(rem);
+      }
+    } else {
+      remainderBlocks.push(v);
+    }
+  }
+  remainderBlocks.sort((a, b) => b - a);
+  const openPallets = [];
+  let firstOpenIdx = 0;
+  const minBlockVol = remainderBlocks.length > 0 ? remainderBlocks[remainderBlocks.length - 1] : 0;
+  for (let i = 0; i < remainderBlocks.length; i++) {
+    const blockVol = remainderBlocks[i];
+    let placed = false;
+    const searchLimit = Math.min(openPallets.length, firstOpenIdx + 450);
+    for (let p = firstOpenIdx; p < searchLimit; p++) {
+      const pal = openPallets[p];
+      const remSpace = cap - pal.usedVol;
+      if (remSpace + 1e-7 >= blockVol) {
+        pal.usedVol += blockVol;
+        pal.skuCount += 1;
+        placed = true;
+        if (p === firstOpenIdx && cap - pal.usedVol < minBlockVol) {
+          firstOpenIdx += 1;
+        }
+        break;
+      }
+    }
+    if (!placed) {
+      openPallets.push({ usedVol: blockVol, skuCount: 1 });
+      if (openPallets.length - 1 === firstOpenIdx && cap - blockVol < minBlockVol) {
+        firstOpenIdx += 1;
+      }
+    }
+  }
+  let monoFromBlocks = 0;
+  let mixedFromBlocks = 0;
+  for (let i = 0; i < openPallets.length; i++) {
+    if (openPallets[i].skuCount <= 1) {
+      monoFromBlocks += 1;
+    } else {
+      mixedFromBlocks += 1;
+    }
+  }
+  const monoSkuPalletsCount = fullMonoPallets + monoFromBlocks;
+  const mixedSkuPalletsCount = mixedFromBlocks;
+  const palletsNeeded = monoSkuPalletsCount + mixedSkuPalletsCount;
+  return {
+    palletsNeeded,
+    monoSkuPalletsCount,
+    mixedSkuPalletsCount,
+    totalGoodsVolumeM3
+  };
+}
+function buildVolumetricSummaryFromClassData(params) {
+  const BOX_GROSS_VOL_M3 = 0.6 * 0.4 * 0.22;
+  const PALLET_GROSS_VOL_M3 = 1.2 * 0.8 * 1.8;
+  const boxMaxFillPct = Math.min(100, Math.max(20, params.boxMaxFillPct || 80));
+  const palletMaxFillPct = Math.min(100, Math.max(20, params.palletMaxFillPct || 80));
+  const boxUsableVolumeM3 = BOX_GROSS_VOL_M3 * (boxMaxFillPct / 100);
+  const palletUsableVolumeM3 = PALLET_GROSS_VOL_M3 * (palletMaxFillPct / 100);
+  const byClass = {};
+  let totalBoxesNeeded = 0;
+  let totalBoxUnits = 0;
+  let totalBoxGoodsVolumeM3 = 0;
+  let singleUnitBoxesCount = 0;
+  let totalPalletsNeeded = 0;
+  let excessPalletsNeeded = 0;
+  let deadStockPalletsNeeded = 0;
+  let monoSkuPalletsCount = 0;
+  let mixedSkuPalletsCount = 0;
+  let totalPalletUnits = 0;
+  let totalPalletGoodsVolumeM3 = 0;
+  let totalPalletSkusCount = 0;
+  for (const cls of ["A", "B", "C", "DEAD"]) {
+    const cb = params.classBreakdown[cls];
+    const bs = params.boxStatsByClass[cls];
+    const palPack = packSkuVolumesOntoPalletsNoSplit(
+      params.palletSkuVolumesByClass[cls],
+      palletUsableVolumeM3
+    );
+    const palletSkusCount = cb.excessSkusCount;
+    const palletUnits = cb.excessUnits;
+    const palletGoodsVol = palPack.totalGoodsVolumeM3;
+    const palletsNeeded = palPack.palletsNeeded;
+    const avgBoxFillOfUsablePct = bs.boxesNeeded > 0 ? Number(Math.min(100, bs.boxGoodsVolumeM3 / (bs.boxesNeeded * boxUsableVolumeM3) * 100).toFixed(1)) : 0;
+    const avgBoxFillOfGrossPct = bs.boxesNeeded > 0 ? Number(Math.min(100, bs.boxGoodsVolumeM3 / (bs.boxesNeeded * BOX_GROSS_VOL_M3) * 100).toFixed(1)) : 0;
+    const avgPalletFillOfUsablePct = palletsNeeded > 0 ? Number(Math.min(100, palletGoodsVol / (palletsNeeded * palletUsableVolumeM3) * 100).toFixed(1)) : 0;
+    const avgPalletFillOfGrossPct = palletsNeeded > 0 ? Number(Math.min(100, palletGoodsVol / (palletsNeeded * PALLET_GROSS_VOL_M3) * 100).toFixed(1)) : 0;
+    byClass[cls] = {
+      abcClass: cls,
+      skusCount: cb.skusCount,
+      boxSkusCount: bs.boxSkusCount,
+      boxUnits: bs.boxUnits,
+      boxGoodsVolumeM3: Number(bs.boxGoodsVolumeM3.toFixed(2)),
+      boxesNeeded: bs.boxesNeeded,
+      singleUnitBoxesCount: bs.singleUnitBoxesCount,
+      avgUnitsPerBox: bs.boxesNeeded > 0 ? Number((bs.boxUnits / bs.boxesNeeded).toFixed(1)) : 0,
+      avgBoxFillOfUsablePct,
+      avgBoxFillOfGrossPct,
+      palletSkusCount,
+      palletUnits,
+      palletGoodsVolumeM3: Number(palletGoodsVol.toFixed(2)),
+      palletsNeeded,
+      monoSkuPalletsCount: palPack.monoSkuPalletsCount,
+      mixedSkuPalletsCount: palPack.mixedSkuPalletsCount,
+      avgSkusPerPallet: palletsNeeded > 0 ? Number((palletSkusCount / palletsNeeded).toFixed(2)) : 0,
+      avgUnitsPerPallet: palletsNeeded > 0 ? Math.round(palletUnits / palletsNeeded) : 0,
+      avgPalletFillOfUsablePct,
+      avgPalletFillOfGrossPct
+    };
+    totalBoxesNeeded += bs.boxesNeeded;
+    totalBoxUnits += bs.boxUnits;
+    totalBoxGoodsVolumeM3 += bs.boxGoodsVolumeM3;
+    singleUnitBoxesCount += bs.singleUnitBoxesCount;
+    totalPalletsNeeded += palletsNeeded;
+    if (cls === "DEAD") {
+      deadStockPalletsNeeded += palletsNeeded;
+    } else {
+      excessPalletsNeeded += palletsNeeded;
+    }
+    monoSkuPalletsCount += palPack.monoSkuPalletsCount;
+    mixedSkuPalletsCount += palPack.mixedSkuPalletsCount;
+    totalPalletUnits += palletUnits;
+    totalPalletGoodsVolumeM3 += palletGoodsVol;
+    totalPalletSkusCount += palletSkusCount;
+  }
+  return {
+    hasExplicitVolumeData: params.hasExplicitVolumeData,
+    avgUnitVolumeM3: Number(params.avgUnitVolumeM3.toFixed(6)),
+    avgUnitWeightKg: Number(params.avgUnitWeightKg.toFixed(3)),
+    totalStockVolumeM3: Number(params.totalStockVolumeM3.toFixed(1)),
+    totalStockWeightKg: Math.round(params.totalStockWeightKg),
+    boxDimensionsCm: "60 \xD7 40 \xD7 22 cm",
+    boxGrossVolumeM3: Number(BOX_GROSS_VOL_M3.toFixed(4)),
+    boxMaxFillPct,
+    boxUsableVolumeM3: Number(boxUsableVolumeM3.toFixed(5)),
+    totalBoxesNeeded,
+    totalBoxUnits,
+    totalBoxGoodsVolumeM3: Number(totalBoxGoodsVolumeM3.toFixed(1)),
+    singleUnitBoxesCount,
+    avgUnitsPerBox: totalBoxesNeeded > 0 ? Number((totalBoxUnits / totalBoxesNeeded).toFixed(1)) : 0,
+    avgBoxFillOfUsablePct: totalBoxesNeeded > 0 ? Number(Math.min(100, totalBoxGoodsVolumeM3 / (totalBoxesNeeded * boxUsableVolumeM3) * 100).toFixed(1)) : 0,
+    avgBoxFillOfGrossPct: totalBoxesNeeded > 0 ? Number(Math.min(100, totalBoxGoodsVolumeM3 / (totalBoxesNeeded * BOX_GROSS_VOL_M3) * 100).toFixed(1)) : 0,
+    palletDimensionsCm: "120 \xD7 80 \xD7 180 cm",
+    palletGrossVolumeM3: Number(PALLET_GROSS_VOL_M3.toFixed(4)),
+    palletMaxFillPct,
+    palletUsableVolumeM3: Number(palletUsableVolumeM3.toFixed(4)),
+    totalPalletsNeeded,
+    excessPalletsNeeded,
+    deadStockPalletsNeeded,
+    monoSkuPalletsCount,
+    mixedSkuPalletsCount,
+    totalPalletUnits,
+    totalPalletGoodsVolumeM3: Number(totalPalletGoodsVolumeM3.toFixed(1)),
+    avgSkusPerPallet: totalPalletsNeeded > 0 ? Number((totalPalletSkusCount / totalPalletsNeeded).toFixed(2)) : 0,
+    avgUnitsPerPallet: totalPalletsNeeded > 0 ? Math.round(totalPalletUnits / totalPalletsNeeded) : 0,
+    avgPalletFillOfUsablePct: totalPalletsNeeded > 0 ? Number(Math.min(100, totalPalletGoodsVolumeM3 / (totalPalletsNeeded * palletUsableVolumeM3) * 100).toFixed(1)) : 0,
+    avgPalletFillOfGrossPct: totalPalletsNeeded > 0 ? Number(Math.min(100, totalPalletGoodsVolumeM3 / (totalPalletsNeeded * PALLET_GROSS_VOL_M3) * 100).toFixed(1)) : 0,
+    byClass
+  };
+}
+function recomputeGateVolumetryFromSummary(abc, boxMaxFillPct = 80, palletMaxFillPct = 80, coverageMonthsTarget = 3, stockScaleFactor = 1) {
+  const baseVol = abc.volumetry;
+  const avgUnitVol = baseVol?.avgUnitVolumeM3 || 385e-5;
+  const avgUnitWeight = baseVol?.avgUnitWeightKg || 0.72;
+  const BOX_GROSS_VOL_M3 = 0.6 * 0.4 * 0.22;
+  const PALLET_GROSS_VOL_M3 = 1.2 * 0.8 * 1.8;
+  const clampedBoxPct = Math.min(100, Math.max(20, boxMaxFillPct));
+  const clampedPalPct = Math.min(100, Math.max(20, palletMaxFillPct));
+  const boxUsableVolumeM3 = BOX_GROSS_VOL_M3 * (clampedBoxPct / 100);
+  const palletUsableVolumeM3 = PALLET_GROSS_VOL_M3 * (clampedPalPct / 100);
+  if (baseVol && Math.abs(clampedBoxPct - baseVol.boxMaxFillPct) < 0.01 && Math.abs(clampedPalPct - baseVol.palletMaxFillPct) < 0.01 && Math.abs(coverageMonthsTarget - 3) < 0.01 && Math.abs(stockScaleFactor - 1) < 1e-3) {
+    return baseVol;
+  }
+  const monthFactor = coverageMonthsTarget / 3;
+  const boxStatsByClass = {
+    A: { boxSkusCount: 0, boxUnits: 0, boxGoodsVolumeM3: 0, boxesNeeded: 0, singleUnitBoxesCount: 0 },
+    B: { boxSkusCount: 0, boxUnits: 0, boxGoodsVolumeM3: 0, boxesNeeded: 0, singleUnitBoxesCount: 0 },
+    C: { boxSkusCount: 0, boxUnits: 0, boxGoodsVolumeM3: 0, boxesNeeded: 0, singleUnitBoxesCount: 0 },
+    DEAD: { boxSkusCount: 0, boxUnits: 0, boxGoodsVolumeM3: 0, boxesNeeded: 0, singleUnitBoxesCount: 0 }
+  };
+  const palletSkuVolumesByClass = {
+    A: [],
+    B: [],
+    C: [],
+    DEAD: []
+  };
+  const adjustedClassBreakdown = {
+    A: { ...abc.classBreakdown.A },
+    B: { ...abc.classBreakdown.B },
+    C: { ...abc.classBreakdown.C },
+    DEAD: { ...abc.classBreakdown.DEAD }
+  };
+  let totalStockVol = 0;
+  let totalStockW = 0;
+  for (const cls of ["A", "B", "C", "DEAD"]) {
+    const cb = abc.classBreakdown[cls];
+    const baseClsVol = baseVol?.byClass?.[cls];
+    const skusCount = cb.skusCount;
+    const scaledStockUnits = Math.round(cb.currentStockUnits * stockScaleFactor);
+    const targetUnits = cls === "DEAD" ? 0 : Math.round(cb.threeMonthTargetUnits * monthFactor);
+    const coveredUnits = cls === "DEAD" ? 0 : Math.min(scaledStockUnits, targetUnits);
+    const excessUnits = cls === "DEAD" ? scaledStockUnits : Math.max(0, scaledStockUnits - coveredUnits);
+    const excessSkusCount = excessUnits > 0 ? cls === "DEAD" ? skusCount : Math.max(1, Math.min(skusCount, Math.round(cb.excessSkusCount * (excessUnits / Math.max(1, cb.excessUnits))))) : 0;
+    adjustedClassBreakdown[cls].currentStockUnits = scaledStockUnits;
+    adjustedClassBreakdown[cls].threeMonthTargetUnits = targetUnits;
+    adjustedClassBreakdown[cls].coveredThreeMonthUnits = coveredUnits;
+    adjustedClassBreakdown[cls].excessUnits = excessUnits;
+    adjustedClassBreakdown[cls].excessSkusCount = excessSkusCount;
+    const clsUnitVol = baseClsVol && baseClsVol.boxUnits + baseClsVol.palletUnits > 0 ? (baseClsVol.boxGoodsVolumeM3 + baseClsVol.palletGoodsVolumeM3) / (baseClsVol.boxUnits + baseClsVol.palletUnits) : avgUnitVol;
+    totalStockVol += scaledStockUnits * clsUnitVol;
+    totalStockW += scaledStockUnits * avgUnitWeight;
+    if (coveredUnits > 0 && skusCount > 0) {
+      const boxSkus = baseClsVol?.boxSkusCount ? Math.min(skusCount, Math.max(1, Math.round(baseClsVol.boxSkusCount * Math.min(1.15, Math.sqrt(monthFactor * stockScaleFactor))))) : skusCount;
+      const boxGoodsVol = coveredUnits * clsUnitVol;
+      let boxesNeeded = 0;
+      if (baseClsVol && baseClsVol.boxesNeeded > 0 && baseVol) {
+        const oldUsable = baseVol.boxUsableVolumeM3;
+        const volRatio = boxGoodsVol / Math.max(1e-3, baseClsVol.boxGoodsVolumeM3) * (oldUsable / boxUsableVolumeM3);
+        const multiBoxExtra = Math.max(0, baseClsVol.boxesNeeded - baseClsVol.boxSkusCount);
+        boxesNeeded = boxSkus + Math.ceil(multiBoxExtra * volRatio);
+      } else {
+        const avgUnitsPerSku = coveredUnits / boxSkus;
+        const weights = [2.6, 1.7, 1.25, 0.95, 0.75, 0.55, 0.42, 0.33, 0.25, 0.2];
+        for (let b = 0; b < 10; b++) {
+          const bucketSkus = Math.round(boxSkus / 10);
+          const skuUnits = Math.max(1, Math.round(avgUnitsPerSku * weights[b]));
+          const boxesPerSku = Math.max(1, Math.ceil(skuUnits * clsUnitVol / boxUsableVolumeM3));
+          boxesNeeded += bucketSkus * boxesPerSku;
+        }
+        boxesNeeded = Math.max(boxSkus, boxesNeeded);
+      }
+      const singleUnitBoxes = baseClsVol?.singleUnitBoxesCount ? Math.round(baseClsVol.singleUnitBoxesCount / Math.max(0.5, monthFactor)) : cls === "C" ? Math.round(boxSkus * 0.28) : cls === "B" ? Math.round(boxSkus * 0.08) : Math.round(boxSkus * 0.02);
+      boxStatsByClass[cls] = {
+        boxSkusCount: boxSkus,
+        boxUnits: coveredUnits,
+        boxGoodsVolumeM3: boxGoodsVol,
+        boxesNeeded,
+        singleUnitBoxesCount: Math.min(boxSkus, singleUnitBoxes)
+      };
+    }
+    if (excessUnits > 0 && excessSkusCount > 0) {
+      const totalExcessVol = excessUnits * clsUnitVol;
+      const avgVolPerSku = totalExcessVol / excessSkusCount;
+      const skuVols = new Array(excessSkusCount);
+      const bucketWeights = [3.2, 2.1, 1.5, 1.15, 0.9, 0.7, 0.52, 0.38, 0.28, 0.18];
+      let rawSum = 0;
+      for (let i = 0; i < excessSkusCount; i++) {
+        const w = bucketWeights[i % 10] * (1 + (i % 7 - 3) * 0.05);
+        skuVols[i] = w;
+        rawSum += w;
+      }
+      const norm = rawSum > 0 ? totalExcessVol / rawSum : avgVolPerSku;
+      for (let i = 0; i < excessSkusCount; i++) {
+        skuVols[i] = skuVols[i] * norm;
+      }
+      palletSkuVolumesByClass[cls] = skuVols;
+    }
+  }
+  return buildVolumetricSummaryFromClassData({
+    hasExplicitVolumeData: baseVol?.hasExplicitVolumeData ?? false,
+    avgUnitVolumeM3: avgUnitVol,
+    avgUnitWeightKg: avgUnitWeight,
+    totalStockVolumeM3: totalStockVol,
+    totalStockWeightKg: totalStockW,
+    boxMaxFillPct: clampedBoxPct,
+    palletMaxFillPct: clampedPalPct,
+    classBreakdown: adjustedClassBreakdown,
+    boxStatsByClass,
+    palletSkuVolumesByClass
+  });
 }
 function generateSampleGateReport(svjBracketStats) {
   const svjBenchmark = getDefaultSvjBenchmarkRates(svjBracketStats);
@@ -4545,30 +4865,46 @@ function generateSampleGateReport(svjBracketStats) {
   const target3MA = Math.round(unitsA / 12 * 3);
   const target3MB = Math.round(unitsB / 12 * 3);
   const target3MC = Math.round(unitsC / 12 * 3);
-  const stockA = Math.round(target3MA * 1.28);
-  const stockB = Math.round(target3MB * 1.46);
-  const stockC = Math.round(target3MC * 1.82);
-  const deadStockUnits = 38420;
-  const excessA = stockA - target3MA;
-  const excessB = stockB - target3MB;
-  const excessC = stockC - target3MC;
-  const excessSkusA = Math.round(skusA * 0.62);
-  const excessSkusB = Math.round(skusB * 0.74);
-  const excessSkusC = Math.round(skusC * 0.81);
-  const samplePrefixes = ["525-0054", "525-0067", "825-0181", "825-0309", "825-0321", "825-0497", "625-0112", "725-0440", "925-0215", "425-0890"];
-  const sampleSizes = ["81", "89", "48", "55", "41", "92", "01", "14"];
+  const sampleTotalStockTarget = 45e5;
+  const deadStockUnits = 36e4;
+  const activeStockTarget = sampleTotalStockTarget - deadStockUnits;
+  const total3MDemand = target3MA + target3MB + target3MC;
+  const totalActiveExcess = Math.max(0, activeStockTarget - total3MDemand);
+  const excessA = Math.round(totalActiveExcess * 0.52);
+  const excessB = Math.round(totalActiveExcess * 0.28);
+  const excessC = Math.max(0, totalActiveExcess - excessA - excessB);
+  const stockA = target3MA + excessA;
+  const stockB = target3MB + excessB;
+  const stockC = target3MC + excessC;
+  const excessSkusA = Math.round(skusA * 0.78);
+  const excessSkusB = Math.round(skusB * 0.86);
+  const excessSkusC = Math.round(skusC * 0.92);
+  const samplePrefixes = ["124-0002", "124-0007", "124-0015", "525-0054", "525-0067", "825-0181", "825-0309", "825-0321", "825-0497", "625-0112"];
+  const sampleSizes = ["75", "89", "45", "81", "48", "55", "41", "92"];
+  const sampleCategories = ["PAN", "TOP", "DRESS", "JACKET", "SHOE"];
+  const sampleVolumes = [4048e-6, 3388e-6, 4657e-6, 295e-5, 382e-5];
+  const sampleWeights = [0.97, 0.85, 0.59, 0.44, 0.76];
+  const boxUsableVolM3 = 0.6 * 0.4 * 0.22 * 0.8;
+  const palletUsableVolM3 = 1.2 * 0.8 * 1.8 * 0.8;
   const topActiveSkus = Array.from({ length: 25 }, (_, i) => {
     const art = samplePrefixes[i % samplePrefixes.length];
     const sz = sampleSizes[i % sampleSizes.length];
     const sku = `${art}/${sz}`;
+    const cat = sampleCategories[i % sampleCategories.length];
+    const uVol = sampleVolumes[i % sampleVolumes.length];
+    const uWeight = sampleWeights[i % sampleWeights.length];
     const annualUnits = Math.round(4800 - i * 145);
     const avgMonthly = Number((annualUnits / 12).toFixed(1));
     const target3M = Math.ceil(avgMonthly * 3);
     const currentStock = Math.round(target3M * (1.25 + i % 5 * 0.18));
     const excess = Math.max(0, currentStock - target3M);
+    const boxVol = target3M * uVol;
+    const boxesFor3M = Math.max(1, Math.ceil(boxVol / boxUsableVolM3));
+    const excessVol = excess * uVol;
     return {
       sku,
       articleCode: art,
+      category: cat,
       abcClass: "A",
       annualUnits,
       ordersCount: Math.round(annualUnits * 0.84),
@@ -4579,22 +4915,35 @@ function generateSampleGateReport(svjBracketStats) {
       coveredThreeMonthUnits: target3M,
       excessReplenishUnits: excess,
       shortageUnits: 0,
-      shareOfVolumePct: Number((annualUnits / grandTotalUnits * 100).toFixed(3))
+      shareOfVolumePct: Number((annualUnits / grandTotalUnits * 100).toFixed(3)),
+      unitVolumeM3: uVol,
+      unitWeightKg: uWeight,
+      boxesFor3M,
+      boxFillPct: Number(Math.min(100, boxVol / (boxesFor3M * boxUsableVolM3) * 100).toFixed(1)),
+      excessVolumeM3: Number(excessVol.toFixed(4)),
+      palletsForExcess: excess > 0 ? Math.max(1, Math.ceil(excessVol / palletUsableVolM3)) : 0
     };
   });
   const topExcessSkus = Array.from({ length: 25 }, (_, i) => {
     const art = `${500 + i * 37 % 450}-0${110 + i * 19}`;
     const sz = sampleSizes[(i + 2) % sampleSizes.length];
     const sku = `${art}/${sz}`;
+    const cat = sampleCategories[(i + 1) % sampleCategories.length];
+    const uVol = sampleVolumes[(i + 2) % sampleVolumes.length];
+    const uWeight = sampleWeights[(i + 2) % sampleWeights.length];
     const cls = i < 8 ? "A" : i < 17 ? "B" : "C";
     const annualUnits = cls === "A" ? 2400 - i * 80 : cls === "B" ? 680 - i * 18 : 180 - i * 4;
     const avgMonthly = Number((annualUnits / 12).toFixed(1));
     const target3M = Math.ceil(avgMonthly * 3);
     const excess = Math.round(1450 - i * 42);
     const currentStock = target3M + excess;
+    const boxVol = target3M * uVol;
+    const boxesFor3M = Math.max(1, Math.ceil(boxVol / boxUsableVolM3));
+    const excessVol = excess * uVol;
     return {
       sku,
       articleCode: art,
+      category: cat,
       abcClass: cls,
       annualUnits,
       ordersCount: Math.round(annualUnits * 0.88),
@@ -4605,16 +4954,26 @@ function generateSampleGateReport(svjBracketStats) {
       coveredThreeMonthUnits: target3M,
       excessReplenishUnits: excess,
       shortageUnits: 0,
-      shareOfVolumePct: Number((annualUnits / grandTotalUnits * 100).toFixed(3))
+      shareOfVolumePct: Number((annualUnits / grandTotalUnits * 100).toFixed(3)),
+      unitVolumeM3: uVol,
+      unitWeightKg: uWeight,
+      boxesFor3M,
+      boxFillPct: Number(Math.min(100, boxVol / (boxesFor3M * boxUsableVolM3) * 100).toFixed(1)),
+      excessVolumeM3: Number(excessVol.toFixed(4)),
+      palletsForExcess: Math.max(1, Math.ceil(excessVol / palletUsableVolM3))
     };
   });
   const sampleDeadSkus = Array.from({ length: 20 }, (_, i) => {
-    const art = `324-0${210 + i * 23}`;
+    const art = `124-0${String(1 + i * 7).padStart(3, "0")}`;
     const sz = sampleSizes[(i + 4) % sampleSizes.length];
+    const uVol = sampleVolumes[i % sampleVolumes.length];
+    const uWeight = sampleWeights[i % sampleWeights.length];
     const st = Math.round(180 - i * 7);
+    const excessVol = st * uVol;
     return {
       sku: `${art}/${sz}`,
       articleCode: art,
+      category: "PAN",
       abcClass: "DEAD",
       annualUnits: 0,
       ordersCount: 0,
@@ -4625,7 +4984,13 @@ function generateSampleGateReport(svjBracketStats) {
       coveredThreeMonthUnits: 0,
       excessReplenishUnits: st,
       shortageUnits: 0,
-      shareOfVolumePct: 0
+      shareOfVolumePct: 0,
+      unitVolumeM3: uVol,
+      unitWeightKg: uWeight,
+      boxesFor3M: 0,
+      boxFillPct: 0,
+      excessVolumeM3: Number(excessVol.toFixed(4)),
+      palletsForExcess: Math.max(1, Math.ceil(excessVol / palletUsableVolM3))
     };
   });
   const abcAnalysis = {
@@ -4633,6 +4998,9 @@ function generateSampleGateReport(svjBracketStats) {
     activeSkusCount: totalActiveSkus,
     deadStockSkusCount,
     deadStockUnits,
+    zeroStockCatalogSkusCount: 4120,
+    shortageUnitsTotal: 0,
+    shortageSkusCount: 0,
     totalStockUnits: stockA + stockB + stockC + deadStockUnits,
     totalAnnualIssuedUnits: grandTotalUnits,
     threeMonthDemandUnits: target3MA + target3MB + target3MC,
@@ -4691,6 +5059,16 @@ function generateSampleGateReport(svjBracketStats) {
     topActiveSkus,
     sampleDeadSkus
   };
+  const volumetry = recomputeGateVolumetryFromSummary(abcAnalysis, 80, 80, 3, 1);
+  abcAnalysis.volumetry = volumetry;
+  for (const k of ["A", "B", "C", "DEAD"]) {
+    abcAnalysis.classBreakdown[k].boxesFor3M = volumetry.byClass[k].boxesNeeded;
+    abcAnalysis.classBreakdown[k].boxVolumeM3 = volumetry.byClass[k].boxGoodsVolumeM3;
+    abcAnalysis.classBreakdown[k].palletsForExcess = volumetry.byClass[k].palletsNeeded;
+    abcAnalysis.classBreakdown[k].palletVolumeM3 = volumetry.byClass[k].palletGoodsVolumeM3;
+    abcAnalysis.classBreakdown[k].monoSkuPallets = volumetry.byClass[k].monoSkuPalletsCount;
+    abcAnalysis.classBreakdown[k].mixedSkuPallets = volumetry.byClass[k].mixedSkuPalletsCount;
+  }
   return {
     warehouse: "gate",
     totalOrders: grandTotalOrders,

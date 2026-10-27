@@ -24,7 +24,11 @@ import {
   ItemBracket,
   GateSvjBenchmarkRates,
 } from '../types.js';
-import { computeMonthlyFteFromBrackets, getDefaultSvjBenchmarkRates } from '../utils/gateParser.js';
+import {
+  computeMonthlyFteFromBrackets,
+  getDefaultSvjBenchmarkRates,
+  recomputeGateVolumetryFromSummary,
+} from '../utils/gateParser.js';
 import { useLanguage } from '../context/LanguageContext.js';
 
 interface GateWarehouseDashboardProps {
@@ -52,9 +56,15 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
   // 2. Stav zobrazení v sekci Cílové země
   const [selectedCountryMonth, setSelectedCountryMonth] = useState<string>('all');
 
-  // 3. Stav v sekci ABC analýza & 3měsíční zásoba vs. nadzásoba
+  // 3. Stav v sekci ABC analýza & 3měsíční zásoba vs. nadzásoba + Volumetrie boxů a palet
+  const DEFAULT_CUSTOMER_STOCK_UNITS = 4_500_000;
   const [coverageMonthsTarget, setCoverageMonthsTarget] = useState<number>(3);
-  const [stockMultiplier, setStockMultiplier] = useState<number>(1.0);
+  const [boxMaxFillPct, setBoxMaxFillPct] = useState<number>(80);       // Box 60x40x22 cm (max 80 % využitelných = 42,24 l)
+  const [palletMaxFillPct, setPalletMaxFillPct] = useState<number>(80); // Paleta 120x80x180 cm (max 80 % využitelných = 1 382,4 l)
+  const [replenishTriggerPct, setReplenishTriggerPct] = useState<number>(30); // Pokles pod 30 % -> doskladnění na 100 % (dávka 70 %)
+  const [customPalletPickSec, setCustomPalletPickSec] = useState<number | null>(null);
+  const [includeReplenishInFte, setIncludeReplenishInFte] = useState<boolean>(true);
+  const [customTotalStockUnits, setCustomTotalStockUnits] = useState<number | null>(null);
   const [customDeadSkusCount, setCustomDeadSkusCount] = useState<number | null>(null);
   const [customDeadUnitsCount, setCustomDeadUnitsCount] = useState<number | null>(null);
   const [activeSkuTableTab, setActiveSkuTableTab] = useState<'excess' | 'active' | 'dead'>('excess');
@@ -76,7 +86,7 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
     pack?: Partial<Record<ItemBracket, number>>;
   }>({});
 
-  // Aktuální SVJ normočasy (sekundy na 1 ks podle velikosti objednávky 1..6+)
+  // Aktuální SVJ normočasy (sekundy na 1 ks podle velikosti objednávky 1..6+) + čas paletového pickingu pro doskladnění
   const activeSvjRates: GateSvjBenchmarkRates = useMemo(() => {
     const base =
       svjBracketStats && svjBracketStats.length > 0
@@ -133,32 +143,72 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
       if (customRateOverrides.pack?.[b] !== undefined) packSecByBracket[b] = customRateOverrides.pack[b]!;
     }
 
+    // Čas paletového pickingu pro průběžné doskladňování (výchozí dle nejvyšší objemové kategorie 6+ v SVJ)
+    const defaultPalletPickSec = pickSecByBracket['6+'] || 19.8;
+    const palletPickSecPerUnit =
+      customPalletPickSec !== null ? customPalletPickSec : defaultPalletPickSec;
+
     return {
       source: svjBracketStats && svjBracketStats.length > 0 ? 'svj_db' : base.source,
       useMedian: useMedianSvj,
       bypassSingleItemSort: bypassSingleSort,
       monthlyFteHoursNorm: monthlyFteHours,
+      palletPickSecPerUnit,
+      replenishTriggerPct,
       pickSecByBracket,
       sortSecByBracket,
       packSecByBracket,
     };
-  }, [svjBracketStats, liveSvjRates, report?.svjBenchmark, useMedianSvj, bypassSingleSort, monthlyFteHours, customRateOverrides]);
+  }, [
+    svjBracketStats,
+    liveSvjRates,
+    report?.svjBenchmark,
+    useMedianSvj,
+    bypassSingleSort,
+    monthlyFteHours,
+    customRateOverrides,
+    customPalletPickSec,
+    replenishTriggerPct,
+  ]);
 
-  // Dynamický přepočet měsíčních FTE podle zvolených SVJ časů a fondu pracovní doby
+  // Dynamický přepočet měsíčních FTE podle zvolených SVJ časů, paletového pickingu doskladnění a fondu pracovní doby
   const enrichedMonths = useMemo(() => {
-    return (report?.monthlyBreakdown || []).map(m => ({
-      ...m,
-      fte: computeMonthlyFteFromBrackets(m.brackets, activeSvjRates),
-    }));
-  }, [report?.monthlyBreakdown, activeSvjRates]);
+    const months = report?.monthlyBreakdown || [];
+    const avgMonthlyUnitsTotal =
+      months.length > 0
+        ? months.reduce((s, x) => s + x.totalUnits, 0) / months.length
+        : 0;
+    const globalActiveSkus = report?.totalActiveSkus || 18450;
 
-  // Souhrn FTE za celý rok / průměrný měsíc / špičkový měsíc
+    return months.map(m => ({
+      ...m,
+      fte: computeMonthlyFteFromBrackets(m.brackets, activeSvjRates, {
+        coverageMonthsTarget,
+        replenishTriggerPct,
+        palletPickSecPerUnit: activeSvjRates.palletPickSecPerUnit,
+        activeSkusCount: globalActiveSkus,
+        avgMonthlyUnitsTotal,
+        includeReplenishInTotal: includeReplenishInFte,
+      }),
+    }));
+  }, [
+    report?.monthlyBreakdown,
+    report?.totalActiveSkus,
+    activeSvjRates,
+    coverageMonthsTarget,
+    replenishTriggerPct,
+    includeReplenishInFte,
+  ]);
+
+  // Souhrn FTE za celý rok / průměrný měsíc / špičkový měsíc (včetně průběžného doskladňování)
   const fteSummary = useMemo(() => {
     if (enrichedMonths.length === 0) {
       return {
         avgPickFte: 0,
         avgSortFte: 0,
         avgPackFte: 0,
+        avgReplenishFte: 0,
+        avgBaseTotalFte: 0,
         avgTotalFte: 0,
         peakTotalFte: 0,
         peakMonthLabel: '-',
@@ -166,18 +216,40 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
         totalPickHours: 0,
         totalSortHours: 0,
         totalPackHours: 0,
+        totalReplenishHours: 0,
+        totalReplenishCycles: 0,
       };
     }
     const n = enrichedMonths.length;
     const totalPickHours = Number(enrichedMonths.reduce((s, m) => s + m.fte.pickHours, 0).toFixed(1));
     const totalSortHours = Number(enrichedMonths.reduce((s, m) => s + m.fte.sortHours, 0).toFixed(1));
     const totalPackHours = Number(enrichedMonths.reduce((s, m) => s + m.fte.packHours, 0).toFixed(1));
-    const totalYearHours = Number((totalPickHours + totalSortHours + totalPackHours).toFixed(1));
+    const totalReplenishHours = Number(
+      enrichedMonths.reduce((s, m) => s + (m.fte.replenishHours || 0), 0).toFixed(1)
+    );
+    const totalReplenishCycles = enrichedMonths.reduce(
+      (s, m) => s + (m.fte.replenishCycles || 0),
+      0
+    );
+    const totalYearHours = Number(
+      (
+        totalPickHours +
+        totalSortHours +
+        totalPackHours +
+        (includeReplenishInFte ? totalReplenishHours : 0)
+      ).toFixed(1)
+    );
 
     const avgPickFte = Number((enrichedMonths.reduce((s, m) => s + m.fte.pickFte, 0) / n).toFixed(2));
     const avgSortFte = Number((enrichedMonths.reduce((s, m) => s + m.fte.sortFte, 0) / n).toFixed(2));
     const avgPackFte = Number((enrichedMonths.reduce((s, m) => s + m.fte.packFte, 0) / n).toFixed(2));
-    const avgTotalFte = Number((avgPickFte + avgSortFte + avgPackFte).toFixed(2));
+    const avgReplenishFte = Number(
+      (enrichedMonths.reduce((s, m) => s + (m.fte.replenishFte || 0), 0) / n).toFixed(2)
+    );
+    const avgBaseTotalFte = Number((avgPickFte + avgSortFte + avgPackFte).toFixed(2));
+    const avgTotalFte = Number(
+      (avgBaseTotalFte + (includeReplenishInFte ? avgReplenishFte : 0)).toFixed(2)
+    );
 
     let peakM = enrichedMonths[0];
     for (const m of enrichedMonths) {
@@ -188,6 +260,8 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
       avgPickFte,
       avgSortFte,
       avgPackFte,
+      avgReplenishFte,
+      avgBaseTotalFte,
       avgTotalFte,
       peakTotalFte: peakM.fte.totalFte,
       peakMonthLabel: isCs ? peakM.monthLabelCs : peakM.monthLabelEn,
@@ -195,10 +269,12 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
       totalPickHours,
       totalSortHours,
       totalPackHours,
+      totalReplenishHours,
+      totalReplenishCycles,
     };
-  }, [enrichedMonths, isCs]);
+  }, [enrichedMonths, isCs, includeReplenishInFte]);
 
-  // Dynamický přepočet ABC analýzy při změně počtu cílových měsíců zásoby (default 3 měsíce) nebo koeficientu zásoby
+  // Dynamický přepočet ABC analýzy + průběžného doskladňování + Volumetrie boxů (60x40x22 cm) a palet (120x80x180 cm)
   const dynamicAbc = useMemo(() => {
     const emptyClass = {
       skusCount: 0,
@@ -210,23 +286,61 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
       coveredThreeMonthUnits: 0,
       excessUnits: 0,
       excessSkusCount: 0,
+      replenishBatchUnits: 0,
+      avgSkuBatchUnits: 0,
+      annualReplenishCycles: 0,
+      monthlyReplenishCycles: 0,
+      annualReplenishUnits: 0,
+      excessCoveredWaves: 0,
+      replenishHoursYear: 0,
+      replenishHoursMonthAvg: 0,
+      replenishFteMonthly: 0,
+      boxesFor3M: 0,
+      boxVolumeM3: 0,
+      palletsForExcess: 0,
+      palletVolumeM3: 0,
+      monoSkuPallets: 0,
+      mixedSkuPallets: 0,
     };
     const base = report?.abcAnalysis;
+    const palletPickSec = activeSvjRates.palletPickSecPerUnit ?? 19.8;
+    const batchFraction = Math.max(0.1, (100 - replenishTriggerPct) / 100); // 0.70 při 30 %
+    const batchMonthsEquivalent = Number((coverageMonthsTarget * batchFraction).toFixed(2)); // 3 * 0.70 = 2.1 měs.
+
     if (!base) {
       return {
         stockSource: 'estimated_from_velocity' as const,
+        hasExplicitStockFile: false,
         totalCatalogSkus: 0,
         activeSkusCount: 0,
         deadStockSkusCount: 0,
         deadStockUnits: 0,
+        zeroStockCatalogSkusCount: 0,
+        shortageUnitsTotal: 0,
+        shortageSkusCount: 0,
         totalAnnualIssuedUnits: 0,
         avgMonthlyIssuedUnits: 0,
         threeMonthDemandUnits: 0,
-        totalStockUnits: 0,
+        totalStockUnits: DEFAULT_CUSTOMER_STOCK_UNITS,
         coveredThreeMonthUnits: 0,
         coveredThreeMonthSkusCount: 0,
         excessReplenishUnits: 0,
         excessReplenishSkusCount: 0,
+        skuScaleFactor: 1,
+        batchFractionPct: Math.round(batchFraction * 100),
+        batchMonthsEquivalent,
+        cyclesPerSkuPerYear: 0,
+        netCyclesAfterInitialFill: 0,
+        totalReplenishBatchUnits: 0,
+        avgUnitsPerReplenishTask: 0,
+        totalAnnualReplenishCycles: 0,
+        avgMonthlyReplenishCycles: 0,
+        excessCoveredWaves: 0,
+        totalReplenishHoursYear: 0,
+        avgMonthlyReplenishHours: 0,
+        avgMonthlyReplenishFte: 0,
+        palletPickSecPerUnit: palletPickSec,
+        volumetry: null,
         classBreakdown: {
           A: emptyClass,
           B: emptyClass,
@@ -239,51 +353,220 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
       };
     }
 
-    const monthRatio = coverageMonthsTarget / 3;
-    const sMult = stockMultiplier;
+    const monthsCount = Math.max(1, report?.monthsCount || 12);
+    const normHours = Math.max(40, monthlyFteHours || 160);
+    // Počet cyklů doskladnění na 1 SKU za celé období (např. 12 / 2,1 = 5,71x ročně)
+    const cyclesPerSkuPerYear = Number((monthsCount / Math.max(0.1, batchMonthsEquivalent)).toFixed(2));
+    const netCyclesAfterInitialFill = Math.max(0, Number((cyclesPerSkuPerYear - 1).toFixed(2)));
 
-    const deadSkus = customDeadSkusCount !== null ? customDeadSkusCount : base.deadStockSkusCount;
-    const deadUnits = customDeadUnitsCount !== null ? customDeadUnitsCount : Math.round(base.deadStockUnits * sMult);
+    // Pokud byl nahrán explicitní stock.csv (3. soubor), použijeme reálnou zásobu z něj (~4.5M ks)
+    const defaultTotalStock =
+      base.hasExplicitStockFile && base.totalStockUnits > 0
+        ? base.totalStockUnits
+        : DEFAULT_CUSTOMER_STOCK_UNITS;
+    const targetTotalStock = Math.max(
+      0,
+      customTotalStockUnits !== null ? customTotalStockUnits : defaultTotalStock
+    );
 
-    const adjustClass = (clsKey: 'A' | 'B' | 'C') => {
-      const c = base.classBreakdown?.[clsKey] || emptyClass;
-      const targetUnits = Math.round(c.threeMonthTargetUnits * monthRatio);
-      const stockUnits = Math.round(c.currentStockUnits * sMult);
-      const coveredUnits = Math.min(stockUnits, targetUnits);
-      const excessUnits = Math.max(0, stockUnits - targetUnits);
-      const excessRatio = c.currentStockUnits > 0 ? excessUnits / Math.max(1, stockUnits) : 0;
-      const excessSkusCount = excessUnits > 0
-        ? Math.min(c.skusCount, Math.max(1, Math.round(c.excessSkusCount * (sMult / Math.max(0.5, monthRatio * 0.85)))))
+    const deadSkus =
+      customDeadSkusCount !== null ? customDeadSkusCount : base.deadStockSkusCount;
+
+    const defaultDeadUnits = base.hasExplicitStockFile
+      ? base.deadStockUnits
+      : base.deadStockUnits >= 100_000
+      ? Math.round(base.deadStockUnits * (targetTotalStock / DEFAULT_CUSTOMER_STOCK_UNITS))
+      : Math.round(targetTotalStock * 0.08); // ~360 000 ks při 4,5M ks
+
+    const deadUnits = Math.min(
+      targetTotalStock,
+      Math.max(0, customDeadUnitsCount !== null ? customDeadUnitsCount : defaultDeadUnits)
+    );
+
+    const activeTargetStock = Math.max(0, targetTotalStock - deadUnits);
+
+    const baseA = base.classBreakdown?.A || emptyClass;
+    const baseB = base.classBreakdown?.B || emptyClass;
+    const baseC = base.classBreakdown?.C || emptyClass;
+
+    // Potřeba na N průměrných měsíců (výchozí 3 měsíce) přímo z reálných ročních výdejů v CSV
+    const targetA = Math.round((baseA.annualUnits / monthsCount) * coverageMonthsTarget);
+    const targetB = Math.round((baseB.annualUnits / monthsCount) * coverageMonthsTarget);
+    const targetC = Math.round((baseC.annualUnits / monthsCount) * coverageMonthsTarget);
+    const threeMonthDemandUnits = targetA + targetB + targetC;
+
+    // Pokud je nahrán reálný stock.csv a uživatel nezměnil celkovou zásobu ani cílové měsíce (3M),
+    // zachováme přesné reálné rozdělení 3M zásoby a nadzásoby z jednotlivých SKU
+    const isExactRealStockState =
+      base.hasExplicitStockFile &&
+      customTotalStockUnits === null &&
+      customDeadUnitsCount === null &&
+      coverageMonthsTarget === 3;
+
+    let stockA = baseA.currentStockUnits;
+    let stockB = baseB.currentStockUnits;
+    let stockC = baseC.currentStockUnits;
+
+    if (!isExactRealStockState) {
+      if (activeTargetStock >= threeMonthDemandUnits) {
+        const totalActiveExcess = activeTargetStock - threeMonthDemandUnits;
+        const baseExcessSum = baseA.excessUnits + baseB.excessUnits + baseC.excessUnits;
+        const shareA = baseExcessSum > 0 ? baseA.excessUnits / baseExcessSum : 0.52;
+        const shareB = baseExcessSum > 0 ? baseB.excessUnits / baseExcessSum : 0.28;
+
+        const excA = Math.round(totalActiveExcess * shareA);
+        const excB = Math.round(totalActiveExcess * shareB);
+        const excC = Math.max(0, totalActiveExcess - excA - excB);
+
+        stockA = targetA + excA;
+        stockB = targetB + excB;
+        stockC = targetC + excC;
+      } else if (threeMonthDemandUnits > 0) {
+        const ratio = activeTargetStock / threeMonthDemandUnits;
+        stockA = Math.round(targetA * ratio);
+        stockB = Math.round(targetB * ratio);
+        stockC = Math.max(0, activeTargetStock - stockA - stockB);
+      }
+    }
+
+    const baseActiveStockSum =
+      baseA.currentStockUnits + baseB.currentStockUnits + baseC.currentStockUnits;
+    const skuScaleFactor =
+      baseActiveStockSum > 0 ? activeTargetStock / baseActiveStockSum : 1;
+
+    // Přepočet volumetrie (boxy 60x40x22 cm s 1 SKU/box & palety 120x80x180 cm s No-Split SKU)
+    const volumetry = recomputeGateVolumetryFromSummary(
+      base,
+      boxMaxFillPct,
+      palletMaxFillPct,
+      coverageMonthsTarget,
+      skuScaleFactor
+    );
+
+    const buildClass = (
+      clsKey: 'A' | 'B' | 'C',
+      baseCls: typeof baseA,
+      targetUnits: number,
+      stockUnits: number
+    ) => {
+      const coveredUnits = isExactRealStockState
+        ? baseCls.coveredThreeMonthUnits
+        : Math.min(stockUnits, targetUnits);
+      const excessUnits = isExactRealStockState
+        ? baseCls.excessUnits
+        : Math.max(0, stockUnits - coveredUnits);
+      const excessSkusCount = isExactRealStockState
+        ? baseCls.excessSkusCount
+        : excessUnits > 0
+        ? Math.min(
+            baseCls.skusCount,
+            Math.max(
+              1,
+              stockUnits > targetUnits * 1.35
+                ? Math.round(baseCls.skusCount * 0.92)
+                : baseCls.excessSkusCount || Math.round(baseCls.skusCount * 0.75)
+            )
+          )
         : 0;
+
+      // 1 dávka doskladnění (z 30 % na 100 % = 70 % cílové 3M zásoby v picku)
+      const replenishBatchUnits = Math.round(coveredUnits * batchFraction);
+      const avgSkuBatchUnits =
+        baseCls.skusCount > 0 ? Math.max(1, Math.round(replenishBatchUnits / baseCls.skusCount)) : 0;
+      const annualReplenishCycles = Math.round(baseCls.skusCount * cyclesPerSkuPerYear);
+      const monthlyReplenishCycles = Math.round(annualReplenishCycles / monthsCount);
+      const annualReplenishUnits = baseCls.annualUnits;
+      const excessCoveredWaves =
+        replenishBatchUnits > 0 ? Number((excessUnits / replenishBatchUnits).toFixed(2)) : 0;
+
+      // Čas doskladňování paletovým pickingem (s / ks -> hodiny za rok a FTE/měs.)
+      const replenishHoursYear = Number(((annualReplenishUnits * palletPickSec) / 3600).toFixed(1));
+      const replenishHoursMonthAvg = Number((replenishHoursYear / monthsCount).toFixed(1));
+      const replenishFteMonthly = Number((replenishHoursMonthAvg / normHours).toFixed(2));
+
+      const vCls = volumetry.byClass[clsKey];
+
       return {
-        ...c,
+        ...baseCls,
         threeMonthTargetUnits: targetUnits,
         currentStockUnits: stockUnits,
         coveredThreeMonthUnits: coveredUnits,
         excessUnits,
-        excessSkusCount: excessRatio > 0 ? excessSkusCount : 0,
+        excessSkusCount,
+        replenishBatchUnits,
+        avgSkuBatchUnits,
+        annualReplenishCycles,
+        monthlyReplenishCycles,
+        annualReplenishUnits,
+        excessCoveredWaves,
+        replenishHoursYear,
+        replenishHoursMonthAvg,
+        replenishFteMonthly,
+        boxesFor3M: vCls.boxesNeeded,
+        boxVolumeM3: vCls.boxGoodsVolumeM3,
+        palletsForExcess: vCls.palletsNeeded,
+        palletVolumeM3: vCls.palletGoodsVolumeM3,
+        monoSkuPallets: vCls.monoSkuPalletsCount,
+        mixedSkuPallets: vCls.mixedSkuPalletsCount,
       };
     };
 
-    const classA = adjustClass('A');
-    const classB = adjustClass('B');
-    const classC = adjustClass('C');
+    const classA = buildClass('A', baseA, targetA, stockA);
+    const classB = buildClass('B', baseB, targetB, stockB);
+    const classC = buildClass('C', baseC, targetC, stockC);
     const totalCatSkus = base.activeSkusCount + deadSkus;
+    const vDead = volumetry.byClass.DEAD;
 
     const classDEAD = {
-      ...(base.classBreakdown?.DEAD || emptyClass),
+      ...emptyClass,
+      ...(base.classBreakdown?.DEAD || {}),
       skusCount: deadSkus,
       skuSharePct: totalCatSkus > 0 ? Number(((deadSkus / totalCatSkus) * 100).toFixed(1)) : 0,
       currentStockUnits: deadUnits,
       excessUnits: deadUnits,
       excessSkusCount: deadSkus,
+      replenishBatchUnits: 0,
+      avgSkuBatchUnits: 0,
+      annualReplenishCycles: 0,
+      monthlyReplenishCycles: 0,
+      annualReplenishUnits: 0,
+      excessCoveredWaves: 0,
+      replenishHoursYear: 0,
+      replenishHoursMonthAvg: 0,
+      replenishFteMonthly: 0,
+      boxesFor3M: 0,
+      boxVolumeM3: 0,
+      palletsForExcess: vDead.palletsNeeded,
+      palletVolumeM3: vDead.palletGoodsVolumeM3,
+      monoSkuPallets: vDead.monoSkuPalletsCount,
+      mixedSkuPallets: vDead.mixedSkuPalletsCount,
     };
 
-    const threeMonthDemandUnits = classA.threeMonthTargetUnits + classB.threeMonthTargetUnits + classC.threeMonthTargetUnits;
-    const coveredThreeMonthUnits = classA.coveredThreeMonthUnits + classB.coveredThreeMonthUnits + classC.coveredThreeMonthUnits;
-    const excessReplenishUnits = classA.excessUnits + classB.excessUnits + classC.excessUnits;
-    const excessReplenishSkusCount = classA.excessSkusCount + classB.excessSkusCount + classC.excessSkusCount;
-    const totalStockUnits = classA.currentStockUnits + classB.currentStockUnits + classC.currentStockUnits + deadUnits;
+    const coveredThreeMonthUnits =
+      classA.coveredThreeMonthUnits + classB.coveredThreeMonthUnits + classC.coveredThreeMonthUnits;
+    const excessReplenishUnits =
+      classA.excessUnits + classB.excessUnits + classC.excessUnits;
+    const excessReplenishSkusCount =
+      classA.excessSkusCount + classB.excessSkusCount + classC.excessSkusCount;
+    const totalStockUnits =
+      classA.currentStockUnits + classB.currentStockUnits + classC.currentStockUnits + deadUnits;
+
+    const totalReplenishBatchUnits =
+      classA.replenishBatchUnits + classB.replenishBatchUnits + classC.replenishBatchUnits;
+    const avgUnitsPerReplenishTask =
+      base.activeSkusCount > 0 ? Math.max(1, Math.round(totalReplenishBatchUnits / base.activeSkusCount)) : 0;
+    const totalAnnualReplenishCycles =
+      classA.annualReplenishCycles + classB.annualReplenishCycles + classC.annualReplenishCycles;
+    const avgMonthlyReplenishCycles = Math.round(totalAnnualReplenishCycles / monthsCount);
+    const excessCoveredWaves =
+      totalReplenishBatchUnits > 0
+        ? Number((excessReplenishUnits / totalReplenishBatchUnits).toFixed(2))
+        : 0;
+    const totalReplenishHoursYear = Number(
+      (classA.replenishHoursYear + classB.replenishHoursYear + classC.replenishHoursYear).toFixed(1)
+    );
+    const avgMonthlyReplenishHours = Number((totalReplenishHoursYear / monthsCount).toFixed(1));
+    const avgMonthlyReplenishFte = Number((avgMonthlyReplenishHours / normHours).toFixed(2));
 
     return {
       ...base,
@@ -295,6 +578,21 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
       coveredThreeMonthUnits,
       excessReplenishUnits,
       excessReplenishSkusCount,
+      skuScaleFactor,
+      batchFractionPct: Math.round(batchFraction * 100),
+      batchMonthsEquivalent,
+      cyclesPerSkuPerYear,
+      netCyclesAfterInitialFill,
+      totalReplenishBatchUnits,
+      avgUnitsPerReplenishTask,
+      totalAnnualReplenishCycles,
+      avgMonthlyReplenishCycles,
+      excessCoveredWaves,
+      totalReplenishHoursYear,
+      avgMonthlyReplenishHours,
+      avgMonthlyReplenishFte,
+      palletPickSecPerUnit: palletPickSec,
+      volumetry,
       classBreakdown: {
         A: classA,
         B: classB,
@@ -302,7 +600,19 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
         DEAD: classDEAD,
       },
     };
-  }, [report?.abcAnalysis, coverageMonthsTarget, stockMultiplier, customDeadSkusCount, customDeadUnitsCount]);
+  }, [
+    report?.abcAnalysis,
+    report?.monthsCount,
+    coverageMonthsTarget,
+    boxMaxFillPct,
+    palletMaxFillPct,
+    replenishTriggerPct,
+    activeSvjRates.palletPickSecPerUnit,
+    monthlyFteHours,
+    customTotalStockUnits,
+    customDeadSkusCount,
+    customDeadUnitsCount,
+  ]);
 
   // Filtrované země podle zvoleného měsíce nebo celého roku
   const displayedCountries = useMemo(() => {
@@ -539,36 +849,37 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
           </div>
         </div>
 
-        {/* 4. Nadzásoba na dokladnění & Ležáky */}
+        {/* 4. Celková skladová zásoba, 3měs. krytí & Nadzásoba */}
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
           <div className="flex items-center justify-between text-xs text-slate-400">
-            <span className="font-semibold">{isCs ? `Nadzásoba (nad ${coverageMonthsTarget} měs.)` : `Excess Stock (>${coverageMonthsTarget}m)`}</span>
+            <span className="font-semibold">{isCs ? 'Celková skladová zásoba' : 'Total Warehouse Stock'}</span>
             <Archive className="w-4 h-4 text-purple-400" />
           </div>
           <div className="mt-2 text-2xl font-bold text-purple-300 font-mono tabular-nums">
-            {dynamicAbc.excessReplenishUnits.toLocaleString('cs-CZ')} <span className="text-xs font-normal text-slate-400">ks</span>
+            {dynamicAbc.totalStockUnits.toLocaleString('cs-CZ')} <span className="text-xs font-normal text-slate-400">ks</span>
           </div>
           <div className="mt-1.5 pt-1.5 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
-            <span>{isCs ? 'V nadzásobě / 0 výdej:' : 'Excess / Dead SKUs:'}</span>
+            <span>{isCs ? `Zásoba ${coverageMonthsTarget}M / Nadzásoba:` : `${coverageMonthsTarget}M / Excess:`}</span>
             <span className="font-mono tabular-nums text-slate-200">
-              {dynamicAbc.excessReplenishSkusCount.toLocaleString('cs-CZ')} / <span className="text-rose-400">{dynamicAbc.deadStockSkusCount.toLocaleString('cs-CZ')} SKU</span>
+              <span className="text-emerald-400">{(dynamicAbc.coveredThreeMonthUnits / 1_000_000).toFixed(2)}M</span> /{' '}
+              <span className="text-amber-300">{((dynamicAbc.excessReplenishUnits + dynamicAbc.deadStockUnits) / 1_000_000).toFixed(2)}M ks</span>
             </span>
           </div>
         </div>
 
-        {/* 5. Potřeba pracovníků (FTE dle SVJ) */}
+        {/* 5. Potřeba pracovníků (FTE dle SVJ + průběžné doskladňování) */}
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
           <div className="flex items-center justify-between text-xs text-slate-400">
-            <span className="font-semibold">{isCs ? 'Potřeba lidí (FTE dle SVJ)' : 'Required Staff (SVJ FTE)'}</span>
+            <span className="font-semibold">{isCs ? 'Potřeba lidí (FTE vč. doskl.)' : 'Required Staff (FTE incl. Repl.)'}</span>
             <Users className="w-4 h-4 text-cyan-400" />
           </div>
           <div className="mt-2 text-2xl font-bold text-cyan-300 font-mono tabular-nums">
             {fteSummary.avgTotalFte} <span className="text-xs font-normal text-slate-400">FTE / měs.</span>
           </div>
           <div className="mt-1.5 pt-1.5 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
-            <span>{isCs ? 'Špička v roce:' : 'Peak month:'}</span>
+            <span>{isCs ? 'Z toho doskl. / Špička:' : 'Replenish / Peak:'}</span>
             <span className="font-mono tabular-nums text-amber-300 font-semibold">
-              {fteSummary.peakTotalFte} FTE ({fteSummary.peakMonthLabel})
+              {fteSummary.avgReplenishFte} / {fteSummary.peakTotalFte} FTE
             </span>
           </div>
         </div>
@@ -963,56 +1274,189 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
           </div>
         </div>
 
-        {/* Kalibrační lišta celkové zásoby a ležáků */}
-        <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-4 grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
-          <div className="space-y-1">
-            <div className="flex justify-between text-slate-300 font-medium">
-              <span>{isCs ? 'Úroveň celkových zásob vůči modelu:' : 'Inventory level multiplier:'}</span>
-              <span className="font-mono tabular-nums text-purple-300 font-bold">{Math.round(stockMultiplier * 100)} %</span>
+        {/* Metodické vysvětlení + Kalibrační panel celkové zásoby (4,5M ks) a ležáků */}
+        <div className="bg-slate-950/80 border border-purple-500/25 rounded-2xl p-4 space-y-4 text-xs">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
+            <div className="flex items-start gap-2.5 text-slate-300">
+              <Info className="w-4 h-4 text-purple-400 shrink-0 mt-0.5" />
+              <p className="leading-relaxed">
+                {isCs ? (
+                  <>
+                    <strong className="text-white">Jak se počítá celková skladová zásoba a nadzásoba:</strong> Vstupní CSV soubory (
+                    <code className="text-purple-300">orders.csv</code> a <code className="text-purple-300">order_items.csv</code>) obsahují pouze historii{' '}
+                    <strong>expedovaných výdejů</strong> ({report.totalUnits.toLocaleString('cs-CZ')} ks za {report.monthsCount} měs.), nikoliv fyzický stav skladu. Celková skladová zásoba je proto nastavena na zákazníkem uvedených{' '}
+                    <strong className="text-purple-300 font-mono">{dynamicAbc.totalStockUnits.toLocaleString('cs-CZ')} ks</strong> (lze libovolně upravit níže nebo nahrát <code className="text-purple-300">stock.csv</code>). Z této celkové zásoby se odečte{' '}
+                    <strong className="text-emerald-300">{coverageMonthsTarget}měsíční průměrná potřeba dle výdejů ({dynamicAbc.coveredThreeMonthUnits.toLocaleString('cs-CZ')} ks)</strong> a zbývajících{' '}
+                    <strong className="text-amber-300">{(dynamicAbc.excessReplenishUnits + dynamicAbc.deadStockUnits).toLocaleString('cs-CZ')} ks</strong> tvoří nadzásobu na dokladnění a ležáky bez pohybu.
+                  </>
+                ) : (
+                  <>
+                    <strong className="text-white">How Total Warehouse Stock & Excess Are Calculated:</strong> The uploaded CSVs contain outbound issues ({report.totalUnits.toLocaleString()} pcs across {report.monthsCount} months). Total physical stock is calibrated to <strong className="text-purple-300 font-mono">{dynamicAbc.totalStockUnits.toLocaleString()} pcs</strong> (editable below). Subtracting the {coverageMonthsTarget}-month demand ({dynamicAbc.coveredThreeMonthUnits.toLocaleString()} pcs) yields the excess replenishment buffer and dead stock.
+                  </>
+                )}
+              </p>
             </div>
-            <input
-              type="range"
-              min={0.6}
-              max={2.0}
-              step={0.05}
-              value={stockMultiplier}
-              onChange={e => setStockMultiplier(Number(e.target.value))}
-              className="w-full accent-purple-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
-            />
-            <div className="text-[11px] text-slate-500">
-              {isCs ? 'Upravte objem držené zásoby nebo nahrajte stock.csv v Importu' : 'Adjust total stock multiplier or upload stock.csv'}
+            <div className="flex items-center gap-1.5 shrink-0">
+              {[3_500_000, 4_500_000, 5_000_000].map(preset => (
+                <button
+                  key={preset}
+                  onClick={() => setCustomTotalStockUnits(preset)}
+                  className={`px-2.5 py-1 rounded-lg font-mono tabular-nums font-semibold border transition-colors cursor-pointer whitespace-nowrap ${
+                    dynamicAbc.totalStockUnits === preset
+                      ? 'bg-purple-600/30 border-purple-500 text-purple-200'
+                      : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  {(preset / 1_000_000).toFixed(1).replace('.', ',')}M ks
+                </button>
+              ))}
             </div>
           </div>
 
-          <div className="space-y-1">
-            <label className="text-slate-300 font-medium block">
-              {isCs ? 'Množina 2 – Počet SKU bez výdeje za rok (0 ks výdej):' : 'Zero-movement SKUs count (last year):'}
-            </label>
-            <input
-              type="number"
-              min={0}
-              value={dynamicAbc.deadStockSkusCount}
-              onChange={e => setCustomDeadSkusCount(Math.max(0, parseInt(e.target.value || '0', 10)))}
-              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-white font-mono tabular-nums focus:outline-none focus:border-purple-500"
-            />
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="space-y-1">
+              <label className="text-slate-200 font-semibold block">
+                {isCs ? 'Celková skladová zásoba skladem (ks):' : 'Total Physical Warehouse Stock (pcs):'}
+              </label>
+              <input
+                type="number"
+                min={0}
+                step={50000}
+                value={dynamicAbc.totalStockUnits}
+                onChange={e => setCustomTotalStockUnits(Math.max(0, parseInt(e.target.value || '0', 10)))}
+                className="w-full bg-slate-900 border border-purple-500/50 rounded-lg px-3 py-1.5 text-purple-200 font-bold font-mono tabular-nums focus:outline-none focus:border-purple-400"
+              />
+              <div className="text-[11px] text-slate-500">
+                {isCs ? 'Výchozí: 4 500 000 ks dle informace zákazníka' : 'Default: 4,500,000 pcs per customer input'}
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-slate-300 font-medium block">
+                {isCs ? 'Množina 2 – Počet SKU bez výdeje za rok (0 ks výdej):' : 'Zero-movement SKUs count (last year):'}
+              </label>
+              <input
+                type="number"
+                min={0}
+                value={dynamicAbc.deadStockSkusCount}
+                onChange={e => setCustomDeadSkusCount(Math.max(0, parseInt(e.target.value || '0', 10)))}
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-white font-mono tabular-nums focus:outline-none focus:border-purple-500"
+              />
+              <div className="text-[11px] text-slate-500">
+                {isCs ? 'Položky na skladě, které nebyly v order_items.csv ani jednou vydány' : 'SKUs in stock with zero shipments'}
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-slate-300 font-medium block">
+                {isCs ? 'Množina 2 – Počet kusů v SKU bez výdeje (ks):' : 'Zero-movement stock units (pcs):'}
+              </label>
+              <input
+                type="number"
+                min={0}
+                step={10000}
+                value={dynamicAbc.deadStockUnits}
+                onChange={e => setCustomDeadUnitsCount(Math.max(0, parseInt(e.target.value || '0', 10)))}
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-white font-mono tabular-nums focus:outline-none focus:border-purple-500"
+              />
+              <div className="text-[11px] text-slate-500">
+                {isCs ? 'Kusy vázané v neobrátkových položkách (ležácích)' : 'Units tied up in dead stock'}
+              </div>
+            </div>
           </div>
 
-          <div className="space-y-1">
-            <label className="text-slate-300 font-medium block">
-              {isCs ? 'Množina 2 – Počet kusů v SKU bez výdeje (ks):' : 'Zero-movement stock units (pcs):'}
-            </label>
-            <input
-              type="number"
-              min={0}
-              value={dynamicAbc.deadStockUnits}
-              onChange={e => setCustomDeadUnitsCount(Math.max(0, parseInt(e.target.value || '0', 10)))}
-              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-white font-mono tabular-nums focus:outline-none focus:border-purple-500"
-            />
+          {/* Vizuální pruh rozpadu celkové zásoby 4,5M ks */}
+          <div className="space-y-1.5 pt-1">
+            <div className="flex flex-wrap items-center justify-between text-[11px] font-mono tabular-nums text-slate-300 gap-2">
+              <span className="font-sans font-bold text-white">
+                {isCs ? 'Bilance celkové skladové zásoby:' : 'Total Stock Balance:'}{' '}
+                <span className="font-mono text-purple-300">{dynamicAbc.totalStockUnits.toLocaleString('cs-CZ')} ks (100 %)</span>
+              </span>
+              <div className="flex flex-wrap items-center gap-4">
+                <span className="text-emerald-400">
+                  ● {isCs ? `${coverageMonthsTarget}měs. aktivní zásoba:` : `${coverageMonthsTarget}M Active:`}{' '}
+                  {dynamicAbc.coveredThreeMonthUnits.toLocaleString('cs-CZ')} ks (
+                  {dynamicAbc.totalStockUnits > 0
+                    ? ((dynamicAbc.coveredThreeMonthUnits / dynamicAbc.totalStockUnits) * 100).toFixed(1)
+                    : '0.0'}{' '}
+                  %)
+                </span>
+                <span className="text-amber-300">
+                  ● {isCs ? 'Nadzásoba na dokladnění:' : 'Excess Buffer:'}{' '}
+                  {dynamicAbc.excessReplenishUnits.toLocaleString('cs-CZ')} ks (
+                  {dynamicAbc.totalStockUnits > 0
+                    ? ((dynamicAbc.excessReplenishUnits / dynamicAbc.totalStockUnits) * 100).toFixed(1)
+                    : '0.0'}{' '}
+                  %)
+                </span>
+                <span className="text-rose-400">
+                  ● {isCs ? '0 výdej za rok (Ležáky):' : 'Zero-movement:'}{' '}
+                  {dynamicAbc.deadStockUnits.toLocaleString('cs-CZ')} ks (
+                  {dynamicAbc.totalStockUnits > 0
+                    ? ((dynamicAbc.deadStockUnits / dynamicAbc.totalStockUnits) * 100).toFixed(1)
+                    : '0.0'}{' '}
+                  %)
+                </span>
+              </div>
+            </div>
+            <div className="w-full h-3 bg-slate-900 rounded-full overflow-hidden flex border border-slate-800">
+              <div
+                className="h-full bg-emerald-500 transition-all"
+                style={{
+                  width: `${
+                    dynamicAbc.totalStockUnits > 0
+                      ? Math.min(100, (dynamicAbc.coveredThreeMonthUnits / dynamicAbc.totalStockUnits) * 100)
+                      : 0
+                  }%`,
+                }}
+              />
+              <div
+                className="h-full bg-amber-500 transition-all"
+                style={{
+                  width: `${
+                    dynamicAbc.totalStockUnits > 0
+                      ? Math.min(100, (dynamicAbc.excessReplenishUnits / dynamicAbc.totalStockUnits) * 100)
+                      : 0
+                  }%`,
+                }}
+              />
+              <div
+                className="h-full bg-rose-500 transition-all"
+                style={{
+                  width: `${
+                    dynamicAbc.totalStockUnits > 0
+                      ? Math.min(100, (dynamicAbc.deadStockUnits / dynamicAbc.totalStockUnits) * 100)
+                      : 0
+                  }%`,
+                }}
+              />
+            </div>
           </div>
         </div>
 
-        {/* 3 Hlavní pilíře zásob dle zadání */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {/* 4 Hlavní pilíře zásob: Celková zásoba (4.5M) = 1. Zásoba na 3M + 2. Nadzásoba na dokladnění + 3. Množina 2 (0 výdej) */}
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+          {/* Pilíř 0: Celková skladová zásoba */}
+          <div className="bg-slate-950/80 border border-purple-500/40 rounded-2xl p-5 space-y-2">
+            <div className="flex items-center justify-between text-xs text-purple-300 font-semibold">
+              <span>{isCs ? 'CELKOVÁ SKLADOVÁ ZÁSOBA' : 'TOTAL WAREHOUSE STOCK'}</span>
+              <Archive className="w-4 h-4" />
+            </div>
+            <div className="text-2xl font-bold text-purple-300 font-mono tabular-nums">
+              {dynamicAbc.totalStockUnits.toLocaleString('cs-CZ')} <span className="text-sm font-normal text-slate-400">ks</span>
+            </div>
+            <div className="text-xs text-slate-300 font-mono tabular-nums">
+              {isCs
+                ? `Celkem v ${dynamicAbc.totalCatalogSkus.toLocaleString('cs-CZ')} SKU (Ø ${(dynamicAbc.totalStockUnits / Math.max(1, dynamicAbc.totalAnnualIssuedUnits / Math.max(1, report.monthsCount))).toFixed(1)} měs. zásoby)`
+                : `Across ${dynamicAbc.totalCatalogSkus.toLocaleString()} catalog SKUs`}
+            </div>
+            <p className="text-[11px] text-slate-400 pt-1 border-t border-slate-800/80">
+              {isCs
+                ? `Součet veškerého zboží na skladě = ${coverageMonthsTarget}měsíční aktivní zásoba (${dynamicAbc.coveredThreeMonthUnits.toLocaleString('cs-CZ')} ks) + celková nadzásoba a ležáky (${(dynamicAbc.excessReplenishUnits + dynamicAbc.deadStockUnits).toLocaleString('cs-CZ')} ks).`
+                : 'Total physical stock across active picking locations, reserve replenishment buffer, and dead stock.'}
+            </p>
+          </div>
+
           {/* Pilíř 1: Zásoba na 3 průměrné měsíce */}
           <div className="bg-slate-950/80 border border-emerald-500/30 rounded-2xl p-5 space-y-2">
             <div className="flex items-center justify-between text-xs text-emerald-400 font-semibold">
@@ -1024,12 +1468,12 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
             </div>
             <div className="text-xs text-slate-300 font-mono tabular-nums">
               {isCs
-                ? `Rozloženo v ${dynamicAbc.coveredThreeMonthSkusCount.toLocaleString('cs-CZ')} aktivních SKU`
+                ? `Rozloženo v ${dynamicAbc.coveredThreeMonthSkusCount.toLocaleString('cs-CZ')} aktivních SKU (${dynamicAbc.totalStockUnits > 0 ? ((dynamicAbc.coveredThreeMonthUnits / dynamicAbc.totalStockUnits) * 100).toFixed(1) : '0'} % skladu)`
                 : `Across ${dynamicAbc.coveredThreeMonthSkusCount.toLocaleString()} active SKUs`}
             </div>
             <p className="text-[11px] text-slate-400 pt-1 border-t border-slate-800/80">
               {isCs
-                ? `Množství přesně pokrývající ${coverageMonthsTarget} průměrné měsíce odbytu v primárních pickovacích pozicích (celková ${coverageMonthsTarget}měs. potřeba je ${dynamicAbc.threeMonthDemandUnits.toLocaleString('cs-CZ')} ks).`
+                ? `Množství přesně pokrývající ${coverageMonthsTarget} průměrné měsíce odbytu dle reálných výdejů z CSV (Ø měsíční výdej je ${Math.round(dynamicAbc.totalAnnualIssuedUnits / Math.max(1, report.monthsCount)).toLocaleString('cs-CZ')} ks/měs.).`
                 : `Quantity covering ${coverageMonthsTarget} average months of demand in primary picking locations.`}
             </p>
           </div>
@@ -1045,12 +1489,12 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
             </div>
             <div className="text-xs text-amber-200/90 font-mono tabular-nums font-semibold">
               {isCs
-                ? `V ${dynamicAbc.excessReplenishSkusCount.toLocaleString('cs-CZ')} SKU (průměrně ${Math.round(dynamicAbc.excessReplenishUnits / Math.max(1, dynamicAbc.excessReplenishSkusCount))} ks / SKU)`
+                ? `V ${dynamicAbc.excessReplenishSkusCount.toLocaleString('cs-CZ')} SKU (Ø ${Math.round(dynamicAbc.excessReplenishUnits / Math.max(1, dynamicAbc.excessReplenishSkusCount)).toLocaleString('cs-CZ')} ks / SKU)`
                 : `Across ${dynamicAbc.excessReplenishSkusCount.toLocaleString()} SKUs`}
             </div>
             <p className="text-[11px] text-slate-400 pt-1 border-t border-slate-800/80">
               {isCs
-                ? `Zásoba obrátkových položek převyšující ${coverageMonthsTarget} průměrné měsíce. Může být uložena v rezervní zóně pro postupné dokladnění.`
+                ? `Zásoba obrátkových položek převyšující ${coverageMonthsTarget} průměrné měsíce (${dynamicAbc.totalStockUnits > 0 ? ((dynamicAbc.excessReplenishUnits / dynamicAbc.totalStockUnits) * 100).toFixed(1) : '0'} % skladu). Určeno do rezervní zóny na dokladnění.`
                 : `Active SKU inventory exceeding ${coverageMonthsTarget} average months, suitable for reserve storage and replenishment.`}
             </p>
           </div>
@@ -1066,7 +1510,7 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
             </div>
             <div className="text-xs text-rose-200/90 font-mono tabular-nums font-semibold">
               {isCs
-                ? `Celkem ${dynamicAbc.deadStockSkusCount.toLocaleString('cs-CZ')} SKU s 0 ks výdejem (${dynamicAbc.classBreakdown.DEAD.skuSharePct} % katalogu)`
+                ? `Celkem ${dynamicAbc.deadStockSkusCount.toLocaleString('cs-CZ')} SKU s 0 ks výdejem (${dynamicAbc.classBreakdown.DEAD.skuSharePct} % SKU)`
                 : `${dynamicAbc.deadStockSkusCount.toLocaleString()} SKUs with 0 units shipped`}
             </div>
             <p className="text-[11px] text-slate-400 pt-1 border-t border-slate-800/80">
@@ -1077,20 +1521,360 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
           </div>
         </div>
 
-        {/* Souhrnná tabulka ABC kategorií (A, B, C, DEAD) */}
+        {/* ========================================================= */}
+        {/* VOLUMETRIE SKLADU: BOXY (60×40×22 CM) & PALETY (120×80×180 CM) */}
+        {/* ========================================================= */}
+        {dynamicAbc.volumetry && (
+          <div className="bg-slate-950/90 border border-cyan-500/35 rounded-2xl p-5 space-y-4">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-800 pb-4">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 text-cyan-300 font-bold text-sm sm:text-base">
+                  <Boxes className="w-4 h-4 text-cyan-400 shrink-0" />
+                  <span>
+                    {isCs
+                      ? `Volumetrie skladu: Potřeba boxů (60×40×22 cm) pro ${coverageMonthsTarget}M zásobu & Palet (120×80×180 cm) pro nadzásobu a bezobraty`
+                      : `Warehouse Volumetry: Boxes (60×40×22 cm) for ${coverageMonthsTarget}M Stock & Pallets (120×80×180 cm) for Excess & Dead Stock`}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400 max-w-4xl leading-relaxed">
+                  {isCs
+                    ? `1 box má rozměr 60×40×22 cm (${(dynamicAbc.volumetry.boxGrossVolumeM3 * 1000).toFixed(1)} l / ${dynamicAbc.volumetry.boxGrossVolumeM3} m³), využitelných je ${boxMaxFillPct} % (${(dynamicAbc.volumetry.boxUsableVolumeM3 * 1000).toFixed(2)} l). V každém boxu smí být max. 1 SKU (žádné mísení produktů – i 1 ks SKU zabere celý box). Nadzásoba a bezobraty jsou uloženy na paletách 120×80×180 cm (${dynamicAbc.volumetry.palletGrossVolumeM3} m³), využitelných ${palletMaxFillPct} % (${dynamicAbc.volumetry.palletUsableVolumeM3} m³). Na paletě jsou povolené mixy, ale 1 SKU se nikdy nerozděluje kusově mezi více mixovaných palet (snaha vždy seskládat paletu z 1 SKU a vměstnat SKU na co nejmenší počet palet pro rychlý picking).`
+                    : `Boxes (60×40×22 cm = 0.0528 m³, ${boxMaxFillPct}% usable) hold max 1 SKU per box (no mixing). Excess & dead stock use pallets (120×80×180 cm = 1.728 m³, ${palletMaxFillPct}% usable) with No-Split SKU packing to maximize units per pallet for fast replenishment picking.`}
+                </p>
+              </div>
+
+              {/* Konfigurace využitelného objemu boxu (výchozí 80 %) a palety (výchozí 80 %) */}
+              <div className="flex flex-wrap items-center gap-3 self-start lg:self-auto text-xs">
+                <div className="flex items-center gap-1.5 bg-slate-900 px-3 py-1.5 rounded-xl border border-cyan-500/30">
+                  <span className="text-slate-300 font-medium">
+                    {isCs ? 'Max. využití boxu:' : 'Max box fill:'}
+                  </span>
+                  {[70, 80, 90].map(pct => (
+                    <button
+                      key={pct}
+                      onClick={() => setBoxMaxFillPct(pct)}
+                      className={`px-2 py-0.5 rounded-md font-mono font-bold transition-colors cursor-pointer ${
+                        boxMaxFillPct === pct
+                          ? 'bg-cyan-500 text-slate-950'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      {pct} %
+                    </button>
+                  ))}
+                  <input
+                    type="number"
+                    min={30}
+                    max={100}
+                    step={5}
+                    value={boxMaxFillPct}
+                    onChange={e => setBoxMaxFillPct(Math.min(100, Math.max(30, parseInt(e.target.value || '80', 10))))}
+                    className="w-14 bg-slate-950 border border-cyan-500/50 rounded px-1.5 py-0.5 text-right font-mono font-bold text-cyan-300 focus:outline-none"
+                  />
+                </div>
+
+                <div className="flex items-center gap-1.5 bg-slate-900 px-3 py-1.5 rounded-xl border border-indigo-500/30">
+                  <span className="text-slate-300 font-medium">
+                    {isCs ? 'Max. využití palety:' : 'Max pallet fill:'}
+                  </span>
+                  {[70, 80, 90].map(pct => (
+                    <button
+                      key={pct}
+                      onClick={() => setPalletMaxFillPct(pct)}
+                      className={`px-2 py-0.5 rounded-md font-mono font-bold transition-colors cursor-pointer ${
+                        palletMaxFillPct === pct
+                          ? 'bg-indigo-500 text-white'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      {pct} %
+                    </button>
+                  ))}
+                  <input
+                    type="number"
+                    min={30}
+                    max={100}
+                    step={5}
+                    value={palletMaxFillPct}
+                    onChange={e => setPalletMaxFillPct(Math.min(100, Math.max(30, parseInt(e.target.value || '80', 10))))}
+                    className="w-14 bg-slate-950 border border-indigo-500/50 rounded px-1.5 py-0.5 text-right font-mono font-bold text-indigo-300 focus:outline-none"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* 4 Hlavní KPI karty volumetrie: 1. Boxy pro 3M zásobu, 2. Palety pro nadzásobu, 3. Palety pro bezobraty, 4. Celkem palet (Mono-SKU vs. Mix) */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3.5">
+              {/* 1. Potřeba boxů pro 3měsíční zásobu */}
+              <div className="bg-slate-900/90 border border-cyan-500/40 rounded-xl p-4 space-y-1.5">
+                <div className="flex items-center justify-between text-xs text-cyan-300 font-semibold">
+                  <span>
+                    {isCs
+                      ? `1. POTŘEBA BOXŮ (${coverageMonthsTarget}M ZÁSOBA)`
+                      : `1. BOXES NEEDED (${coverageMonthsTarget}M STOCK)`}
+                  </span>
+                  <span className="font-mono text-[10px] bg-cyan-500/15 text-cyan-300 px-1.5 py-0.5 rounded">
+                    60×40×22 cm ({boxMaxFillPct} %)
+                  </span>
+                </div>
+                <div className="text-2xl font-bold text-cyan-300 font-mono tabular-nums">
+                  {dynamicAbc.volumetry.totalBoxesNeeded.toLocaleString('cs-CZ')}{' '}
+                  <span className="text-xs font-normal text-slate-400">{isCs ? 'boxů' : 'boxes'}</span>
+                </div>
+                <div className="text-[11px] text-slate-300 font-mono tabular-nums">
+                  {isCs
+                    ? `Objem zboží: ${dynamicAbc.volumetry.totalBoxGoodsVolumeM3.toLocaleString('cs-CZ')} m³ • Ø ${dynamicAbc.volumetry.avgUnitsPerBox} ks/box`
+                    : `Goods vol: ${dynamicAbc.volumetry.totalBoxGoodsVolumeM3.toLocaleString()} m³ • Avg ${dynamicAbc.volumetry.avgUnitsPerBox} pcs/box`}
+                </div>
+                <div className="text-[11px] text-slate-400 pt-1 border-t border-slate-800/80">
+                  {isCs
+                    ? `1 SKU / box (bez mixu): Ø vyplnění ${dynamicAbc.volumetry.avgBoxFillOfUsablePct} % z využitelné kapacity (${dynamicAbc.volumetry.avgBoxFillOfGrossPct} % z hrubého boxu)`
+                    : `Max 1 SKU/box: Avg ${dynamicAbc.volumetry.avgBoxFillOfUsablePct}% of usable capacity`}
+                </div>
+              </div>
+
+              {/* 2. Palety pro nadzásobu na dokladnění (A + B + C) */}
+              <div className="bg-slate-900/90 border border-amber-500/35 rounded-xl p-4 space-y-1.5">
+                <div className="flex items-center justify-between text-xs text-amber-300 font-semibold">
+                  <span>
+                    {isCs ? '2. PALETY PRO NADZÁSOBU (A+B+C)' : '2. PALLETS FOR EXCESS STOCK'}
+                  </span>
+                  <span className="font-mono text-[10px] bg-amber-500/15 text-amber-300 px-1.5 py-0.5 rounded">
+                    120×80×180 cm
+                  </span>
+                </div>
+                <div className="text-2xl font-bold text-amber-300 font-mono tabular-nums">
+                  {dynamicAbc.volumetry.excessPalletsNeeded.toLocaleString('cs-CZ')}{' '}
+                  <span className="text-xs font-normal text-slate-400">{isCs ? 'palet' : 'pallets'}</span>
+                </div>
+                <div className="text-[11px] text-slate-300 font-mono tabular-nums">
+                  {isCs
+                    ? `Pro ${dynamicAbc.excessReplenishUnits.toLocaleString('cs-CZ')} ks nadzásoby v ${dynamicAbc.excessReplenishSkusCount.toLocaleString('cs-CZ')} SKU`
+                    : `For ${dynamicAbc.excessReplenishUnits.toLocaleString()} excess pcs across ${dynamicAbc.excessReplenishSkusCount.toLocaleString()} SKUs`}
+                </div>
+                <div className="text-[11px] text-slate-400 pt-1 border-t border-slate-800/80">
+                  {isCs
+                    ? `A: ${dynamicAbc.classBreakdown.A.palletsForExcess.toLocaleString('cs-CZ')} pal. • B: ${dynamicAbc.classBreakdown.B.palletsForExcess.toLocaleString('cs-CZ')} pal. • C: ${dynamicAbc.classBreakdown.C.palletsForExcess.toLocaleString('cs-CZ')} pal.`
+                    : `A: ${dynamicAbc.classBreakdown.A.palletsForExcess} • B: ${dynamicAbc.classBreakdown.B.palletsForExcess} • C: ${dynamicAbc.classBreakdown.C.palletsForExcess} pallets`}
+                </div>
+              </div>
+
+              {/* 3. Palety pro bezobraty (Množina 2 – 0 výdej za rok) */}
+              <div className="bg-slate-900/90 border border-rose-500/35 rounded-xl p-4 space-y-1.5">
+                <div className="flex items-center justify-between text-xs text-rose-300 font-semibold">
+                  <span>
+                    {isCs ? '3. PALETY PRO BEZOBRATY (0 VÝDEJ)' : '3. PALLETS FOR DEAD STOCK'}
+                  </span>
+                  <span className="font-mono text-[10px] bg-rose-500/15 text-rose-300 px-1.5 py-0.5 rounded">
+                    {palletMaxFillPct} % = {dynamicAbc.volumetry.palletUsableVolumeM3} m³
+                  </span>
+                </div>
+                <div className="text-2xl font-bold text-rose-400 font-mono tabular-nums">
+                  {dynamicAbc.volumetry.deadStockPalletsNeeded.toLocaleString('cs-CZ')}{' '}
+                  <span className="text-xs font-normal text-slate-400">{isCs ? 'palet' : 'pallets'}</span>
+                </div>
+                <div className="text-[11px] text-slate-300 font-mono tabular-nums">
+                  {isCs
+                    ? `Pro ${dynamicAbc.deadStockUnits.toLocaleString('cs-CZ')} ks ležáků v ${dynamicAbc.deadStockSkusCount.toLocaleString('cs-CZ')} SKU (${dynamicAbc.classBreakdown.DEAD.palletVolumeM3.toLocaleString('cs-CZ')} m³)`
+                    : `For ${dynamicAbc.deadStockUnits.toLocaleString()} dead stock pcs (${dynamicAbc.classBreakdown.DEAD.palletVolumeM3} m³)`}
+                </div>
+                <div className="text-[11px] text-slate-400 pt-1 border-t border-slate-800/80">
+                  {isCs
+                    ? `Z toho ${dynamicAbc.classBreakdown.DEAD.monoSkuPallets.toLocaleString('cs-CZ')} čistých 1-SKU palet a ${dynamicAbc.classBreakdown.DEAD.mixedSkuPallets.toLocaleString('cs-CZ')} mix palet`
+                    : `${dynamicAbc.classBreakdown.DEAD.monoSkuPallets} mono-SKU & ${dynamicAbc.classBreakdown.DEAD.mixedSkuPallets} mixed pallets`}
+                </div>
+              </div>
+
+              {/* 4. Celková potřeba palet & No-Split SKU struktura */}
+              <div className="bg-slate-900/90 border border-indigo-500/45 rounded-xl p-4 space-y-1.5">
+                <div className="flex items-center justify-between text-xs text-indigo-300 font-semibold">
+                  <span>
+                    {isCs ? '4. CELKEM PALET (NADZÁSOBA + LEŽÁKY)' : '4. TOTAL PALLETS NEEDED'}
+                  </span>
+                  <span className="font-mono text-[10px] bg-indigo-500/20 text-indigo-200 px-1.5 py-0.5 rounded">
+                    No-Split SKU
+                  </span>
+                </div>
+                <div className="text-2xl font-bold text-indigo-300 font-mono tabular-nums">
+                  {dynamicAbc.volumetry.totalPalletsNeeded.toLocaleString('cs-CZ')}{' '}
+                  <span className="text-xs font-normal text-slate-400">{isCs ? 'palet celkem' : 'total pallets'}</span>
+                </div>
+                <div className="text-[11px] text-slate-200 font-mono tabular-nums font-semibold">
+                  {isCs
+                    ? `${dynamicAbc.volumetry.monoSkuPalletsCount.toLocaleString('cs-CZ')}× 1-SKU paleta • ${dynamicAbc.volumetry.mixedSkuPalletsCount.toLocaleString('cs-CZ')}× mix paleta`
+                    : `${dynamicAbc.volumetry.monoSkuPalletsCount.toLocaleString()} mono-SKU • ${dynamicAbc.volumetry.mixedSkuPalletsCount.toLocaleString()} mixed`}
+                </div>
+                <div className="text-[11px] text-slate-400 pt-1 border-t border-slate-800/80">
+                  {isCs
+                    ? `Ø ${dynamicAbc.volumetry.avgUnitsPerPallet.toLocaleString('cs-CZ')} ks/pal. (Ø ${dynamicAbc.volumetry.avgSkusPerPallet} SKU/pal., využití ${dynamicAbc.volumetry.avgPalletFillOfUsablePct} % z ${palletMaxFillPct}% stropu)`
+                    : `Avg ${dynamicAbc.volumetry.avgUnitsPerPallet} pcs/pallet (${dynamicAbc.volumetry.avgPalletFillOfUsablePct}% of usable cap)`}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================= */}
+        {/* MODEL PRŮBĚŽNÉHO DOSKLADŇOVÁNÍ (POKLES POD 30 % -> 100 %) */}
+        {/* ========================================================= */}
+        <div className="bg-slate-950/90 border border-amber-500/35 rounded-2xl p-5 space-y-4">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-800 pb-4">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 text-amber-300 font-bold text-sm sm:text-base">
+                <Shuffle className="w-4 h-4 text-amber-400 shrink-0" />
+                <span>
+                  {isCs
+                    ? `Průběžné doskladňování ${coverageMonthsTarget}měsíční zásoby (pokles pod ${replenishTriggerPct} % → doplnění na 100 % časy paletového pickingu)`
+                    : `Continuous Replenishment of ${coverageMonthsTarget}M Stock (Drop Below ${replenishTriggerPct}% → Refill to 100% Using Pallet Picking Times)`}
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 max-w-4xl leading-relaxed">
+                {isCs
+                  ? `Kdykoliv zásoba položky v pickovací zóně (${coverageMonthsTarget} průměrné měsíce = 100 %) klesne pod ${replenishTriggerPct} %, spustí se doskladnění z nadzásoby zpět na 100 %. Jedna doskladňovací dávka tedy činí ${dynamicAbc.batchFractionPct} % z ${coverageMonthsTarget}měsíční zásoby (odpovídá ${dynamicAbc.batchMonthsEquivalent} průměrného měsíce odbytu). Časová náročnost a potřeba lidí (FTE) se počítá časy z paletového / velkoobjemového pickingu.`
+                  : `Whenever a SKU's ${coverageMonthsTarget}-month active stock drops below ${replenishTriggerPct}%, it is replenished back to 100% (a ${dynamicAbc.batchFractionPct}% refill batch = ${dynamicAbc.batchMonthsEquivalent} average months of demand), evaluated using pallet picking cycle times.`}
+              </p>
+            </div>
+
+            {/* Nastavení prahu doskladnění (default 30 %) a času paletového pickingu */}
+            <div className="flex flex-wrap items-center gap-3 self-start lg:self-auto text-xs">
+              <div className="flex items-center gap-1.5 bg-slate-900 px-3 py-1.5 rounded-xl border border-slate-800">
+                <span className="text-slate-400 font-medium">
+                  {isCs ? 'Práh doskladnění:' : 'Reorder point:'}
+                </span>
+                {[20, 30, 40].map(pct => (
+                  <button
+                    key={pct}
+                    onClick={() => setReplenishTriggerPct(pct)}
+                    className={`px-2 py-0.5 rounded-md font-mono font-bold transition-colors cursor-pointer ${
+                      replenishTriggerPct === pct
+                        ? 'bg-amber-500 text-slate-950'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {pct} % → 100 %
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex items-center gap-2 bg-slate-900 px-3 py-1.5 rounded-xl border border-amber-500/30">
+                <Clock className="w-3.5 h-3.5 text-amber-400" />
+                <span className="text-slate-300 font-medium">
+                  {isCs ? 'Čas paletového pickingu (s/ks):' : 'Pallet picking time (s/pc):'}
+                </span>
+                <input
+                  type="number"
+                  step="0.5"
+                  min="0.5"
+                  value={activeSvjRates.palletPickSecPerUnit ?? 19.8}
+                  onChange={e => {
+                    const val = Math.max(0.5, parseFloat(e.target.value || '0'));
+                    setCustomPalletPickSec(val);
+                  }}
+                  className="w-16 bg-slate-950 border border-amber-500/50 rounded px-2 py-0.5 text-right font-mono font-bold text-amber-300 focus:outline-none focus:border-amber-400"
+                />
+                {customPalletPickSec !== null && (
+                  <button
+                    onClick={() => setCustomPalletPickSec(null)}
+                    className="text-[11px] text-slate-400 hover:text-white underline cursor-pointer"
+                    title={isCs ? 'Vrátit na výchozí čas SVJ 6+ / paletového pickingu' : 'Reset to default SVJ 6+ pallet pick rate'}
+                  >
+                    {isCs ? 'Dle SVJ' : 'Reset'}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* 4 KPI karty průběžného doskladňování (30 % -> 100 %) */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3.5">
+            {/* 1. Velikost 1 dávky doskladnění (70 % ze 3M zásoby) */}
+            <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-4 space-y-1.5">
+              <div className="text-xs text-amber-300 font-semibold">
+                {isCs
+                  ? `1. DÁVKA DOSKLADNĚNÍ (${replenishTriggerPct} % → 100 %)`
+                  : `1. REFILL BATCH (${replenishTriggerPct}% → 100%)`}
+              </div>
+              <div className="text-xl font-bold text-white font-mono tabular-nums">
+                {dynamicAbc.totalReplenishBatchUnits.toLocaleString('cs-CZ')}{' '}
+                <span className="text-xs font-normal text-slate-400">
+                  ks ({dynamicAbc.batchFractionPct} % z {coverageMonthsTarget}M)
+                </span>
+              </div>
+              <div className="text-[11px] text-slate-400 font-mono tabular-nums">
+                {isCs
+                  ? `Ø ${dynamicAbc.avgUnitsPerReplenishTask.toLocaleString('cs-CZ')} ks / 1 doskladnění SKU (= ${dynamicAbc.batchMonthsEquivalent} měs. odbytu)`
+                  : `Avg ${dynamicAbc.avgUnitsPerReplenishTask.toLocaleString()} pcs per SKU refill (${dynamicAbc.batchMonthsEquivalent}M demand)`}
+              </div>
+            </div>
+
+            {/* 2. Frekvence a počet cyklů doskladnění za rok / měsíc */}
+            <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-4 space-y-1.5">
+              <div className="text-xs text-teal-300 font-semibold">
+                {isCs ? '2. POČET CYKLŮ DOSKLADNĚNÍ' : '2. REPLENISHMENT CYCLES'}
+              </div>
+              <div className="text-xl font-bold text-teal-300 font-mono tabular-nums">
+                {dynamicAbc.cyclesPerSkuPerYear}×{' '}
+                <span className="text-xs font-normal text-slate-400">
+                  {isCs ? 'ročně / 1 SKU' : 'per SKU / year'}
+                </span>
+              </div>
+              <div className="text-[11px] text-slate-400 font-mono tabular-nums">
+                {isCs
+                  ? `Celkem ${dynamicAbc.totalAnnualReplenishCycles.toLocaleString('cs-CZ')} úkolů/rok (Ø ${dynamicAbc.avgMonthlyReplenishCycles.toLocaleString('cs-CZ')}/měs.) • Nadzásoba kryje ${dynamicAbc.excessCoveredWaves}× plných vln`
+                  : `${dynamicAbc.totalAnnualReplenishCycles.toLocaleString()} tasks/yr (${dynamicAbc.avgMonthlyReplenishCycles.toLocaleString()}/mo) • Excess covers ${dynamicAbc.excessCoveredWaves}x waves`}
+              </div>
+            </div>
+
+            {/* 3. Čas paletového pickingu na průběžné doskladňování */}
+            <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-4 space-y-1.5">
+              <div className="text-xs text-purple-300 font-semibold">
+                {isCs ? '3. ČAS DOSKLADŇOVÁNÍ (PALET. PICK)' : '3. PALLET PICK REPLENISHMENT TIME'}
+              </div>
+              <div className="text-xl font-bold text-purple-300 font-mono tabular-nums">
+                {dynamicAbc.totalReplenishHoursYear.toLocaleString('cs-CZ')}{' '}
+                <span className="text-xs font-normal text-slate-400">{isCs ? 'hod / rok' : 'h / year'}</span>
+              </div>
+              <div className="text-[11px] text-slate-400 font-mono tabular-nums">
+                {isCs
+                  ? `Ø ${dynamicAbc.avgMonthlyReplenishHours.toLocaleString('cs-CZ')} hod / měsíc při normě ${dynamicAbc.palletPickSecPerUnit} s/ks`
+                  : `Avg ${dynamicAbc.avgMonthlyReplenishHours.toLocaleString()} h/month at ${dynamicAbc.palletPickSecPerUnit} s/pc`}
+              </div>
+            </div>
+
+            {/* 4. Potřeba pracovníků (FTE) na průběžné doskladňování */}
+            <div className="bg-slate-900/90 border border-amber-500/40 rounded-xl p-4 space-y-1.5">
+              <div className="text-xs text-amber-400 font-semibold">
+                {isCs ? '4. POTŘEBA LIDÍ NA DOSKLADŇOVÁNÍ' : '4. REPLENISHMENT STAFF (FTE)'}
+              </div>
+              <div className="text-xl font-bold text-amber-300 font-mono tabular-nums">
+                {dynamicAbc.avgMonthlyReplenishFte}{' '}
+                <span className="text-xs font-normal text-slate-400">FTE / měs.</span>
+              </div>
+              <div className="text-[11px] text-slate-400 font-mono tabular-nums">
+                {isCs
+                  ? `Při fondu ${monthlyFteHours} h/měs. (promítnuto i do měsíční tabulky FTE níže)`
+                  : `At ${monthlyFteHours} h/month norm (included in monthly FTE model below)`}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Souhrnná tabulka ABC kategorií (A, B, C, DEAD) vč. boxů, palet a průběžného doskladňování 30 % -> 100 % */}
         <div className="overflow-x-auto rounded-xl border border-slate-800">
           <table className="w-full text-left text-xs">
             <thead className="bg-slate-950 text-slate-400 border-b border-slate-800 font-semibold">
               <tr>
                 <th className="py-3 px-4">{isCs ? 'Kategorie ABC' : 'ABC Class'}</th>
                 <th className="py-3 px-3 text-right">{isCs ? 'Počet SKU' : 'SKUs Count'}</th>
-                <th className="py-3 px-3 text-right">{isCs ? 'Podíl SKU' : 'SKU Share'}</th>
-                <th className="py-3 px-3 text-right">{isCs ? 'Roční výdej (ks)' : 'Annual Issue (pcs)'}</th>
-                <th className="py-3 px-3 text-right">{isCs ? 'Podíl výdeje' : 'Volume Share'}</th>
-                <th className="py-3 px-3 text-right text-emerald-300">{isCs ? `Zásoba na ${coverageMonthsTarget} měs. (ks)` : `${coverageMonthsTarget}M Coverage (pcs)`}</th>
-                <th className="py-3 px-3 text-right">{isCs ? 'Celková zásoba (ks)' : 'Total Stock (pcs)'}</th>
-                <th className="py-3 px-3 text-right text-amber-300">{isCs ? 'SKU v nadzásobě' : 'Excess SKUs'}</th>
-                <th className="py-3 px-4 text-right text-amber-400">{isCs ? 'Nadzásoba na dokladnění (ks)' : 'Excess Buffer (pcs)'}</th>
+                <th className="py-3 px-3 text-right">{isCs ? 'Roční výdej (ks)' : 'Annual Issue'}</th>
+                <th className="py-3 px-3 text-right text-emerald-300">{isCs ? `Zásoba ${coverageMonthsTarget}M (ks)` : `${coverageMonthsTarget}M Stock`}</th>
+                <th className="py-3 px-3 text-right text-cyan-300">{isCs ? `Boxy ${coverageMonthsTarget}M (60×40×22)` : `Boxes (${coverageMonthsTarget}M)`}</th>
+                <th className="py-3 px-3 text-right">{isCs ? 'Celková zásoba (ks)' : 'Total Stock'}</th>
+                <th className="py-3 px-3 text-right text-amber-300">{isCs ? 'Nadzásoba / Ležáky' : 'Excess / Dead'}</th>
+                <th className="py-3 px-3 text-right text-indigo-300">{isCs ? 'Palety (120×80×180)' : 'Pallets Needed'}</th>
+                <th className="py-3 px-3 text-right text-teal-300">{isCs ? `1 dávka ${replenishTriggerPct}%→100%` : `1 Batch ${replenishTriggerPct}%→100%`}</th>
+                <th className="py-3 px-3 text-right text-purple-300">{isCs ? 'Doskladnění (hod/rok)' : 'Replenish (h/yr)'}</th>
+                <th className="py-3 px-4 text-right text-amber-400 font-bold">{isCs ? 'FTE Doskladnění' : 'Replenish FTE'}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/70 font-mono tabular-nums">
@@ -1101,6 +1885,7 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
                 { key: 'DEAD', labelCs: 'Množina 2: Nulový výdej za rok (Ležáky)', labelEn: 'Set 2: Zero movement in last year', color: 'text-rose-400' },
               ] as const).map(row => {
                 const c = dynamicAbc.classBreakdown[row.key];
+                const isDead = row.key === 'DEAD';
                 return (
                   <tr key={row.key} className="hover:bg-slate-800/40 transition-colors">
                     <td className={`py-3 px-4 font-sans font-bold ${row.color}`}>
@@ -1108,27 +1893,60 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
                     </td>
                     <td className="py-3 px-3 text-right text-white font-semibold">
                       {c.skusCount.toLocaleString('cs-CZ')}
-                    </td>
-                    <td className="py-3 px-3 text-right text-slate-400">
-                      {c.skuSharePct} %
+                      <span className="block text-[10px] text-slate-400 font-normal">{c.skuSharePct} % SKU</span>
                     </td>
                     <td className="py-3 px-3 text-right text-slate-200">
                       {c.annualUnits.toLocaleString('cs-CZ')}
-                    </td>
-                    <td className="py-3 px-3 text-right text-slate-300 font-semibold">
-                      {c.unitSharePct} %
+                      <span className="block text-[10px] text-slate-400">{c.unitSharePct} %</span>
                     </td>
                     <td className="py-3 px-3 text-right text-emerald-300 font-semibold">
                       {c.coveredThreeMonthUnits.toLocaleString('cs-CZ')}
                     </td>
+                    <td className="py-3 px-3 text-right bg-cyan-950/15">
+                      {isDead ? (
+                        <span className="text-slate-600">0 boxů</span>
+                      ) : (
+                        <>
+                          <span className="font-bold text-cyan-300">{c.boxesFor3M.toLocaleString('cs-CZ')} boxů</span>
+                          <span className="block text-[10px] text-slate-400">{c.boxVolumeM3.toLocaleString('cs-CZ')} m³</span>
+                        </>
+                      )}
+                    </td>
                     <td className="py-3 px-3 text-right text-white">
                       {c.currentStockUnits.toLocaleString('cs-CZ')}
                     </td>
-                    <td className="py-3 px-3 text-right text-amber-300">
-                      {c.excessSkusCount.toLocaleString('cs-CZ')} SKU
+                    <td className="py-3 px-3 text-right">
+                      <span className="font-bold text-amber-400">{c.excessUnits.toLocaleString('cs-CZ')} ks</span>
+                      <span className="block text-[10px] text-amber-300/80">{c.excessSkusCount.toLocaleString('cs-CZ')} SKU</span>
                     </td>
-                    <td className="py-3 px-4 text-right font-bold text-amber-400">
-                      {c.excessUnits.toLocaleString('cs-CZ')} ks
+                    <td className="py-3 px-3 text-right bg-indigo-950/15">
+                      <span className="font-bold text-indigo-300">{c.palletsForExcess.toLocaleString('cs-CZ')} pal.</span>
+                      <span className="block text-[10px] text-slate-400">
+                        {c.monoSkuPallets.toLocaleString('cs-CZ')}× 1-SKU / {c.mixedSkuPallets.toLocaleString('cs-CZ')}× mix
+                      </span>
+                    </td>
+                    <td className="py-3 px-3 text-right text-teal-300">
+                      {isDead ? (
+                        <span className="text-slate-600">-</span>
+                      ) : (
+                        <>
+                          <span className="font-bold">{c.replenishBatchUnits.toLocaleString('cs-CZ')} ks</span>
+                          <span className="block text-[10px] text-slate-400">Ø {c.avgSkuBatchUnits} ks/SKU</span>
+                        </>
+                      )}
+                    </td>
+                    <td className="py-3 px-3 text-right text-purple-300">
+                      {isDead ? (
+                        <span className="text-slate-600">0 h</span>
+                      ) : (
+                        <>
+                          <span className="font-bold">{c.replenishHoursYear.toLocaleString('cs-CZ')} h</span>
+                          <span className="block text-[10px] text-slate-400">{c.annualReplenishCycles.toLocaleString('cs-CZ')}× cyklů</span>
+                        </>
+                      )}
+                    </td>
+                    <td className="py-3 px-4 text-right font-bold text-amber-300 bg-amber-950/15">
+                      {isDead ? <span className="text-slate-600">0 FTE</span> : `${c.replenishFteMonthly} FTE`}
                     </td>
                   </tr>
                 );
@@ -1138,16 +1956,35 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
               <tr>
                 <td className="py-3.5 px-4 font-sans">{isCs ? 'CELKEM KATALOG (A + B + C + Ležáky)' : 'TOTAL CATALOG'}</td>
                 <td className="py-3.5 px-3 text-right">{dynamicAbc.totalCatalogSkus.toLocaleString('cs-CZ')}</td>
-                <td className="py-3.5 px-3 text-right">100 %</td>
                 <td className="py-3.5 px-3 text-right">{dynamicAbc.totalAnnualIssuedUnits.toLocaleString('cs-CZ')}</td>
-                <td className="py-3.5 px-3 text-right">100 %</td>
                 <td className="py-3.5 px-3 text-right text-emerald-400">{dynamicAbc.coveredThreeMonthUnits.toLocaleString('cs-CZ')}</td>
-                <td className="py-3.5 px-3 text-right">{dynamicAbc.totalStockUnits.toLocaleString('cs-CZ')}</td>
-                <td className="py-3.5 px-3 text-right text-amber-300">
-                  {(dynamicAbc.excessReplenishSkusCount + dynamicAbc.deadStockSkusCount).toLocaleString('cs-CZ')} SKU
+                <td className="py-3.5 px-3 text-right text-cyan-300 bg-cyan-950/20">
+                  {(dynamicAbc.volumetry?.totalBoxesNeeded || 0).toLocaleString('cs-CZ')} boxů
+                  <span className="block text-[10px] text-cyan-200/80 font-normal">
+                    {(dynamicAbc.volumetry?.totalBoxGoodsVolumeM3 || 0).toLocaleString('cs-CZ')} m³
+                  </span>
                 </td>
-                <td className="py-3.5 px-4 text-right text-amber-400">
+                <td className="py-3.5 px-3 text-right">{dynamicAbc.totalStockUnits.toLocaleString('cs-CZ')}</td>
+                <td className="py-3.5 px-3 text-right text-amber-400">
                   {(dynamicAbc.excessReplenishUnits + dynamicAbc.deadStockUnits).toLocaleString('cs-CZ')} ks
+                  <span className="block text-[10px] text-amber-300 font-normal">
+                    {(dynamicAbc.excessReplenishSkusCount + dynamicAbc.deadStockSkusCount).toLocaleString('cs-CZ')} SKU
+                  </span>
+                </td>
+                <td className="py-3.5 px-3 text-right text-indigo-300 bg-indigo-950/20">
+                  {(dynamicAbc.volumetry?.totalPalletsNeeded || 0).toLocaleString('cs-CZ')} palet
+                  <span className="block text-[10px] text-indigo-200/80 font-normal">
+                    {(dynamicAbc.volumetry?.monoSkuPalletsCount || 0).toLocaleString('cs-CZ')}× 1-SKU / {(dynamicAbc.volumetry?.mixedSkuPalletsCount || 0).toLocaleString('cs-CZ')}× mix
+                  </span>
+                </td>
+                <td className="py-3.5 px-3 text-right text-teal-300">
+                  {dynamicAbc.totalReplenishBatchUnits.toLocaleString('cs-CZ')} ks
+                </td>
+                <td className="py-3.5 px-3 text-right text-purple-300">
+                  {dynamicAbc.totalReplenishHoursYear.toLocaleString('cs-CZ')} h
+                </td>
+                <td className="py-3.5 px-4 text-right text-amber-300 bg-amber-950/20">
+                  Ø {dynamicAbc.avgMonthlyReplenishFte} FTE
                 </td>
               </tr>
             </tfoot>
@@ -1158,7 +1995,7 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
         <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="text-xs font-bold text-slate-300">
-              {isCs ? 'Detailní rozpis konkrétních SKU:' : 'Detailed SKU Breakdown:'}
+              {isCs ? 'Detailní rozpis konkrétních SKU (včetně volumetrie boxů a palet):' : 'Detailed SKU Breakdown (including box & pallet volumetry):'}
             </span>
             <div className="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs">
               <button
@@ -1193,13 +2030,15 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
               <thead className="bg-slate-950 text-slate-400 border-b border-slate-800 sticky top-0 font-semibold">
                 <tr>
                   <th className="py-2.5 px-4">SKU</th>
-                  <th className="py-2.5 px-3">Article Code</th>
+                  <th className="py-2.5 px-3">Article / Kat.</th>
                   <th className="py-2.5 px-3 text-center">ABC</th>
+                  <th className="py-2.5 px-3 text-right">{isCs ? 'Objem / ks (m³)' : 'Unit Vol (m³)'}</th>
                   <th className="py-2.5 px-3 text-right">{isCs ? 'Roční výdej' : 'Annual Issue'}</th>
-                  <th className="py-2.5 px-3 text-right">{isCs ? 'Ø měsíční výdej' : 'Avg Monthly'}</th>
-                  <th className="py-2.5 px-3 text-right text-emerald-300">{isCs ? `Potřeba na ${coverageMonthsTarget} měs.` : `${coverageMonthsTarget}M Target`}</th>
+                  <th className="py-2.5 px-3 text-right text-emerald-300">{isCs ? `Zásoba ${coverageMonthsTarget}M` : `${coverageMonthsTarget}M Stock`}</th>
+                  <th className="py-2.5 px-3 text-right text-cyan-300">{isCs ? `Boxy ${coverageMonthsTarget}M (1 SKU/box)` : 'Boxes Needed'}</th>
                   <th className="py-2.5 px-3 text-right">{isCs ? 'Celková zásoba' : 'Total Stock'}</th>
-                  <th className="py-2.5 px-4 text-right text-amber-300">{isCs ? 'Nadzásoba (dokladnění)' : 'Excess Buffer'}</th>
+                  <th className="py-2.5 px-3 text-right text-amber-300">{isCs ? 'Nadzásoba' : 'Excess Buffer'}</th>
+                  <th className="py-2.5 px-4 text-right text-indigo-300">{isCs ? 'Objem nadzásoby / Palety' : 'Excess Vol / Pallets'}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60 font-mono tabular-nums">
@@ -1209,13 +2048,25 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
                   ? report.abcAnalysis.topActiveSkus
                   : report.abcAnalysis.sampleDeadSkus
                 ).slice(0, 15).map(item => {
-                  const targetUnits = Math.ceil(item.avgMonthlyUnits * coverageMonthsTarget);
-                  const stockUnits = Math.round(item.currentStockUnits * stockMultiplier);
-                  const excessUnits = Math.max(0, stockUnits - targetUnits);
+                  const targetUnits = item.abcClass === 'DEAD' ? 0 : Math.ceil(item.avgMonthlyUnits * coverageMonthsTarget);
+                  const stockUnits = item.abcClass === 'DEAD'
+                    ? (dynamicAbc.hasExplicitStockFile ? item.currentStockUnits : Math.max(1, Math.round(dynamicAbc.deadStockUnits / Math.max(1, dynamicAbc.deadStockSkusCount))))
+                    : (dynamicAbc.hasExplicitStockFile && customTotalStockUnits === null ? item.currentStockUnits : Math.max(targetUnits, Math.round(item.currentStockUnits * dynamicAbc.skuScaleFactor)));
+                  const coveredUnits = Math.min(stockUnits, targetUnits);
+                  const excessUnits = Math.max(0, stockUnits - coveredUnits);
+                  const unitVol = item.unitVolumeM3 || dynamicAbc.volumetry?.avgUnitVolumeM3 || 0.00385;
+                  const boxUsableVol = 0.60 * 0.40 * 0.22 * (boxMaxFillPct / 100);
+                  const palletUsableVol = 1.20 * 0.80 * 1.80 * (palletMaxFillPct / 100);
+                  const boxesForSku = coveredUnits > 0 ? Math.max(1, Math.ceil((coveredUnits * unitVol) / boxUsableVol)) : 0;
+                  const excessVolM3 = excessUnits * unitVol;
+                  const minPalletsForSku = excessUnits > 0 ? Math.max(1, Math.ceil(excessVolM3 / palletUsableVol)) : 0;
                   return (
                     <tr key={item.sku} className="hover:bg-slate-800/40">
                       <td className="py-2 px-4 font-bold text-white">{item.sku}</td>
-                      <td className="py-2 px-3 text-slate-400">{item.articleCode}</td>
+                      <td className="py-2 px-3 text-slate-400">
+                        {item.articleCode}
+                        {item.category && <span className="ml-1.5 text-[10px] text-slate-500">({item.category})</span>}
+                      </td>
                       <td className="py-2 px-3 text-center">
                         <span className={
                           item.abcClass === 'A' ? 'text-emerald-400 font-bold' :
@@ -1225,11 +2076,17 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
                           {item.abcClass}
                         </span>
                       </td>
+                      <td className="py-2 px-3 text-right text-slate-300">{unitVol.toFixed(6)}</td>
                       <td className="py-2 px-3 text-right text-slate-200">{item.annualUnits.toLocaleString('cs-CZ')} ks</td>
-                      <td className="py-2 px-3 text-right text-slate-400">{item.avgMonthlyUnits} ks</td>
-                      <td className="py-2 px-3 text-right text-emerald-300">{targetUnits.toLocaleString('cs-CZ')} ks</td>
+                      <td className="py-2 px-3 text-right text-emerald-300">{coveredUnits.toLocaleString('cs-CZ')} ks</td>
+                      <td className="py-2 px-3 text-right text-cyan-300 font-bold">
+                        {boxesForSku > 0 ? `${boxesForSku.toLocaleString('cs-CZ')} boxů` : '-'}
+                      </td>
                       <td className="py-2 px-3 text-right text-white">{stockUnits.toLocaleString('cs-CZ')} ks</td>
-                      <td className="py-2 px-4 text-right font-bold text-amber-300">{excessUnits.toLocaleString('cs-CZ')} ks</td>
+                      <td className="py-2 px-3 text-right font-bold text-amber-300">{excessUnits.toLocaleString('cs-CZ')} ks</td>
+                      <td className="py-2 px-4 text-right text-indigo-300">
+                        {excessUnits > 0 ? `${excessVolM3.toFixed(3)} m³ (${minPalletsForSku} pal.)` : '-'}
+                      </td>
                     </tr>
                   );
                 })}
@@ -1240,7 +2097,7 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
       </section>
 
       {/* ========================================================= */}
-      {/* SEKCE 4: PŘEPOČET VÝKONU V MĚSÍCÍCH NA LIDI (FTE DLE SVJ)   */}
+      {/* SEKCE 4: PŘEPOČET VÝKONU V MĚSÍCÍCH NA LIDI (FTE DLE SVJ + DOSKLADŇOVÁNÍ) */}
       {/* ========================================================= */}
       <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-5">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-800 pb-4">
@@ -1249,14 +2106,14 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
               <Users className="w-5 h-5 text-cyan-400" />
               <span>
                 {isCs
-                  ? '4. Přepočet výkonu v jednotlivých měsících na pracovníky (FTE) podle časů SVJ'
-                  : '4. Monthly Workforce (FTE) Simulation Using SVJ Picking, Sorting & Packing Rates'}
+                  ? '4. Přepočet výkonu v jednotlivých měsících na pracovníky (FTE) podle časů SVJ a paletového doskladňování'
+                  : '4. Monthly Workforce (FTE) Simulation Using SVJ Picking, Sorting, Packing & Pallet Replenishment Rates'}
               </span>
             </h2>
             <p className="text-xs text-slate-400 mt-1 max-w-4xl">
               {isCs
-                ? 'Model aplikuje reálné časy ze skladu SVJ (pro každou velikostní kategorii zásilek 1, 2, 3, 4, 5, 6+ ks) na měsíční strukturu objednávek skladu Gate a počítá potřebu hodin a pracovníků (FTE) pro Picking, Sorting a Packing.'
-                : 'Applies SVJ per-item cycle times by order bracket onto Gate monthly volume to determine required man-hours and FTE staff for Picking, Sorting, and Packing.'}
+                ? `Model aplikuje reálné časy ze skladu SVJ (pro každou velikostní kategorii zásilek 1, 2, 3, 4, 5, 6+ ks) na měsíční strukturu objednávek skladu Gate a připočítává potřebu pracovníků na průběžné doskladňování (${replenishTriggerPct} % → 100 %) časy z paletového pickingu (${activeSvjRates.palletPickSecPerUnit} s/ks).`
+                : 'Applies SVJ per-item cycle times by order bracket onto Gate monthly volume and includes continuous replenishment (30% → 100%) using pallet picking times.'}
             </p>
           </div>
 
@@ -1266,7 +2123,7 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
               className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-700 text-slate-200 hover:border-cyan-500/50 font-semibold transition-colors cursor-pointer whitespace-nowrap shrink-0"
             >
               <Sliders className="w-3.5 h-3.5 text-cyan-400" />
-              <span>{showRateEditor ? (isCs ? 'Skrýt normočasy SVJ' : 'Hide SVJ Rates') : (isCs ? 'Zobrazit / upravit časy SVJ' : 'View / Edit SVJ Rates')}</span>
+              <span>{showRateEditor ? (isCs ? 'Skrýt normočasy SVJ' : 'Hide SVJ Rates') : (isCs ? 'Zobrazit / upravit časy SVJ & Doskladnění' : 'View / Edit SVJ & Replenish Rates')}</span>
             </button>
           </div>
         </div>
@@ -1313,6 +2170,25 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
                   : (isCs ? 'Prochází sortingem' : 'Include in sorting')}
               </button>
             </div>
+
+            {/* Započítat průběžné doskladňování (30 % -> 100 %) do celkového FTE */}
+            <div className="flex items-center gap-2">
+              <span className="text-slate-400 font-medium">{isCs ? 'Průběžné doskladňování:' : 'Continuous replenishment:'}</span>
+              <button
+                onClick={() => setIncludeReplenishInFte(!includeReplenishInFte)}
+                className={`px-2.5 py-1 rounded-lg border font-semibold cursor-pointer whitespace-nowrap shrink-0 ${
+                  includeReplenishInFte
+                    ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
+                    : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {includeReplenishInFte
+                  ? (isCs
+                      ? `Započteno (${replenishTriggerPct}%→100%, palet. pick ${activeSvjRates.palletPickSecPerUnit} s/ks)`
+                      : `Included (${replenishTriggerPct}%→100%, ${activeSvjRates.palletPickSecPerUnit} s/pc)`)
+                  : (isCs ? 'Nezapočteno do CELKEM FTE' : 'Excluded from Total FTE')}
+              </button>
+            </div>
           </div>
 
           {/* Měsíční fond hodin 1 FTE */}
@@ -1334,17 +2210,20 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
           </div>
         </div>
 
-        {/* Volitelný editor normočasů SVJ podle velikostní kategorie zásilky */}
+        {/* Volitelný editor normočasů SVJ podle velikostní kategorie zásilky + paletového pickingu pro doskladnění */}
         {showRateEditor && (
           <div className="bg-slate-950 border border-cyan-500/30 rounded-xl p-4 space-y-3 text-xs">
             <div className="flex items-center justify-between">
               <span className="font-bold text-cyan-300">
                 {isCs
-                  ? 'Použité normočasy ze skladu SVJ (sekundy na 1 kus podle velikosti objednávky):'
-                  : 'Applied SVJ Benchmark Times (seconds per unit by order bracket):'}
+                  ? 'Použité normočasy ze skladu SVJ (sekundy na 1 kus podle velikosti objednávky) a čas paletového pickingu pro doskladnění:'
+                  : 'Applied SVJ Benchmark Times (seconds per unit by order bracket) & Pallet Picking Replenishment Rate:'}
               </span>
               <button
-                onClick={() => setCustomRateOverrides({})}
+                onClick={() => {
+                  setCustomRateOverrides({});
+                  setCustomPalletPickSec(null);
+                }}
                 className="text-slate-400 hover:text-white underline cursor-pointer"
               >
                 {isCs ? 'Obnovit výchozí časy SVJ' : 'Reset to SVJ defaults'}
@@ -1425,14 +2304,41 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
                       </td>
                     ))}
                   </tr>
+                  <tr className="bg-amber-950/15">
+                    <td className="py-2 px-3 font-sans font-semibold text-amber-300">
+                      {isCs
+                        ? `4. Doskladňování ${replenishTriggerPct}%→100% (Paletový picking, s/ks)`
+                        : `4. Replenishment ${replenishTriggerPct}%→100% (Pallet Pick, s/pc)`}
+                    </td>
+                    <td colSpan={6} className="py-2 px-3 text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <span className="font-sans text-slate-400">
+                          {isCs
+                            ? 'Jednotný čas paletového / velkoobjemového pickingu (výchozí dle SVJ 6+):'
+                            : 'Uniform pallet / bulk picking rate (default from SVJ 6+):'}
+                        </span>
+                        <input
+                          type="number"
+                          step="0.5"
+                          min="0.5"
+                          value={activeSvjRates.palletPickSecPerUnit ?? 19.8}
+                          onChange={e => {
+                            const val = Math.max(0.5, parseFloat(e.target.value || '0'));
+                            setCustomPalletPickSec(val);
+                          }}
+                          className="w-20 bg-slate-900 border border-amber-500/50 rounded px-1.5 py-0.5 text-right text-amber-300 font-bold"
+                        />
+                      </div>
+                    </td>
+                  </tr>
                 </tbody>
               </table>
             </div>
           </div>
         )}
 
-        {/* 4 Karty průměrné roční potřeby FTE podle činností */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+        {/* 5 Karet průměrné roční potřeby FTE podle činností (vč. průběžného doskladňování) */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5">
           <div className="bg-slate-950/80 border border-indigo-500/30 rounded-xl p-4">
             <div className="text-xs text-indigo-300 font-semibold">{isCs ? '1. PICKING (Vychystávání)' : '1. PICKING FTE'}</div>
             <div className="mt-1.5 text-2xl font-bold text-white font-mono tabular-nums">
@@ -1463,8 +2369,28 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
             </div>
           </div>
 
+          <div className="bg-slate-950/80 border border-amber-500/35 rounded-xl p-4">
+            <div className="text-xs text-amber-300 font-semibold">
+              {isCs ? `4. DOSKLADŇOVÁNÍ (${replenishTriggerPct}%→100%)` : `4. REPLENISHMENT (${replenishTriggerPct}%→100%)`}
+            </div>
+            <div className="mt-1.5 text-2xl font-bold text-amber-300 font-mono tabular-nums">
+              {fteSummary.avgReplenishFte} <span className="text-xs font-normal text-slate-400">FTE / měs.</span>
+            </div>
+            <div className="mt-1 text-xs text-slate-400 font-mono tabular-nums">
+              {isCs
+                ? `Celkem ${fteSummary.totalReplenishHours.toLocaleString('cs-CZ')} h/rok (palet. pick ${activeSvjRates.palletPickSecPerUnit} s/ks)`
+                : `Total ${fteSummary.totalReplenishHours.toLocaleString()} h/yr (${activeSvjRates.palletPickSecPerUnit} s/pc)`}
+            </div>
+          </div>
+
           <div className="bg-slate-950/80 border border-cyan-500/40 rounded-xl p-4">
-            <div className="text-xs text-cyan-300 font-semibold">{isCs ? 'CELKEM PRACOVNÍKŮ (FTE)' : 'TOTAL STAFF (FTE)'}</div>
+            <div className="text-xs text-cyan-300 font-semibold">
+              {isCs
+                ? includeReplenishInFte
+                  ? 'CELKEM PRACOVNÍKŮ (vč. doskl.)'
+                  : 'CELKEM PRACOVNÍKŮ (bez doskl.)'
+                : 'TOTAL STAFF (FTE)'}
+            </div>
             <div className="mt-1.5 text-2xl font-bold text-cyan-300 font-mono tabular-nums">
               {fteSummary.avgTotalFte} <span className="text-xs font-normal text-slate-400">FTE / měs.</span>
             </div>
@@ -1474,21 +2400,24 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
           </div>
         </div>
 
-        {/* Měsíční tabulka přepočtu výkonu na hodiny a FTE pracovníky */}
+        {/* Měsíční tabulka přepočtu výkonu na hodiny a FTE pracovníky (včetně doskladňování paletovým pickingem) */}
         <div className="overflow-x-auto rounded-xl border border-slate-800">
           <table className="w-full text-left text-xs">
             <thead className="bg-slate-950 text-slate-400 border-b border-slate-800 font-semibold">
               <tr>
                 <th className="py-3 px-4">{isCs ? 'Měsíc' : 'Month'}</th>
-                <th className="py-3 px-3 text-right">{isCs ? 'Objednávky' : 'Orders'}</th>
-                <th className="py-3 px-3 text-right">{isCs ? 'Kusy celkem' : 'Total Units'}</th>
-                <th className="py-3 px-3 text-right text-indigo-300">{isCs ? 'Picking (hod)' : 'Pick (h)'}</th>
-                <th className="py-3 px-3 text-right text-indigo-400 font-bold">{isCs ? 'FTE Picking' : 'Pick FTE'}</th>
-                <th className="py-3 px-3 text-right text-purple-300">{isCs ? 'Sorting (hod)' : 'Sort (h)'}</th>
-                <th className="py-3 px-3 text-right text-purple-400 font-bold">{isCs ? 'FTE Sorting' : 'Sort FTE'}</th>
-                <th className="py-3 px-3 text-right text-emerald-300">{isCs ? 'Packing (hod)' : 'Pack (h)'}</th>
-                <th className="py-3 px-3 text-right text-emerald-400 font-bold">{isCs ? 'FTE Packing' : 'Pack FTE'}</th>
-                <th className="py-3 px-3 text-right text-slate-200">{isCs ? 'Celkem hodin' : 'Total Hours'}</th>
+                <th className="py-3 px-2.5 text-right">{isCs ? 'Objednávky' : 'Orders'}</th>
+                <th className="py-3 px-2.5 text-right">{isCs ? 'Kusy celkem' : 'Total Units'}</th>
+                <th className="py-3 px-2.5 text-right text-indigo-300">{isCs ? 'Picking (hod)' : 'Pick (h)'}</th>
+                <th className="py-3 px-2.5 text-right text-indigo-400 font-bold">{isCs ? 'FTE Pick' : 'Pick FTE'}</th>
+                <th className="py-3 px-2.5 text-right text-purple-300">{isCs ? 'Sorting (hod)' : 'Sort (h)'}</th>
+                <th className="py-3 px-2.5 text-right text-purple-400 font-bold">{isCs ? 'FTE Sort' : 'Sort FTE'}</th>
+                <th className="py-3 px-2.5 text-right text-emerald-300">{isCs ? 'Packing (hod)' : 'Pack (h)'}</th>
+                <th className="py-3 px-2.5 text-right text-emerald-400 font-bold">{isCs ? 'FTE Pack' : 'Pack FTE'}</th>
+                <th className="py-3 px-2.5 text-right text-amber-300">{isCs ? 'Cykly doskl.' : 'Refill Cycles'}</th>
+                <th className="py-3 px-2.5 text-right text-amber-300">{isCs ? 'Doskl. (hod)' : 'Repl. (h)'}</th>
+                <th className="py-3 px-2.5 text-right text-amber-400 font-bold">{isCs ? 'FTE Doskl.' : 'Repl. FTE'}</th>
+                <th className="py-3 px-2.5 text-right text-slate-200">{isCs ? 'Celkem hodin' : 'Total Hours'}</th>
                 <th className="py-3 px-4 text-right text-cyan-300 font-bold">{isCs ? 'CELKEM FTE (lidí)' : 'TOTAL FTE'}</th>
               </tr>
             </thead>
@@ -1498,31 +2427,40 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
                   <td className="py-3 px-4 font-sans font-semibold text-white whitespace-nowrap">
                     {isCs ? m.monthLabelCs : m.monthLabelEn}
                   </td>
-                  <td className="py-3 px-3 text-right text-slate-300">
+                  <td className="py-3 px-2.5 text-right text-slate-300">
                     {m.totalOrders.toLocaleString('cs-CZ')}
                   </td>
-                  <td className="py-3 px-3 text-right text-slate-300">
+                  <td className="py-3 px-2.5 text-right text-slate-300">
                     {m.totalUnits.toLocaleString('cs-CZ')}
                   </td>
-                  <td className="py-3 px-3 text-right text-slate-400">
+                  <td className="py-3 px-2.5 text-right text-slate-400">
                     {m.fte.pickHours.toLocaleString('cs-CZ')} h
                   </td>
-                  <td className="py-3 px-3 text-right font-bold text-indigo-300 bg-indigo-950/15">
+                  <td className="py-3 px-2.5 text-right font-bold text-indigo-300 bg-indigo-950/15">
                     {m.fte.pickFte} FTE
                   </td>
-                  <td className="py-3 px-3 text-right text-slate-400">
+                  <td className="py-3 px-2.5 text-right text-slate-400">
                     {m.fte.sortHours.toLocaleString('cs-CZ')} h
                   </td>
-                  <td className="py-3 px-3 text-right font-bold text-purple-300 bg-purple-950/15">
+                  <td className="py-3 px-2.5 text-right font-bold text-purple-300 bg-purple-950/15">
                     {m.fte.sortFte} FTE
                   </td>
-                  <td className="py-3 px-3 text-right text-slate-400">
+                  <td className="py-3 px-2.5 text-right text-slate-400">
                     {m.fte.packHours.toLocaleString('cs-CZ')} h
                   </td>
-                  <td className="py-3 px-3 text-right font-bold text-emerald-300 bg-emerald-950/15">
+                  <td className="py-3 px-2.5 text-right font-bold text-emerald-300 bg-emerald-950/15">
                     {m.fte.packFte} FTE
                   </td>
-                  <td className="py-3 px-3 text-right text-white font-semibold">
+                  <td className="py-3 px-2.5 text-right text-amber-200/80">
+                    {(m.fte.replenishCycles || 0).toLocaleString('cs-CZ')}×
+                  </td>
+                  <td className="py-3 px-2.5 text-right text-slate-400">
+                    {(m.fte.replenishHours || 0).toLocaleString('cs-CZ')} h
+                  </td>
+                  <td className="py-3 px-2.5 text-right font-bold text-amber-300 bg-amber-950/15">
+                    {m.fte.replenishFte || 0} FTE
+                  </td>
+                  <td className="py-3 px-2.5 text-right text-white font-semibold">
                     {m.fte.totalHours.toLocaleString('cs-CZ')} h
                   </td>
                   <td className="py-3 px-4 text-right font-bold text-cyan-300 bg-cyan-950/20 text-sm">
@@ -1534,15 +2472,18 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
             <tfoot className="bg-slate-950/90 border-t-2 border-slate-700 font-mono tabular-nums font-bold text-white">
               <tr>
                 <td className="py-3.5 px-4 font-sans">{isCs ? 'PRŮMĚR MĚSÍC / SOUČET HODIN' : 'MONTHLY AVG / TOTAL HOURS'}</td>
-                <td className="py-3.5 px-3 text-right">{report.totalOrders.toLocaleString('cs-CZ')}</td>
-                <td className="py-3.5 px-3 text-right">{report.totalUnits.toLocaleString('cs-CZ')}</td>
-                <td className="py-3.5 px-3 text-right text-slate-300">{fteSummary.totalPickHours.toLocaleString('cs-CZ')} h</td>
-                <td className="py-3.5 px-3 text-right text-indigo-300">Ø {fteSummary.avgPickFte} FTE</td>
-                <td className="py-3.5 px-3 text-right text-slate-300">{fteSummary.totalSortHours.toLocaleString('cs-CZ')} h</td>
-                <td className="py-3.5 px-3 text-right text-purple-300">Ø {fteSummary.avgSortFte} FTE</td>
-                <td className="py-3.5 px-3 text-right text-slate-300">{fteSummary.totalPackHours.toLocaleString('cs-CZ')} h</td>
-                <td className="py-3.5 px-3 text-right text-emerald-300">Ø {fteSummary.avgPackFte} FTE</td>
-                <td className="py-3.5 px-3 text-right text-white">{fteSummary.totalYearHours.toLocaleString('cs-CZ')} h</td>
+                <td className="py-3.5 px-2.5 text-right">{report.totalOrders.toLocaleString('cs-CZ')}</td>
+                <td className="py-3.5 px-2.5 text-right">{report.totalUnits.toLocaleString('cs-CZ')}</td>
+                <td className="py-3.5 px-2.5 text-right text-slate-300">{fteSummary.totalPickHours.toLocaleString('cs-CZ')} h</td>
+                <td className="py-3.5 px-2.5 text-right text-indigo-300">Ø {fteSummary.avgPickFte} FTE</td>
+                <td className="py-3.5 px-2.5 text-right text-slate-300">{fteSummary.totalSortHours.toLocaleString('cs-CZ')} h</td>
+                <td className="py-3.5 px-2.5 text-right text-purple-300">Ø {fteSummary.avgSortFte} FTE</td>
+                <td className="py-3.5 px-2.5 text-right text-slate-300">{fteSummary.totalPackHours.toLocaleString('cs-CZ')} h</td>
+                <td className="py-3.5 px-2.5 text-right text-emerald-300">Ø {fteSummary.avgPackFte} FTE</td>
+                <td className="py-3.5 px-2.5 text-right text-amber-200">{fteSummary.totalReplenishCycles.toLocaleString('cs-CZ')}×</td>
+                <td className="py-3.5 px-2.5 text-right text-slate-300">{fteSummary.totalReplenishHours.toLocaleString('cs-CZ')} h</td>
+                <td className="py-3.5 px-2.5 text-right text-amber-300">Ø {fteSummary.avgReplenishFte} FTE</td>
+                <td className="py-3.5 px-2.5 text-right text-white">{fteSummary.totalYearHours.toLocaleString('cs-CZ')} h</td>
                 <td className="py-3.5 px-4 text-right text-cyan-300 text-sm">Ø {fteSummary.avgTotalFte} FTE</td>
               </tr>
             </tfoot>

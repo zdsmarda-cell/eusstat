@@ -5,6 +5,8 @@ import {
   GateAbcSummary,
   GateSkuAbcItem,
   GateSvjBenchmarkRates,
+  GateVolumetricSummary,
+  GateVolumetricClassStat,
   ItemBracket,
   MovementRecord,
   BracketStat,
@@ -103,6 +105,8 @@ export function getDefaultSvjBenchmarkRates(svjBracketStats?: BracketStat[]): Ga
       useMedian: true,
       bypassSingleItemSort: true,
       monthlyFteHoursNorm: 160,
+      palletPickSecPerUnit: defaultPick['6+'] || 19.8,
+      replenishTriggerPct: 30,
       pickSecByBracket: defaultPick,
       sortSecByBracket: defaultSort,
       packSecByBracket: defaultPack,
@@ -114,24 +118,38 @@ export function getDefaultSvjBenchmarkRates(svjBracketStats?: BracketStat[]): Ga
     useMedian: true,
     bypassSingleItemSort: true,
     monthlyFteHoursNorm: 160,
+    palletPickSecPerUnit: defaultPick['6+'] || 19.8,
+    replenishTriggerPct: 30,
     pickSecByBracket: defaultPick,
     sortSecByBracket: defaultSort,
     packSecByBracket: defaultPack,
   };
 }
 
+export interface ReplenishFteOptions {
+  coverageMonthsTarget?: number;
+  replenishTriggerPct?: number;
+  palletPickSecPerUnit?: number;
+  activeSkusCount?: number;
+  avgMonthlyUnitsTotal?: number;
+  includeReplenishInTotal?: boolean;
+}
+
 export function computeMonthlyFteFromBrackets(
   brackets: GateMonthlyBreakdown['brackets'],
-  rates: GateSvjBenchmarkRates
+  rates: GateSvjBenchmarkRates,
+  replenishOpts?: ReplenishFteOptions
 ): GateMonthlyBreakdown['fte'] {
   const normHours = Math.max(40, rates.monthlyFteHoursNorm || 160);
   let pickSec = 0;
   let sortSec = 0;
   let packSec = 0;
+  let monthUnits = 0;
 
   for (const b of ['1', '2', '3', '4', '5', '6+'] as ItemBracket[]) {
     const units = brackets[b]?.units || 0;
     if (units <= 0) continue;
+    monthUnits += units;
     const pRate = rates.pickSecByBracket[b] ?? 25;
     const sRate = (b === '1' && rates.bypassSingleItemSort) ? 0 : (rates.sortSecByBracket[b] ?? 13.5);
     const pkRate = rates.packSecByBracket[b] ?? 15;
@@ -141,25 +159,64 @@ export function computeMonthlyFteFromBrackets(
     packSec += units * pkRate;
   }
 
+  // Průběžné doskladňování: vždy když 3měsíční zásoba klesne pod 30 % (triggerPct),
+  // doskladní se zpět na 100 % (dávka = 70 % z 3M zásoby = 2,1 průměrného měsíce výdeje).
+  // Čas doskladnění se počítá jako z paletového pickingu (výchozí dle SVJ 6+ / paletového pickingu).
+  const coverageMonths = Math.max(1, replenishOpts?.coverageMonthsTarget ?? 3);
+  const triggerPct = Math.min(90, Math.max(5, replenishOpts?.replenishTriggerPct ?? rates.replenishTriggerPct ?? 30));
+  const batchFraction = Math.max(0.1, (100 - triggerPct) / 100); // 0.70 při 30% prahu
+  const batchMonthsEquivalent = coverageMonths * batchFraction; // 3 * 0.70 = 2.1 průměrného měsíce na 1 cyklus doskladnění
+  const palletPickSecRate = Math.max(
+    0,
+    replenishOpts?.palletPickSecPerUnit ?? rates.palletPickSecPerUnit ?? rates.pickSecByBracket['6+'] ?? 19.8
+  );
+
+  const replenishUnits = monthUnits;
+  const avgMonthUnits = replenishOpts?.avgMonthlyUnitsTotal && replenishOpts.avgMonthlyUnitsTotal > 0
+    ? replenishOpts.avgMonthlyUnitsTotal
+    : monthUnits;
+  const activeSkus = replenishOpts?.activeSkusCount && replenishOpts.activeSkusCount > 0
+    ? replenishOpts.activeSkusCount
+    : 10000;
+  const seasonFactor = avgMonthUnits > 0 ? monthUnits / avgMonthUnits : 1;
+  const replenishCycles = Math.max(
+    0,
+    Math.round((activeSkus / Math.max(0.1, batchMonthsEquivalent)) * seasonFactor)
+  );
+
+  const replenishSec = replenishUnits * palletPickSecRate;
+  const replenishHours = Number((replenishSec / 3600).toFixed(1));
+  const replenishFte = Number((replenishHours / normHours).toFixed(2));
+
   const pickHours = Number((pickSec / 3600).toFixed(1));
   const sortHours = Number((sortSec / 3600).toFixed(1));
   const packHours = Number((packSec / 3600).toFixed(1));
-  const totalHours = Number((pickHours + sortHours + packHours).toFixed(1));
+  const baseTotalHours = Number((pickHours + sortHours + packHours).toFixed(1));
+  const totalHoursWithReplenish = Number((baseTotalHours + replenishHours).toFixed(1));
 
   const pickFte = Number((pickHours / normHours).toFixed(2));
   const sortFte = Number((sortHours / normHours).toFixed(2));
   const packFte = Number((packHours / normHours).toFixed(2));
-  const totalFte = Number((pickFte + sortFte + packFte).toFixed(2));
+  const baseTotalFte = Number((pickFte + sortFte + packFte).toFixed(2));
+  const totalFteWithReplenish = Number((baseTotalFte + replenishFte).toFixed(2));
+
+  const includeReplenish = replenishOpts?.includeReplenishInTotal !== false;
 
   return {
     pickHours,
     sortHours,
     packHours,
-    totalHours,
+    replenishHours,
+    totalHours: includeReplenish ? totalHoursWithReplenish : baseTotalHours,
+    totalHoursWithReplenish,
     pickFte,
     sortFte,
     packFte,
-    totalFte,
+    replenishFte,
+    totalFte: includeReplenish ? totalFteWithReplenish : baseTotalFte,
+    totalFteWithReplenish,
+    replenishUnits,
+    replenishCycles,
   };
 }
 
@@ -284,11 +341,9 @@ export async function classifyGateFiles(files: File[]): Promise<{
     ) {
       ordersFile = f;
     } else if (
-      (firstLine.includes('order_id') && (firstLine.includes('sku') || firstLine.includes('article_code'))) ||
-      firstLine.includes('article_code')
-    ) {
-      itemsFile = f;
-    } else if (
+      firstLine.includes('qty_on_hand') ||
+      firstLine.includes('unit_volume') ||
+      firstLine.includes('unit_weight') ||
       firstLine.includes('stock') ||
       firstLine.includes('zasob') ||
       firstLine.includes('on_hand') ||
@@ -296,6 +351,11 @@ export async function classifyGateFiles(files: File[]): Promise<{
       (!firstLine.includes('order_id') && firstLine.includes('sku'))
     ) {
       stockFile = f;
+    } else if (
+      firstLine.includes('order_id') &&
+      (firstLine.includes('sku') || firstLine.includes('article_code') || firstLine.includes('qty'))
+    ) {
+      itemsFile = f;
     }
   }
 
@@ -303,8 +363,8 @@ export async function classifyGateFiles(files: File[]): Promise<{
   if (!ordersFile && !itemsFile && files.length >= 2) {
     ordersFile = files[0];
     itemsFile = files[1];
-    if (files.length >= 3) stockFile = files[2];
-  } else if (!ordersFile && files.length === 1 && !itemsFile) {
+    if (files.length >= 3 && !stockFile) stockFile = files[2];
+  } else if (!ordersFile && files.length === 1 && !itemsFile && !stockFile) {
     ordersFile = files[0];
   }
 
@@ -680,11 +740,17 @@ export async function parseGateCsvFilesStreaming(
   interface SkuGlobalAgg {
     sku: string;
     articleCode: string;
+    category: string;
     annualUnits: number;
     ordersCount: number;
     monthsSet: Set<string>;
     stockUnits: number;
+    unitVolumeM3: number;
+    unitWeightKg: number;
   }
+
+  const DEFAULT_UNIT_VOLUME_M3 = 0.00385; // ~3.85 litru (typický objem kusu dle vzorku 0.003388 - 0.004657 m3)
+  const DEFAULT_UNIT_WEIGHT_KG = 0.72;    // ~0.72 kg (typická váha kusu dle vzorku 0.59 - 0.97 kg)
 
   const skuGlobalMap = new Map<string, SkuGlobalAgg>();
   const globalArticleSet = new Set<string>();
@@ -759,10 +825,13 @@ export async function parseGateCsvFilesStreaming(
           sAgg = {
             sku,
             articleCode,
+            category: '',
             annualUnits: 0,
             ordersCount: 0,
             monthsSet: new Set(),
             stockUnits: -1, // -1 = zatím bez explicitního stock souboru
+            unitVolumeM3: 0,
+            unitWeightKg: 0,
           };
           skuGlobalMap.set(sku, sAgg);
         }
@@ -788,7 +857,7 @@ export async function parseGateCsvFilesStreaming(
       },
       (bytesRead, totalBytes) => {
         if (onProgress) {
-          const pct = 45 + Math.min(45, Math.round((bytesRead / Math.max(1, totalBytes)) * 45));
+          const pct = 45 + Math.min(40, Math.round((bytesRead / Math.max(1, totalBytes)) * 40));
           const msgCs = `Zpracovávám položky objednávek (${(bytesRead / (1024 * 1024)).toFixed(1)} / ${(totalBytes / (1024 * 1024)).toFixed(1)} MB)...`;
           onProgress({
             phase: msgCs,
@@ -825,64 +894,160 @@ export async function parseGateCsvFilesStreaming(
   }
 
   // =========================================================================
-  // FÁZE 3: VOLITELNÝ SOUBOR STAVU ZÁSOB (stock.csv)
+  // FÁZE 3: SOUBOR AKTUÁLNÍ SKLADOVÉ ZÁSOBY A VOLUMETRIE (stock.csv)
+  // Struktura: sku, article_code, category, qty_on_hand, unit_volume, unit_weight_kg
   // =========================================================================
   let hasExplicitStockFile = false;
+  let hasExplicitVolumeData = false;
+  let explicitVolumeSum = 0;
+  let explicitVolumeCount = 0;
+  let explicitWeightSum = 0;
+  let explicitWeightCount = 0;
+  const itemsBytes = itemsFile?.size || 0;
+
   if (stockFile) {
     hasExplicitStockFile = true;
     let delimiter = ',';
     let idxSku = 0;
-    let idxArticle = -1;
-    let idxStock = 1;
+    let idxArticle = 1;
+    let idxCategory = 2;
+    let idxStock = 3;
+    let idxVolume = 4;
+    let idxWeight = 5;
 
-    await streamFileLines(stockFile, (line, lineIdx) => {
-      if (lineIdx === 0) {
-        delimiter = detectDelimiter(line);
-        const cols = splitCsvLineFast(line, delimiter).map(c =>
-          c.replace(/^\uFEFF/, '').trim().toLowerCase().replace(/^"|"$/g, '')
-        );
-        cols.forEach((col, i) => {
-          if (col === 'sku' || col.includes('ean')) idxSku = i;
-          else if (col.includes('article')) idxArticle = i;
-          else if (col.includes('stock') || col.includes('qty') || col.includes('zasob') || col.includes('on_hand') || col.includes('ks')) idxStock = i;
-        });
-        return;
+    await streamFileLines(
+      stockFile,
+      (line, lineIdx) => {
+        if (lineIdx === 0) {
+          delimiter = detectDelimiter(line);
+          const cols = splitCsvLineFast(line, delimiter).map(c =>
+            c.replace(/^\uFEFF/, '').trim().toLowerCase().replace(/^"|"$/g, '')
+          );
+          // Resetujeme volitelné indexy a namapujeme přesně podle názvů sloupců
+          idxArticle = -1;
+          idxCategory = -1;
+          idxVolume = -1;
+          idxWeight = -1;
+          idxStock = 1;
+          for (let i = 0; i < Math.min(cols.length, 10); i++) {
+            const col = cols[i];
+            if (col === 'sku' || col.includes('ean')) idxSku = i;
+            else if (col.includes('article')) idxArticle = i;
+            else if (col === 'category' || col.includes('kateg')) idxCategory = i;
+            else if (
+              col.includes('qty_on_hand') ||
+              col.includes('on_hand') ||
+              col.includes('stock') ||
+              col === 'qty' ||
+              col.includes('zasob') ||
+              col.includes('ks')
+            ) {
+              idxStock = i;
+            } else if (col.includes('volume') || col.includes('objem') || col.includes('m3')) {
+              idxVolume = i;
+            } else if (col.includes('weight') || col.includes('vaha') || col.includes('hmotnost') || col.includes('kg')) {
+              idxWeight = i;
+            }
+          }
+          return;
+        }
+
+        const cols = splitCsvLineFast(line, delimiter);
+        if (cols.length < 2) return;
+        const sku = (cols[idxSku] || '').trim().replace(/^"|"$/g, '');
+        if (!sku) return;
+        stockFileRows += 1;
+
+        const articleCode =
+          idxArticle >= 0 && cols[idxArticle]
+            ? cols[idxArticle].trim().replace(/^"|"$/g, '')
+            : sku.split('/')[0] || sku;
+        const category =
+          idxCategory >= 0 && cols[idxCategory]
+            ? cols[idxCategory].trim().replace(/^"|"$/g, '')
+            : '';
+
+        const rawStockStr = (cols[idxStock] || '0').trim().replace(/^"|"$/g, '').replace(/\s+/g, '');
+        const parsedStock = parseInt(rawStockStr, 10);
+        const stockQty = !isNaN(parsedStock) && parsedStock >= 0 ? parsedStock : 0;
+
+        let unitVol = 0;
+        if (idxVolume >= 0 && cols[idxVolume]) {
+          const vStr = cols[idxVolume].trim().replace(/^"|"$/g, '').replace(',', '.');
+          const vNum = parseFloat(vStr);
+          if (!isNaN(vNum) && vNum > 0 && vNum < 5) {
+            unitVol = vNum;
+            hasExplicitVolumeData = true;
+            explicitVolumeSum += vNum;
+            explicitVolumeCount += 1;
+          }
+        }
+
+        let unitW = 0;
+        if (idxWeight >= 0 && cols[idxWeight]) {
+          const wStr = cols[idxWeight].trim().replace(/^"|"$/g, '').replace(',', '.');
+          // Ochrana proti zkorumpovanému datumu z Excelu (např. "01.Aug")
+          if (!/[a-zA-Z]/.test(wStr)) {
+            const wNum = parseFloat(wStr);
+            if (!isNaN(wNum) && wNum > 0 && wNum < 100) {
+              unitW = wNum;
+              explicitWeightSum += wNum;
+              explicitWeightCount += 1;
+            }
+          }
+        }
+
+        let sAgg = skuGlobalMap.get(sku);
+        if (!sAgg) {
+          sAgg = {
+            sku,
+            articleCode,
+            category,
+            annualUnits: 0,
+            ordersCount: 0,
+            monthsSet: new Set(),
+            stockUnits: stockQty,
+            unitVolumeM3: unitVol,
+            unitWeightKg: unitW,
+          };
+          skuGlobalMap.set(sku, sAgg);
+        } else {
+          sAgg.stockUnits = (sAgg.stockUnits >= 0 ? sAgg.stockUnits : 0) + stockQty;
+          if (articleCode && !sAgg.articleCode) sAgg.articleCode = articleCode;
+          if (category && !sAgg.category) sAgg.category = category;
+          if (unitVol > 0) sAgg.unitVolumeM3 = unitVol;
+          if (unitW > 0) sAgg.unitWeightKg = unitW;
+        }
+      },
+      (bytesRead, totalBytes) => {
+        if (onProgress) {
+          const pct = 85 + Math.min(10, Math.round((bytesRead / Math.max(1, totalBytes)) * 10));
+          const msgCs = `Zpracovávám skladovou zásobu a volumetrii (${(bytesRead / (1024 * 1024)).toFixed(1)} / ${(totalBytes / (1024 * 1024)).toFixed(1)} MB)...`;
+          onProgress({
+            phase: msgCs,
+            percent: pct,
+            bytesProcessed: ordersBytes + itemsBytes + bytesRead,
+            totalBytes: totalBytesAll || (ordersBytes + itemsBytes + totalBytes),
+            messageCs: msgCs,
+            messageEn: `Streaming stock & volumetry (${(bytesRead / (1024 * 1024)).toFixed(1)} / ${(totalBytes / (1024 * 1024)).toFixed(1)} MB)...`,
+          });
+        }
       }
-
-      const cols = splitCsvLineFast(line, delimiter);
-      if (cols.length < 2) return;
-      const sku = (cols[idxSku] || '').trim().replace(/^"|"$/g, '');
-      if (!sku) return;
-      stockFileRows += 1;
-      const articleCode = idxArticle >= 0 ? (cols[idxArticle] || '').trim() : (sku.split('/')[0] || sku);
-      const stockQty = Math.max(0, parseInt((cols[idxStock] || '0').trim().replace(/^"|"$/g, ''), 10) || 0);
-
-      let sAgg = skuGlobalMap.get(sku);
-      if (!sAgg) {
-        sAgg = {
-          sku,
-          articleCode,
-          annualUnits: 0,
-          ordersCount: 0,
-          monthsSet: new Set(),
-          stockUnits: stockQty,
-        };
-        skuGlobalMap.set(sku, sAgg);
-      } else {
-        sAgg.stockUnits = (sAgg.stockUnits >= 0 ? sAgg.stockUnits : 0) + stockQty;
-      }
-    });
+    );
   }
 
+  const avgUnitVolumeM3 = explicitVolumeCount > 0 ? explicitVolumeSum / explicitVolumeCount : DEFAULT_UNIT_VOLUME_M3;
+  const avgUnitWeightKg = explicitWeightCount > 0 ? explicitWeightSum / explicitWeightCount : DEFAULT_UNIT_WEIGHT_KG;
+
   if (onProgress) {
-    const msgCs = 'Počítám měsíční rozpady, 80/20 Pareto, ABC analýzu zásob a FTE model...';
+    const msgCs = 'Počítám měsíční rozpady, 80/20 Pareto, ABC analýzu zásob, volumetrii boxů/palet a FTE model...';
     onProgress({
       phase: msgCs,
       percent: 96,
       bytesProcessed: totalBytesAll,
       totalBytes: totalBytesAll,
       messageCs: msgCs,
-      messageEn: 'Computing monthly breakdowns, 80/20 Pareto, ABC inventory & FTE model...',
+      messageEn: 'Computing monthly breakdowns, 80/20 Pareto, ABC inventory, box/pallet volumetry & FTE model...',
     });
   }
 
@@ -990,32 +1155,60 @@ export async function parseGateCsvFilesStreaming(
     });
 
   // =========================================================================
-  // SESTAVENÍ CELOROČNÍ ABC ANALÝZY, 3MĚSÍČNÍ ZÁSOBY, NADZÁSOBY A LEŽÁKŮ
+  // SESTAVENÍ CELOROČNÍ ABC ANALÝZY, 3MĚSÍČNÍ ZÁSOBY, NADZÁSOBY, LEŽÁKŮ A VOLUMETRIE
   // =========================================================================
   const allSkuList = Array.from(skuGlobalMap.values()).sort((a, b) => b.annualUnits - a.annualUnits);
   const activeSkuList = allSkuList.filter(s => s.annualUnits > 0);
-  const explicitDeadSkus = allSkuList.filter(s => s.annualUnits === 0);
+  // Pokud byl nahrán reálný stock.csv, některá neobrátková SKU mají qty_on_hand = 0 (prázdné katalogové karty).
+  // Fyzický bezobrat (DEAD stock na paletách) jsou SKU s 0 výdejem a kladnou zásobou skladem (stockUnits > 0).
+  const zeroMovementAll = allSkuList.filter(s => s.annualUnits === 0);
+  const zeroStockCatalogSkusCount = hasExplicitStockFile
+    ? zeroMovementAll.filter(s => s.stockUnits <= 0).length
+    : 0;
+  const explicitDeadSkus = hasExplicitStockFile
+    ? zeroMovementAll.filter(s => s.stockUnits > 0)
+    : zeroMovementAll;
 
   const totalAnnualIssuedUnits = activeSkuList.reduce((s, x) => s + x.annualUnits, 0) || grandTotalUnits;
   const targetA = totalAnnualIssuedUnits * 0.80;
   const targetB = totalAnnualIssuedUnits * 0.95;
 
-  // Pokud uživatel nenahrál samostatný stock.csv a v souboru nejsou položky s 0 výdejem,
-  // vygenerujeme realistický model skladové zásoby odvozený z obrátkovosti jednotlivých tříd A/B/C + neaktivních ležáků
+  // Pokud uživatel nenahrál samostatný stock.csv, kalibrujeme celkovou skladovou zásobu
+  // na zákazníkem uvedených 4 500 000 ks (4,5M ks zboží skladem).
+  const DEFAULT_TOTAL_WAREHOUSE_STOCK = 4_500_000;
+
   if (!hasExplicitStockFile && explicitDeadSkus.length === 0 && activeSkuList.length > 0) {
-    const simulatedDeadCount = Math.max(45, Math.round(activeSkuList.length * 0.14));
+    const simulatedDeadCount = Math.max(120, Math.round(activeSkuList.length * 0.14));
+    // Rezervujeme cca 8 % z celkové 4.5M zásoby (360 000 ks) pro ležáky bez pohybu za rok
+    const targetDeadUnitsTotal = Math.round(DEFAULT_TOTAL_WAREHOUSE_STOCK * 0.08);
+    const baseDeadPerSku = Math.max(1, Math.floor(targetDeadUnitsTotal / simulatedDeadCount));
+    let deadRemainder = Math.max(0, targetDeadUnitsTotal - baseDeadPerSku * simulatedDeadCount);
+
     for (let i = 1; i <= simulatedDeadCount; i++) {
-      const deadStockQty = 4 + ((i * 7) % 38);
+      const extra = deadRemainder > 0 ? 1 : 0;
+      if (deadRemainder > 0) deadRemainder -= 1;
+      const deadStockQty = baseDeadPerSku + extra;
       explicitDeadSkus.push({
         sku: `DEAD-${String(500 + (i % 400)).padStart(3, '0')}-${String(i).padStart(4, '0')}/00`,
         articleCode: `DEAD-${String(500 + (i % 400)).padStart(3, '0')}-${String(i).padStart(4, '0')}`,
+        category: 'PAN',
         annualUnits: 0,
         ordersCount: 0,
         monthsSet: new Set(),
         stockUnits: deadStockQty,
+        unitVolumeM3: DEFAULT_UNIT_VOLUME_M3,
+        unitWeightKg: DEFAULT_UNIT_WEIGHT_KG,
       });
     }
   }
+
+  // Parametry boxu (60x40x22 cm = 0.0528 m3) a palety (120x80x180 cm = 1.728 m3)
+  const BOX_GROSS_VOL_M3 = 0.60 * 0.40 * 0.22;     // 0.0528 m3 (52.8 litrů)
+  const PALLET_GROSS_VOL_M3 = 1.20 * 0.80 * 1.80;  // 1.728 m3 (1 728 litrů)
+  const defaultBoxMaxFillPct = 80;
+  const defaultPalletMaxFillPct = 80;
+  const boxUsableVolM3 = BOX_GROSS_VOL_M3 * (defaultBoxMaxFillPct / 100);       // 0.04224 m3
+  const palletUsableVolM3 = PALLET_GROSS_VOL_M3 * (defaultPalletMaxFillPct / 100); // 1.3824 m3
 
   const classBreakdown: GateAbcSummary['classBreakdown'] = {
     A: { skusCount: 0, skuSharePct: 0, annualUnits: 0, unitSharePct: 0, threeMonthTargetUnits: 0, currentStockUnits: 0, coveredThreeMonthUnits: 0, excessUnits: 0, excessSkusCount: 0 },
@@ -1024,18 +1217,92 @@ export async function parseGateCsvFilesStreaming(
     DEAD: { skusCount: 0, skuSharePct: 0, annualUnits: 0, unitSharePct: 0, threeMonthTargetUnits: 0, currentStockUnits: 0, coveredThreeMonthUnits: 0, excessUnits: 0, excessSkusCount: 0 },
   };
 
+  // Kolekce objemů jednotlivých SKU pro paletizaci (bez dělení 1 SKU mezi více mixovaných palet)
+  const palletSkuVolumesByClass: Record<'A' | 'B' | 'C' | 'DEAD', number[]> = {
+    A: [],
+    B: [],
+    C: [],
+    DEAD: [],
+  };
+  const boxStatsByClass: Record<'A' | 'B' | 'C' | 'DEAD', {
+    boxSkusCount: number;
+    boxUnits: number;
+    boxGoodsVolumeM3: number;
+    boxesNeeded: number;
+    singleUnitBoxesCount: number;
+  }> = {
+    A: { boxSkusCount: 0, boxUnits: 0, boxGoodsVolumeM3: 0, boxesNeeded: 0, singleUnitBoxesCount: 0 },
+    B: { boxSkusCount: 0, boxUnits: 0, boxGoodsVolumeM3: 0, boxesNeeded: 0, singleUnitBoxesCount: 0 },
+    C: { boxSkusCount: 0, boxUnits: 0, boxGoodsVolumeM3: 0, boxesNeeded: 0, singleUnitBoxesCount: 0 },
+    DEAD: { boxSkusCount: 0, boxUnits: 0, boxGoodsVolumeM3: 0, boxesNeeded: 0, singleUnitBoxesCount: 0 },
+  };
+
+  let totalStockVolumeM3 = 0;
+  let totalStockWeightKg = 0;
+
+  // Seřadíme neobrátková SKU sestupně podle zásoby skladem
+  explicitDeadSkus.sort((a, b) => b.stockUnits - a.stockUnits);
+
+  // Zpracování neobrátkových SKU (DEAD = 0 výdej za poslední rok, zásoba > 0)
+  let deadStockUnits = 0;
+  const sampleDeadSkus: GateSkuAbcItem[] = [];
+  for (const d of explicitDeadSkus) {
+    const st = d.stockUnits >= 0 ? d.stockUnits : 12;
+    if (st <= 0) continue;
+    const uVol = d.unitVolumeM3 > 0 ? d.unitVolumeM3 : avgUnitVolumeM3;
+    const uWeight = d.unitWeightKg > 0 ? d.unitWeightKg : avgUnitWeightKg;
+    const skuVolM3 = st * uVol;
+
+    deadStockUnits += st;
+    totalStockVolumeM3 += skuVolM3;
+    totalStockWeightKg += st * uWeight;
+
+    classBreakdown.DEAD.skusCount += 1;
+    classBreakdown.DEAD.currentStockUnits += st;
+    classBreakdown.DEAD.excessUnits += st;
+    classBreakdown.DEAD.excessSkusCount += 1;
+    palletSkuVolumesByClass.DEAD.push(skuVolM3);
+
+    if (sampleDeadSkus.length < 40) {
+      sampleDeadSkus.push({
+        sku: d.sku,
+        articleCode: d.articleCode,
+        category: d.category || undefined,
+        abcClass: 'DEAD',
+        annualUnits: 0,
+        ordersCount: 0,
+        activeMonths: 0,
+        avgMonthlyUnits: 0,
+        threeMonthTargetUnits: 0,
+        currentStockUnits: st,
+        coveredThreeMonthUnits: 0,
+        excessReplenishUnits: st,
+        shortageUnits: 0,
+        shareOfVolumePct: 0,
+        unitVolumeM3: uVol,
+        unitWeightKg: uWeight,
+        boxesFor3M: 0,
+        excessVolumeM3: Number(skuVolM3.toFixed(4)),
+        palletsForExcess: Number((skuVolM3 / palletUsableVolM3).toFixed(2)),
+      });
+    }
+  }
+
+  // První průchod aktivními SKU: zařazení do A/B/C, výpočet 3měsíční potřeby a výchozích vah zásob
   let cumVolume = 0;
   let top80OverallCount = 0;
   let threeMonthDemandUnits = 0;
-  let coveredThreeMonthUnits = 0;
-  let coveredThreeMonthSkusCount = 0;
-  let excessReplenishSkusCount = 0;
-  let excessReplenishUnits = 0;
-  let totalStockUnits = 0;
 
-  const topActiveSkus: GateSkuAbcItem[] = [];
-  const excessCandidateSkus: GateSkuAbcItem[] = [];
-  const sampleDeadSkus: GateSkuAbcItem[] = [];
+  interface PreparedActiveSku {
+    raw: SkuGlobalAgg;
+    abcClass: 'A' | 'B' | 'C';
+    avgMonthlyUnits: number;
+    threeMonthTarget: number;
+    rawUnscaledStock: number;
+  }
+
+  const preparedActive: PreparedActiveSku[] = new Array(activeSkuList.length);
+  let rawUnscaledExcessSum = 0;
 
   for (let i = 0; i < activeSkuList.length; i++) {
     const s = activeSkuList[i];
@@ -1054,29 +1321,108 @@ export async function parseGateCsvFilesStreaming(
 
     const avgMonthlyUnits = Number((s.annualUnits / monthsCount).toFixed(2));
     const threeMonthTarget = Math.max(1, Math.ceil(avgMonthlyUnits * 3));
+    threeMonthDemandUnits += threeMonthTarget;
 
-    // Stav zásoby: buď explicitní ze souboru, nebo modelovaný podle třídy obrátkovosti (A ~ 3.8 měs., B ~ 4.8 měs., C ~ 6.5 měs.)
+    const hashMod = ((i * 13) % 10) / 10; // 0.0 .. 0.9
+    const monthsOnHand = abcClass === 'A'
+      ? 3.4 + hashMod * 2.4
+      : abcClass === 'B'
+      ? 4.5 + hashMod * 3.8
+      : 6.0 + hashMod * 6.5;
+    const rawStock = Math.max(threeMonthTarget, Math.round(avgMonthlyUnits * monthsOnHand));
+    rawUnscaledExcessSum += Math.max(1, rawStock - threeMonthTarget);
+
+    preparedActive[i] = {
+      raw: s,
+      abcClass,
+      avgMonthlyUnits,
+      threeMonthTarget,
+      rawUnscaledStock: rawStock,
+    };
+  }
+
+  // Pokud nemáme explicitní stock.csv, rozpočítáme nadzásobu tak, aby celková zásoba skladu
+  // (aktivní 3M + nadzásoba na dokladnění + ležáky) přesně dávala 4 500 000 ks
+  const targetActiveStockTotal = Math.max(
+    threeMonthDemandUnits,
+    DEFAULT_TOTAL_WAREHOUSE_STOCK - deadStockUnits
+  );
+  const targetActiveExcessTotal = Math.max(0, targetActiveStockTotal - threeMonthDemandUnits);
+  const excessScaleFactor = rawUnscaledExcessSum > 0 ? targetActiveExcessTotal / rawUnscaledExcessSum : 1;
+
+  let coveredThreeMonthUnits = 0;
+  let coveredThreeMonthSkusCount = 0;
+  let excessReplenishSkusCount = 0;
+  let excessReplenishUnits = 0;
+  let shortageUnitsTotal = 0;
+  let shortageSkusCount = 0;
+  let totalStockUnits = deadStockUnits;
+
+  const topActiveSkus: GateSkuAbcItem[] = [];
+  const excessCandidateSkus: GateSkuAbcItem[] = [];
+
+  for (let i = 0; i < preparedActive.length; i++) {
+    const p = preparedActive[i];
+    const s = p.raw;
+    const { abcClass, avgMonthlyUnits, threeMonthTarget } = p;
+
     let currentStock = s.stockUnits;
     if (currentStock < 0) {
-      const hashMod = ((i * 13) % 10) / 10; // 0.0 .. 0.9
-      const monthsOnHand = abcClass === 'A'
-        ? 2.8 + hashMod * 2.2 // 2.8 - 5.0 měsíců
-        : abcClass === 'B'
-        ? 3.2 + hashMod * 3.0 // 3.2 - 6.2 měsíců
-        : 3.6 + hashMod * 4.5; // 3.6 - 8.1 měsíců
-      currentStock = Math.max(1, Math.round(avgMonthlyUnits * monthsOnHand));
+      if (hasExplicitStockFile) {
+        // Byl nahrán reálný stock.csv, ale toto SKU v něm nemá zásobu -> reálná zásoba = 0 ks
+        currentStock = 0;
+      } else {
+        const rawExcess = Math.max(1, p.rawUnscaledStock - threeMonthTarget);
+        const scaledExcess = Math.round(rawExcess * excessScaleFactor);
+        currentStock = threeMonthTarget + scaledExcess;
+      }
     }
 
     const covered3M = Math.min(currentStock, threeMonthTarget);
     const excess = Math.max(0, currentStock - threeMonthTarget);
     const shortage = Math.max(0, threeMonthTarget - currentStock);
 
-    threeMonthDemandUnits += threeMonthTarget;
+    const uVol = s.unitVolumeM3 > 0 ? s.unitVolumeM3 : avgUnitVolumeM3;
+    const uWeight = s.unitWeightKg > 0 ? s.unitWeightKg : avgUnitWeightKg;
+
+    totalStockVolumeM3 += currentStock * uVol;
+    totalStockWeightKg += currentStock * uWeight;
+
+    // Výpočet boxů pro 3M zásobu v pickovací zóně:
+    // Pravidlo: 1 box = 60x40x22 cm (0.0528 m3), využitelných 80 % (0.04224 m3), v 1 boxu max 1 SKU (žádný mix SKU v boxu).
+    // Pokud má SKU v 3M zásobě > 0 ks (nebo počítáme-li dimenzování pro drženou 3M zásobu covered3M),
+    // každé SKU s covered3M > 0 zabere alespoň 1 celý box.
+    const boxUnitsForSku = covered3M;
+    let boxesForSku = 0;
+    let boxFillPctForSku = 0;
+    if (boxUnitsForSku > 0) {
+      const boxGoodsVol = boxUnitsForSku * uVol;
+      boxesForSku = Math.max(1, Math.ceil(boxGoodsVol / boxUsableVolM3));
+      boxFillPctForSku = Number(Math.min(100, (boxGoodsVol / (boxesForSku * boxUsableVolM3)) * 100).toFixed(1));
+
+      const bs = boxStatsByClass[abcClass];
+      bs.boxSkusCount += 1;
+      bs.boxUnits += boxUnitsForSku;
+      bs.boxGoodsVolumeM3 += boxGoodsVol;
+      bs.boxesNeeded += boxesForSku;
+      if (boxUnitsForSku === 1) bs.singleUnitBoxesCount += 1;
+    }
+
+    // Nadzásoba na palety
+    const excessVolM3 = excess * uVol;
+    if (excess > 0) {
+      palletSkuVolumesByClass[abcClass].push(excessVolM3);
+    }
+
     coveredThreeMonthUnits += covered3M;
     if (covered3M > 0) coveredThreeMonthSkusCount += 1;
     if (excess > 0) {
       excessReplenishSkusCount += 1;
       excessReplenishUnits += excess;
+    }
+    if (shortage > 0) {
+      shortageUnitsTotal += shortage;
+      shortageSkusCount += 1;
     }
     totalStockUnits += currentStock;
 
@@ -1092,6 +1438,7 @@ export async function parseGateCsvFilesStreaming(
     const itemObj: GateSkuAbcItem = {
       sku: s.sku,
       articleCode: s.articleCode,
+      category: s.category || undefined,
       abcClass,
       annualUnits: s.annualUnits,
       ordersCount: s.ordersCount,
@@ -1103,6 +1450,12 @@ export async function parseGateCsvFilesStreaming(
       excessReplenishUnits: excess,
       shortageUnits: shortage,
       shareOfVolumePct: totalAnnualIssuedUnits > 0 ? Number(((s.annualUnits / totalAnnualIssuedUnits) * 100).toFixed(3)) : 0,
+      unitVolumeM3: uVol,
+      unitWeightKg: uWeight,
+      boxesFor3M: boxesForSku,
+      boxFillPct: boxFillPctForSku,
+      excessVolumeM3: Number(excessVolM3.toFixed(4)),
+      palletsForExcess: excess > 0 ? Math.max(1, Math.ceil(excessVolM3 / palletUsableVolM3)) : 0,
     };
 
     if (topActiveSkus.length < 40) {
@@ -1113,35 +1466,13 @@ export async function parseGateCsvFilesStreaming(
     }
   }
 
-  // Zpracování neobrátkových SKU (DEAD = 0 výdej za poslední rok)
-  let deadStockUnits = 0;
-  for (const d of explicitDeadSkus) {
-    const st = d.stockUnits >= 0 ? d.stockUnits : 12;
-    deadStockUnits += st;
-    totalStockUnits += st;
-
-    classBreakdown.DEAD.skusCount += 1;
-    classBreakdown.DEAD.currentStockUnits += st;
-    classBreakdown.DEAD.excessUnits += st;
-    classBreakdown.DEAD.excessSkusCount += 1;
-
-    if (sampleDeadSkus.length < 40) {
-      sampleDeadSkus.push({
-        sku: d.sku,
-        articleCode: d.articleCode,
-        abcClass: 'DEAD',
-        annualUnits: 0,
-        ordersCount: 0,
-        activeMonths: 0,
-        avgMonthlyUnits: 0,
-        threeMonthTargetUnits: 0,
-        currentStockUnits: st,
-        coveredThreeMonthUnits: 0,
-        excessReplenishUnits: st,
-        shortageUnits: 0,
-        shareOfVolumePct: 0,
-      });
-    }
+  // Dorovnání zaokrouhlovací odchylky na přesných 4 500 000 ks, pokud nebyl nahrán stock.csv
+  if (!hasExplicitStockFile && activeSkuList.length > 0 && totalStockUnits !== DEFAULT_TOTAL_WAREHOUSE_STOCK) {
+    const diff = DEFAULT_TOTAL_WAREHOUSE_STOCK - totalStockUnits;
+    classBreakdown.C.currentStockUnits = Math.max(classBreakdown.C.coveredThreeMonthUnits, classBreakdown.C.currentStockUnits + diff);
+    classBreakdown.C.excessUnits = Math.max(0, classBreakdown.C.currentStockUnits - classBreakdown.C.coveredThreeMonthUnits);
+    excessReplenishUnits = classBreakdown.A.excessUnits + classBreakdown.B.excessUnits + classBreakdown.C.excessUnits;
+    totalStockUnits = classBreakdown.A.currentStockUnits + classBreakdown.B.currentStockUnits + classBreakdown.C.currentStockUnits + deadStockUnits;
   }
 
   const totalCatalogSkus = activeSkuList.length + explicitDeadSkus.length;
@@ -1154,6 +1485,29 @@ export async function parseGateCsvFilesStreaming(
       : 0;
   }
 
+  // Sestavení volumetrického souhrnu (boxy 60x40x22 cm + palety 120x80x180 cm s No-Split SKU algoritmem)
+  const volumetry = buildVolumetricSummaryFromClassData({
+    hasExplicitVolumeData,
+    avgUnitVolumeM3,
+    avgUnitWeightKg,
+    totalStockVolumeM3,
+    totalStockWeightKg,
+    boxMaxFillPct: defaultBoxMaxFillPct,
+    palletMaxFillPct: defaultPalletMaxFillPct,
+    classBreakdown,
+    boxStatsByClass,
+    palletSkuVolumesByClass,
+  });
+
+  for (const k of ['A', 'B', 'C', 'DEAD'] as const) {
+    classBreakdown[k].boxesFor3M = volumetry.byClass[k].boxesNeeded;
+    classBreakdown[k].boxVolumeM3 = volumetry.byClass[k].boxGoodsVolumeM3;
+    classBreakdown[k].palletsForExcess = volumetry.byClass[k].palletsNeeded;
+    classBreakdown[k].palletVolumeM3 = volumetry.byClass[k].palletGoodsVolumeM3;
+    classBreakdown[k].monoSkuPallets = volumetry.byClass[k].monoSkuPalletsCount;
+    classBreakdown[k].mixedSkuPallets = volumetry.byClass[k].mixedSkuPalletsCount;
+  }
+
   const topExcessSkus = excessCandidateSkus
     .sort((a, b) => b.excessReplenishUnits - a.excessReplenishUnits)
     .slice(0, 40);
@@ -1163,6 +1517,9 @@ export async function parseGateCsvFilesStreaming(
     activeSkusCount: activeSkuList.length,
     deadStockSkusCount: explicitDeadSkus.length,
     deadStockUnits,
+    zeroStockCatalogSkusCount,
+    shortageUnitsTotal,
+    shortageSkusCount,
     totalStockUnits,
     totalAnnualIssuedUnits,
     threeMonthDemandUnits,
@@ -1171,6 +1528,7 @@ export async function parseGateCsvFilesStreaming(
     excessReplenishSkusCount,
     excessReplenishUnits,
     hasExplicitStockFile,
+    volumetry,
     classBreakdown,
     topExcessSkus,
     topActiveSkus,
@@ -1214,6 +1572,419 @@ export async function parseGateCsvFilesStreaming(
     stockFileRows,
     errors,
   };
+}
+
+/**
+ * Paletizace bez dělení 1 SKU mezi více mixovaných palet (No-Split SKU / Single-SKU Priority):
+ * - Paleta: 120 * 80 * 180 cm = 1.728 m3, využitelných např. 80 % = 1.3824 m3.
+ * - Pokud má 1 SKU objem >= usablePalletVol, nejprve naplní celočíselný počet čistých Mono-SKU palet
+ *   a jeho zbytek (< usablePalletVol) zůstane pohromadě jako 1 nedělitelný blok.
+ * - Všechny nedělitelné bloky SKU (< usablePalletVol) se seřadí sestupně (First-Fit Decreasing)
+ *   a skládají se na palety tak, že se 1 SKU nikdy nerozdělí mezi více palet (musí se vejít celé, jinak se otevře nová paleta).
+ * - Paleta, na které zůstane jen 1 SKU, se započítá jako Mono-SKU paleta (rychlý paletový picking pro doskladnění).
+ */
+export function packSkuVolumesOntoPalletsNoSplit(
+  skuVolumesM3: number[],
+  usablePalletVolM3: number
+): {
+  palletsNeeded: number;
+  monoSkuPalletsCount: number;
+  mixedSkuPalletsCount: number;
+  totalGoodsVolumeM3: number;
+} {
+  const cap = Math.max(0.01, usablePalletVolM3);
+  let fullMonoPallets = 0;
+  let totalGoodsVolumeM3 = 0;
+  const remainderBlocks: number[] = [];
+
+  for (let i = 0; i < skuVolumesM3.length; i++) {
+    const v = skuVolumesM3[i];
+    if (v <= 0) continue;
+    totalGoodsVolumeM3 += v;
+
+    if (v >= cap) {
+      const fullCount = Math.floor(v / cap);
+      fullMonoPallets += fullCount;
+      const rem = v - fullCount * cap;
+      if (rem > 1e-6) {
+        remainderBlocks.push(rem);
+      }
+    } else {
+      remainderBlocks.push(v);
+    }
+  }
+
+  // Seřadíme bloky sestupně (First-Fit Decreasing bez dělení bloků)
+  remainderBlocks.sort((a, b) => b - a);
+
+  const openPallets: { usedVol: number; skuCount: number }[] = [];
+  let firstOpenIdx = 0;
+  const minBlockVol = remainderBlocks.length > 0 ? remainderBlocks[remainderBlocks.length - 1] : 0;
+
+  for (let i = 0; i < remainderBlocks.length; i++) {
+    const blockVol = remainderBlocks[i];
+    let placed = false;
+
+    // Prohledáme otevřené palety (omezené okno pro garantovanou rychlost i při 30 000+ SKU)
+    const searchLimit = Math.min(openPallets.length, firstOpenIdx + 450);
+    for (let p = firstOpenIdx; p < searchLimit; p++) {
+      const pal = openPallets[p];
+      const remSpace = cap - pal.usedVol;
+      if (remSpace + 1e-7 >= blockVol) {
+        pal.usedVol += blockVol;
+        pal.skuCount += 1;
+        placed = true;
+        if (p === firstOpenIdx && cap - pal.usedVol < minBlockVol) {
+          firstOpenIdx += 1;
+        }
+        break;
+      }
+    }
+
+    if (!placed) {
+      openPallets.push({ usedVol: blockVol, skuCount: 1 });
+      if (openPallets.length - 1 === firstOpenIdx && cap - blockVol < minBlockVol) {
+        firstOpenIdx += 1;
+      }
+    }
+  }
+
+  let monoFromBlocks = 0;
+  let mixedFromBlocks = 0;
+  for (let i = 0; i < openPallets.length; i++) {
+    if (openPallets[i].skuCount <= 1) {
+      monoFromBlocks += 1;
+    } else {
+      mixedFromBlocks += 1;
+    }
+  }
+
+  const monoSkuPalletsCount = fullMonoPallets + monoFromBlocks;
+  const mixedSkuPalletsCount = mixedFromBlocks;
+  const palletsNeeded = monoSkuPalletsCount + mixedSkuPalletsCount;
+
+  return {
+    palletsNeeded,
+    monoSkuPalletsCount,
+    mixedSkuPalletsCount,
+    totalGoodsVolumeM3,
+  };
+}
+
+function buildVolumetricSummaryFromClassData(params: {
+  hasExplicitVolumeData: boolean;
+  avgUnitVolumeM3: number;
+  avgUnitWeightKg: number;
+  totalStockVolumeM3: number;
+  totalStockWeightKg: number;
+  boxMaxFillPct: number;
+  palletMaxFillPct: number;
+  classBreakdown: GateAbcSummary['classBreakdown'];
+  boxStatsByClass: Record<'A' | 'B' | 'C' | 'DEAD', {
+    boxSkusCount: number;
+    boxUnits: number;
+    boxGoodsVolumeM3: number;
+    boxesNeeded: number;
+    singleUnitBoxesCount: number;
+  }>;
+  palletSkuVolumesByClass: Record<'A' | 'B' | 'C' | 'DEAD', number[]>;
+}): GateVolumetricSummary {
+  const BOX_GROSS_VOL_M3 = 0.60 * 0.40 * 0.22;     // 0.0528 m3
+  const PALLET_GROSS_VOL_M3 = 1.20 * 0.80 * 1.80;  // 1.728 m3
+  const boxMaxFillPct = Math.min(100, Math.max(20, params.boxMaxFillPct || 80));
+  const palletMaxFillPct = Math.min(100, Math.max(20, params.palletMaxFillPct || 80));
+  const boxUsableVolumeM3 = BOX_GROSS_VOL_M3 * (boxMaxFillPct / 100);
+  const palletUsableVolumeM3 = PALLET_GROSS_VOL_M3 * (palletMaxFillPct / 100);
+
+  const byClass = {} as GateVolumetricSummary['byClass'];
+
+  let totalBoxesNeeded = 0;
+  let totalBoxUnits = 0;
+  let totalBoxGoodsVolumeM3 = 0;
+  let singleUnitBoxesCount = 0;
+
+  let totalPalletsNeeded = 0;
+  let excessPalletsNeeded = 0;
+  let deadStockPalletsNeeded = 0;
+  let monoSkuPalletsCount = 0;
+  let mixedSkuPalletsCount = 0;
+  let totalPalletUnits = 0;
+  let totalPalletGoodsVolumeM3 = 0;
+  let totalPalletSkusCount = 0;
+
+  for (const cls of ['A', 'B', 'C', 'DEAD'] as const) {
+    const cb = params.classBreakdown[cls];
+    const bs = params.boxStatsByClass[cls];
+    const palPack = packSkuVolumesOntoPalletsNoSplit(
+      params.palletSkuVolumesByClass[cls],
+      palletUsableVolumeM3
+    );
+
+    const palletSkusCount = cb.excessSkusCount;
+    const palletUnits = cb.excessUnits;
+    const palletGoodsVol = palPack.totalGoodsVolumeM3;
+    const palletsNeeded = palPack.palletsNeeded;
+
+    const avgBoxFillOfUsablePct = bs.boxesNeeded > 0
+      ? Number(Math.min(100, (bs.boxGoodsVolumeM3 / (bs.boxesNeeded * boxUsableVolumeM3)) * 100).toFixed(1))
+      : 0;
+    const avgBoxFillOfGrossPct = bs.boxesNeeded > 0
+      ? Number(Math.min(100, (bs.boxGoodsVolumeM3 / (bs.boxesNeeded * BOX_GROSS_VOL_M3)) * 100).toFixed(1))
+      : 0;
+
+    const avgPalletFillOfUsablePct = palletsNeeded > 0
+      ? Number(Math.min(100, (palletGoodsVol / (palletsNeeded * palletUsableVolumeM3)) * 100).toFixed(1))
+      : 0;
+    const avgPalletFillOfGrossPct = palletsNeeded > 0
+      ? Number(Math.min(100, (palletGoodsVol / (palletsNeeded * PALLET_GROSS_VOL_M3)) * 100).toFixed(1))
+      : 0;
+
+    byClass[cls] = {
+      abcClass: cls,
+      skusCount: cb.skusCount,
+      boxSkusCount: bs.boxSkusCount,
+      boxUnits: bs.boxUnits,
+      boxGoodsVolumeM3: Number(bs.boxGoodsVolumeM3.toFixed(2)),
+      boxesNeeded: bs.boxesNeeded,
+      singleUnitBoxesCount: bs.singleUnitBoxesCount,
+      avgUnitsPerBox: bs.boxesNeeded > 0 ? Number((bs.boxUnits / bs.boxesNeeded).toFixed(1)) : 0,
+      avgBoxFillOfUsablePct,
+      avgBoxFillOfGrossPct,
+      palletSkusCount,
+      palletUnits,
+      palletGoodsVolumeM3: Number(palletGoodsVol.toFixed(2)),
+      palletsNeeded,
+      monoSkuPalletsCount: palPack.monoSkuPalletsCount,
+      mixedSkuPalletsCount: palPack.mixedSkuPalletsCount,
+      avgSkusPerPallet: palletsNeeded > 0 ? Number((palletSkusCount / palletsNeeded).toFixed(2)) : 0,
+      avgUnitsPerPallet: palletsNeeded > 0 ? Math.round(palletUnits / palletsNeeded) : 0,
+      avgPalletFillOfUsablePct,
+      avgPalletFillOfGrossPct,
+    };
+
+    totalBoxesNeeded += bs.boxesNeeded;
+    totalBoxUnits += bs.boxUnits;
+    totalBoxGoodsVolumeM3 += bs.boxGoodsVolumeM3;
+    singleUnitBoxesCount += bs.singleUnitBoxesCount;
+
+    totalPalletsNeeded += palletsNeeded;
+    if (cls === 'DEAD') {
+      deadStockPalletsNeeded += palletsNeeded;
+    } else {
+      excessPalletsNeeded += palletsNeeded;
+    }
+    monoSkuPalletsCount += palPack.monoSkuPalletsCount;
+    mixedSkuPalletsCount += palPack.mixedSkuPalletsCount;
+    totalPalletUnits += palletUnits;
+    totalPalletGoodsVolumeM3 += palletGoodsVol;
+    totalPalletSkusCount += palletSkusCount;
+  }
+
+  return {
+    hasExplicitVolumeData: params.hasExplicitVolumeData,
+    avgUnitVolumeM3: Number(params.avgUnitVolumeM3.toFixed(6)),
+    avgUnitWeightKg: Number(params.avgUnitWeightKg.toFixed(3)),
+    totalStockVolumeM3: Number(params.totalStockVolumeM3.toFixed(1)),
+    totalStockWeightKg: Math.round(params.totalStockWeightKg),
+    boxDimensionsCm: '60 × 40 × 22 cm',
+    boxGrossVolumeM3: Number(BOX_GROSS_VOL_M3.toFixed(4)),
+    boxMaxFillPct,
+    boxUsableVolumeM3: Number(boxUsableVolumeM3.toFixed(5)),
+    totalBoxesNeeded,
+    totalBoxUnits,
+    totalBoxGoodsVolumeM3: Number(totalBoxGoodsVolumeM3.toFixed(1)),
+    singleUnitBoxesCount,
+    avgUnitsPerBox: totalBoxesNeeded > 0 ? Number((totalBoxUnits / totalBoxesNeeded).toFixed(1)) : 0,
+    avgBoxFillOfUsablePct: totalBoxesNeeded > 0
+      ? Number(Math.min(100, (totalBoxGoodsVolumeM3 / (totalBoxesNeeded * boxUsableVolumeM3)) * 100).toFixed(1))
+      : 0,
+    avgBoxFillOfGrossPct: totalBoxesNeeded > 0
+      ? Number(Math.min(100, (totalBoxGoodsVolumeM3 / (totalBoxesNeeded * BOX_GROSS_VOL_M3)) * 100).toFixed(1))
+      : 0,
+    palletDimensionsCm: '120 × 80 × 180 cm',
+    palletGrossVolumeM3: Number(PALLET_GROSS_VOL_M3.toFixed(4)),
+    palletMaxFillPct,
+    palletUsableVolumeM3: Number(palletUsableVolumeM3.toFixed(4)),
+    totalPalletsNeeded,
+    excessPalletsNeeded,
+    deadStockPalletsNeeded,
+    monoSkuPalletsCount,
+    mixedSkuPalletsCount,
+    totalPalletUnits,
+    totalPalletGoodsVolumeM3: Number(totalPalletGoodsVolumeM3.toFixed(1)),
+    avgSkusPerPallet: totalPalletsNeeded > 0 ? Number((totalPalletSkusCount / totalPalletsNeeded).toFixed(2)) : 0,
+    avgUnitsPerPallet: totalPalletsNeeded > 0 ? Math.round(totalPalletUnits / totalPalletsNeeded) : 0,
+    avgPalletFillOfUsablePct: totalPalletsNeeded > 0
+      ? Number(Math.min(100, (totalPalletGoodsVolumeM3 / (totalPalletsNeeded * palletUsableVolumeM3)) * 100).toFixed(1))
+      : 0,
+    avgPalletFillOfGrossPct: totalPalletsNeeded > 0
+      ? Number(Math.min(100, (totalPalletGoodsVolumeM3 / (totalPalletsNeeded * PALLET_GROSS_VOL_M3)) * 100).toFixed(1))
+      : 0,
+    byClass,
+  };
+}
+
+/**
+ * Dynamický přepočet potřeby boxů (60x40x22 cm) a palet (120x80x180 cm) při změně konfigurace v UI
+ * (např. změna max. využitelného objemu boxu/palety z 80 % na jinou hodnotu, nebo změna cílové zásoby 1M-6M).
+ */
+export function recomputeGateVolumetryFromSummary(
+  abc: GateAbcSummary,
+  boxMaxFillPct: number = 80,
+  palletMaxFillPct: number = 80,
+  coverageMonthsTarget: number = 3,
+  stockScaleFactor: number = 1
+): GateVolumetricSummary {
+  const baseVol = abc.volumetry;
+  const avgUnitVol = baseVol?.avgUnitVolumeM3 || 0.00385;
+  const avgUnitWeight = baseVol?.avgUnitWeightKg || 0.72;
+  const BOX_GROSS_VOL_M3 = 0.60 * 0.40 * 0.22;
+  const PALLET_GROSS_VOL_M3 = 1.20 * 0.80 * 1.80;
+  const clampedBoxPct = Math.min(100, Math.max(20, boxMaxFillPct));
+  const clampedPalPct = Math.min(100, Math.max(20, palletMaxFillPct));
+  const boxUsableVolumeM3 = BOX_GROSS_VOL_M3 * (clampedBoxPct / 100);
+  const palletUsableVolumeM3 = PALLET_GROSS_VOL_M3 * (clampedPalPct / 100);
+
+  // Pokud máme uložený přesný výsledek pro 80 % / 3M / scale=1, vrátíme ho nebo plynule přepočítáme
+  if (
+    baseVol &&
+    Math.abs(clampedBoxPct - baseVol.boxMaxFillPct) < 0.01 &&
+    Math.abs(clampedPalPct - baseVol.palletMaxFillPct) < 0.01 &&
+    Math.abs(coverageMonthsTarget - 3) < 0.01 &&
+    Math.abs(stockScaleFactor - 1) < 0.001
+  ) {
+    return baseVol;
+  }
+
+  const monthFactor = coverageMonthsTarget / 3;
+  const boxStatsByClass: Record<'A' | 'B' | 'C' | 'DEAD', {
+    boxSkusCount: number;
+    boxUnits: number;
+    boxGoodsVolumeM3: number;
+    boxesNeeded: number;
+    singleUnitBoxesCount: number;
+  }> = {
+    A: { boxSkusCount: 0, boxUnits: 0, boxGoodsVolumeM3: 0, boxesNeeded: 0, singleUnitBoxesCount: 0 },
+    B: { boxSkusCount: 0, boxUnits: 0, boxGoodsVolumeM3: 0, boxesNeeded: 0, singleUnitBoxesCount: 0 },
+    C: { boxSkusCount: 0, boxUnits: 0, boxGoodsVolumeM3: 0, boxesNeeded: 0, singleUnitBoxesCount: 0 },
+    DEAD: { boxSkusCount: 0, boxUnits: 0, boxGoodsVolumeM3: 0, boxesNeeded: 0, singleUnitBoxesCount: 0 },
+  };
+  const palletSkuVolumesByClass: Record<'A' | 'B' | 'C' | 'DEAD', number[]> = {
+    A: [],
+    B: [],
+    C: [],
+    DEAD: [],
+  };
+  const adjustedClassBreakdown: GateAbcSummary['classBreakdown'] = {
+    A: { ...abc.classBreakdown.A },
+    B: { ...abc.classBreakdown.B },
+    C: { ...abc.classBreakdown.C },
+    DEAD: { ...abc.classBreakdown.DEAD },
+  };
+
+  let totalStockVol = 0;
+  let totalStockW = 0;
+
+  for (const cls of ['A', 'B', 'C', 'DEAD'] as const) {
+    const cb = abc.classBreakdown[cls];
+    const baseClsVol = baseVol?.byClass?.[cls];
+    const skusCount = cb.skusCount;
+    const scaledStockUnits = Math.round(cb.currentStockUnits * stockScaleFactor);
+    const targetUnits = cls === 'DEAD' ? 0 : Math.round(cb.threeMonthTargetUnits * monthFactor);
+    const coveredUnits = cls === 'DEAD' ? 0 : Math.min(scaledStockUnits, targetUnits);
+    const excessUnits = cls === 'DEAD' ? scaledStockUnits : Math.max(0, scaledStockUnits - coveredUnits);
+    const excessSkusCount = excessUnits > 0
+      ? (cls === 'DEAD' ? skusCount : Math.max(1, Math.min(skusCount, Math.round(cb.excessSkusCount * (excessUnits / Math.max(1, cb.excessUnits))))))
+      : 0;
+
+    adjustedClassBreakdown[cls].currentStockUnits = scaledStockUnits;
+    adjustedClassBreakdown[cls].threeMonthTargetUnits = targetUnits;
+    adjustedClassBreakdown[cls].coveredThreeMonthUnits = coveredUnits;
+    adjustedClassBreakdown[cls].excessUnits = excessUnits;
+    adjustedClassBreakdown[cls].excessSkusCount = excessSkusCount;
+
+    // Objem zboží v této třídě
+    const clsUnitVol = (baseClsVol && (baseClsVol.boxUnits + baseClsVol.palletUnits) > 0)
+      ? (baseClsVol.boxGoodsVolumeM3 + baseClsVol.palletGoodsVolumeM3) / (baseClsVol.boxUnits + baseClsVol.palletUnits)
+      : avgUnitVol;
+
+    totalStockVol += scaledStockUnits * clsUnitVol;
+    totalStockW += scaledStockUnits * avgUnitWeight;
+
+    // Boxy (1 SKU = min 1 box, žádný mix v boxu)
+    if (coveredUnits > 0 && skusCount > 0) {
+      const boxSkus = baseClsVol?.boxSkusCount
+        ? Math.min(skusCount, Math.max(1, Math.round(baseClsVol.boxSkusCount * Math.min(1.15, Math.sqrt(monthFactor * stockScaleFactor)))))
+        : skusCount;
+      const boxGoodsVol = coveredUnits * clsUnitVol;
+
+      // Každé SKU v pickovací zóně má vlastní box(y)
+      let boxesNeeded = 0;
+      if (baseClsVol && baseClsVol.boxesNeeded > 0 && baseVol) {
+        // Přesná škálovací odezva zachovávající 1-SKU-per-box strop (minimum = boxSkus)
+        const oldUsable = baseVol.boxUsableVolumeM3;
+        const volRatio = (boxGoodsVol / Math.max(0.001, baseClsVol.boxGoodsVolumeM3)) * (oldUsable / boxUsableVolumeM3);
+        const multiBoxExtra = Math.max(0, baseClsVol.boxesNeeded - baseClsVol.boxSkusCount);
+        boxesNeeded = boxSkus + Math.ceil(multiBoxExtra * volRatio);
+      } else {
+        // Rozložíme coveredUnits mezi boxSkus podle Pareto křivky
+        const avgUnitsPerSku = coveredUnits / boxSkus;
+        const weights = [2.6, 1.7, 1.25, 0.95, 0.75, 0.55, 0.42, 0.33, 0.25, 0.20];
+        for (let b = 0; b < 10; b++) {
+          const bucketSkus = Math.round(boxSkus / 10);
+          const skuUnits = Math.max(1, Math.round(avgUnitsPerSku * weights[b]));
+          const boxesPerSku = Math.max(1, Math.ceil((skuUnits * clsUnitVol) / boxUsableVolumeM3));
+          boxesNeeded += bucketSkus * boxesPerSku;
+        }
+        boxesNeeded = Math.max(boxSkus, boxesNeeded);
+      }
+
+      const singleUnitBoxes = baseClsVol?.singleUnitBoxesCount
+        ? Math.round(baseClsVol.singleUnitBoxesCount / Math.max(0.5, monthFactor))
+        : (cls === 'C' ? Math.round(boxSkus * 0.28) : cls === 'B' ? Math.round(boxSkus * 0.08) : Math.round(boxSkus * 0.02));
+
+      boxStatsByClass[cls] = {
+        boxSkusCount: boxSkus,
+        boxUnits: coveredUnits,
+        boxGoodsVolumeM3: boxGoodsVol,
+        boxesNeeded,
+        singleUnitBoxesCount: Math.min(boxSkus, singleUnitBoxes),
+      };
+    }
+
+    // Palety (No-Split SKU distribuce objemů jednotlivých SKU v nadzásobě / bezobratu)
+    if (excessUnits > 0 && excessSkusCount > 0) {
+      const totalExcessVol = excessUnits * clsUnitVol;
+      const avgVolPerSku = totalExcessVol / excessSkusCount;
+      // Generujeme realistické rozdělení objemů jednotlivých SKU tak, aby součet přesně seděl na totalExcessVol
+      const skuVols: number[] = new Array(excessSkusCount);
+      const bucketWeights = [3.2, 2.1, 1.5, 1.15, 0.90, 0.70, 0.52, 0.38, 0.28, 0.18];
+      let rawSum = 0;
+      for (let i = 0; i < excessSkusCount; i++) {
+        const w = bucketWeights[i % 10] * (1 + ((i % 7) - 3) * 0.05);
+        skuVols[i] = w;
+        rawSum += w;
+      }
+      const norm = rawSum > 0 ? totalExcessVol / rawSum : avgVolPerSku;
+      for (let i = 0; i < excessSkusCount; i++) {
+        skuVols[i] = skuVols[i] * norm;
+      }
+      palletSkuVolumesByClass[cls] = skuVols;
+    }
+  }
+
+  return buildVolumetricSummaryFromClassData({
+    hasExplicitVolumeData: baseVol?.hasExplicitVolumeData ?? false,
+    avgUnitVolumeM3: avgUnitVol,
+    avgUnitWeightKg: avgUnitWeight,
+    totalStockVolumeM3: totalStockVol,
+    totalStockWeightKg: totalStockW,
+    boxMaxFillPct: clampedBoxPct,
+    palletMaxFillPct: clampedPalPct,
+    classBreakdown: adjustedClassBreakdown,
+    boxStatsByClass,
+    palletSkuVolumesByClass,
+  });
 }
 
 /**
@@ -1359,34 +2130,52 @@ export function generateSampleGateReport(svjBracketStats?: BracketStat[]): GateA
   const target3MB = Math.round((unitsB / 12) * 3);
   const target3MC = Math.round((unitsC / 12) * 3);
 
-  const stockA = Math.round(target3MA * 1.28);
-  const stockB = Math.round(target3MB * 1.46);
-  const stockC = Math.round(target3MC * 1.82);
-  const deadStockUnits = 38420;
+  // Kalibrace celkové skladové zásoby na 4 500 000 ks dle informace zákazníka
+  const sampleTotalStockTarget = 4_500_000;
+  const deadStockUnits = 360_000; // Množina 2: 0 výdej za poslední rok
+  const activeStockTarget = sampleTotalStockTarget - deadStockUnits;
+  const total3MDemand = target3MA + target3MB + target3MC;
+  const totalActiveExcess = Math.max(0, activeStockTarget - total3MDemand);
 
-  const excessA = stockA - target3MA;
-  const excessB = stockB - target3MB;
-  const excessC = stockC - target3MC;
+  const excessA = Math.round(totalActiveExcess * 0.52);
+  const excessB = Math.round(totalActiveExcess * 0.28);
+  const excessC = Math.max(0, totalActiveExcess - excessA - excessB);
 
-  const excessSkusA = Math.round(skusA * 0.62);
-  const excessSkusB = Math.round(skusB * 0.74);
-  const excessSkusC = Math.round(skusC * 0.81);
+  const stockA = target3MA + excessA;
+  const stockB = target3MB + excessB;
+  const stockC = target3MC + excessC;
 
-  const samplePrefixes = ['525-0054', '525-0067', '825-0181', '825-0309', '825-0321', '825-0497', '625-0112', '725-0440', '925-0215', '425-0890'];
-  const sampleSizes = ['81', '89', '48', '55', '41', '92', '01', '14'];
+  const excessSkusA = Math.round(skusA * 0.78);
+  const excessSkusB = Math.round(skusB * 0.86);
+  const excessSkusC = Math.round(skusC * 0.92);
+
+  const samplePrefixes = ['124-0002', '124-0007', '124-0015', '525-0054', '525-0067', '825-0181', '825-0309', '825-0321', '825-0497', '625-0112'];
+  const sampleSizes = ['75', '89', '45', '81', '48', '55', '41', '92'];
+  const sampleCategories = ['PAN', 'TOP', 'DRESS', 'JACKET', 'SHOE'];
+  const sampleVolumes = [0.004048, 0.003388, 0.004657, 0.002950, 0.003820];
+  const sampleWeights = [0.97, 0.85, 0.59, 0.44, 0.76];
+  const boxUsableVolM3 = 0.60 * 0.40 * 0.22 * 0.80; // 0.04224 m3
+  const palletUsableVolM3 = 1.20 * 0.80 * 1.80 * 0.80; // 1.3824 m3
 
   const topActiveSkus: GateSkuAbcItem[] = Array.from({ length: 25 }, (_, i) => {
     const art = samplePrefixes[i % samplePrefixes.length];
     const sz = sampleSizes[i % sampleSizes.length];
     const sku = `${art}/${sz}`;
+    const cat = sampleCategories[i % sampleCategories.length];
+    const uVol = sampleVolumes[i % sampleVolumes.length];
+    const uWeight = sampleWeights[i % sampleWeights.length];
     const annualUnits = Math.round(4800 - i * 145);
     const avgMonthly = Number((annualUnits / 12).toFixed(1));
     const target3M = Math.ceil(avgMonthly * 3);
     const currentStock = Math.round(target3M * (1.25 + (i % 5) * 0.18));
     const excess = Math.max(0, currentStock - target3M);
+    const boxVol = target3M * uVol;
+    const boxesFor3M = Math.max(1, Math.ceil(boxVol / boxUsableVolM3));
+    const excessVol = excess * uVol;
     return {
       sku,
       articleCode: art,
+      category: cat,
       abcClass: 'A',
       annualUnits,
       ordersCount: Math.round(annualUnits * 0.84),
@@ -1398,6 +2187,12 @@ export function generateSampleGateReport(svjBracketStats?: BracketStat[]): GateA
       excessReplenishUnits: excess,
       shortageUnits: 0,
       shareOfVolumePct: Number(((annualUnits / grandTotalUnits) * 100).toFixed(3)),
+      unitVolumeM3: uVol,
+      unitWeightKg: uWeight,
+      boxesFor3M,
+      boxFillPct: Number(Math.min(100, (boxVol / (boxesFor3M * boxUsableVolM3)) * 100).toFixed(1)),
+      excessVolumeM3: Number(excessVol.toFixed(4)),
+      palletsForExcess: excess > 0 ? Math.max(1, Math.ceil(excessVol / palletUsableVolM3)) : 0,
     };
   });
 
@@ -1405,15 +2200,22 @@ export function generateSampleGateReport(svjBracketStats?: BracketStat[]): GateA
     const art = `${500 + ((i * 37) % 450)}-0${110 + i * 19}`;
     const sz = sampleSizes[(i + 2) % sampleSizes.length];
     const sku = `${art}/${sz}`;
+    const cat = sampleCategories[(i + 1) % sampleCategories.length];
+    const uVol = sampleVolumes[(i + 2) % sampleVolumes.length];
+    const uWeight = sampleWeights[(i + 2) % sampleWeights.length];
     const cls: 'A' | 'B' | 'C' = i < 8 ? 'A' : i < 17 ? 'B' : 'C';
     const annualUnits = cls === 'A' ? 2400 - i * 80 : cls === 'B' ? 680 - i * 18 : 180 - i * 4;
     const avgMonthly = Number((annualUnits / 12).toFixed(1));
     const target3M = Math.ceil(avgMonthly * 3);
     const excess = Math.round(1450 - i * 42);
     const currentStock = target3M + excess;
+    const boxVol = target3M * uVol;
+    const boxesFor3M = Math.max(1, Math.ceil(boxVol / boxUsableVolM3));
+    const excessVol = excess * uVol;
     return {
       sku,
       articleCode: art,
+      category: cat,
       abcClass: cls,
       annualUnits,
       ordersCount: Math.round(annualUnits * 0.88),
@@ -1425,16 +2227,26 @@ export function generateSampleGateReport(svjBracketStats?: BracketStat[]): GateA
       excessReplenishUnits: excess,
       shortageUnits: 0,
       shareOfVolumePct: Number(((annualUnits / grandTotalUnits) * 100).toFixed(3)),
+      unitVolumeM3: uVol,
+      unitWeightKg: uWeight,
+      boxesFor3M,
+      boxFillPct: Number(Math.min(100, (boxVol / (boxesFor3M * boxUsableVolM3)) * 100).toFixed(1)),
+      excessVolumeM3: Number(excessVol.toFixed(4)),
+      palletsForExcess: Math.max(1, Math.ceil(excessVol / palletUsableVolM3)),
     };
   });
 
   const sampleDeadSkus: GateSkuAbcItem[] = Array.from({ length: 20 }, (_, i) => {
-    const art = `324-0${210 + i * 23}`;
+    const art = `124-0${String(1 + i * 7).padStart(3, '0')}`;
     const sz = sampleSizes[(i + 4) % sampleSizes.length];
+    const uVol = sampleVolumes[i % sampleVolumes.length];
+    const uWeight = sampleWeights[i % sampleWeights.length];
     const st = Math.round(180 - i * 7);
+    const excessVol = st * uVol;
     return {
       sku: `${art}/${sz}`,
       articleCode: art,
+      category: 'PAN',
       abcClass: 'DEAD',
       annualUnits: 0,
       ordersCount: 0,
@@ -1446,6 +2258,12 @@ export function generateSampleGateReport(svjBracketStats?: BracketStat[]): GateA
       excessReplenishUnits: st,
       shortageUnits: 0,
       shareOfVolumePct: 0,
+      unitVolumeM3: uVol,
+      unitWeightKg: uWeight,
+      boxesFor3M: 0,
+      boxFillPct: 0,
+      excessVolumeM3: Number(excessVol.toFixed(4)),
+      palletsForExcess: Math.max(1, Math.ceil(excessVol / palletUsableVolM3)),
     };
   });
 
@@ -1454,6 +2272,9 @@ export function generateSampleGateReport(svjBracketStats?: BracketStat[]): GateA
     activeSkusCount: totalActiveSkus,
     deadStockSkusCount,
     deadStockUnits,
+    zeroStockCatalogSkusCount: 4120,
+    shortageUnitsTotal: 0,
+    shortageSkusCount: 0,
     totalStockUnits: stockA + stockB + stockC + deadStockUnits,
     totalAnnualIssuedUnits: grandTotalUnits,
     threeMonthDemandUnits: target3MA + target3MB + target3MC,
@@ -1513,6 +2334,18 @@ export function generateSampleGateReport(svjBracketStats?: BracketStat[]): GateA
     sampleDeadSkus,
   };
 
+  // Dopočítáme výchozí volumetrii (80 % box 60x40x22 cm, 80 % paleta 120x80x180 cm)
+  const volumetry = recomputeGateVolumetryFromSummary(abcAnalysis, 80, 80, 3, 1);
+  abcAnalysis.volumetry = volumetry;
+  for (const k of ['A', 'B', 'C', 'DEAD'] as const) {
+    abcAnalysis.classBreakdown[k].boxesFor3M = volumetry.byClass[k].boxesNeeded;
+    abcAnalysis.classBreakdown[k].boxVolumeM3 = volumetry.byClass[k].boxGoodsVolumeM3;
+    abcAnalysis.classBreakdown[k].palletsForExcess = volumetry.byClass[k].palletsNeeded;
+    abcAnalysis.classBreakdown[k].palletVolumeM3 = volumetry.byClass[k].palletGoodsVolumeM3;
+    abcAnalysis.classBreakdown[k].monoSkuPallets = volumetry.byClass[k].monoSkuPalletsCount;
+    abcAnalysis.classBreakdown[k].mixedSkuPallets = volumetry.byClass[k].mixedSkuPalletsCount;
+  }
+
   return {
     warehouse: 'gate',
     totalOrders: grandTotalOrders,
@@ -1539,7 +2372,7 @@ export function generateSampleGateReport(svjBracketStats?: BracketStat[]): GateA
 export function generateSampleGateCsvFiles(): { ordersCsv: string; itemsCsv: string; stockCsv: string } {
   const ordersHeader = 'order_id;order_created_at;order_received_at;ship_date;packed_at;carrier_first_scan_at;delivery_date;delivered_at;country;postal_code;carrier;delivery_method;weight_kg;package_type;items_qty;cod_flag;delivery_status';
   const itemsHeader = 'order_id;sku;article_code;qty';
-  const stockHeader = 'sku;article_code;stock_qty';
+  const stockHeader = 'sku;article_code;category;qty_on_hand;unit_volume;unit_weight_kg';
 
   const ordersLines: string[] = [ordersHeader];
   const itemsLines: string[] = [itemsHeader];
@@ -1547,20 +2380,22 @@ export function generateSampleGateCsvFiles(): { ordersCsv: string; itemsCsv: str
 
   const countries = ['SK', 'CZ', 'HU', 'RO', 'PL', 'HR'];
   const skus = [
-    ['525-0054/89', '525-0054'],
-    ['525-0067/81', '525-0067'],
-    ['825-0181/89', '825-0181'],
-    ['825-0309/48', '825-0309'],
-    ['825-0309/55', '825-0309'],
-    ['825-0321/89', '825-0321'],
-    ['825-0497/41', '825-0497'],
+    ['525-0054/89', '525-0054', 'PAN', '0.004048', '0.97'],
+    ['525-0067/81', '525-0067', 'PAN', '0.003388', '0.85'],
+    ['825-0181/89', '825-0181', 'PAN', '0.004657', '0.59'],
+    ['825-0309/48', '825-0309', 'TOP', '0.002950', '0.42'],
+    ['825-0309/55', '825-0309', 'TOP', '0.002950', '0.42'],
+    ['825-0321/89', '825-0321', 'PAN', '0.004048', '0.91'],
+    ['825-0497/41', '825-0497', 'DRESS', '0.003650', '0.54'],
   ];
 
-  skus.forEach(([sku, art], idx) => {
-    stockLines.push(`${sku};${art};${120 + idx * 45}`);
+  skus.forEach(([sku, art, cat, vol, weight], idx) => {
+    stockLines.push(`${sku};${art};${cat};${180 + idx * 65};${vol};${weight}`);
   });
-  stockLines.push('DEAD-324-0210/01;324-0210;65');
-  stockLines.push('DEAD-324-0233/02;324-0233;40');
+  stockLines.push('124-0001/75;124-0001;PAN;0;0.004048;0.97');
+  stockLines.push('124-0002/89;124-0002;PAN;85;0.004048;0.88');
+  stockLines.push('124-0007/89;124-0007;PAN;42;0.003388;0.85');
+  stockLines.push('124-0015/45;124-0015;PAN;0;0.004657;0.59');
 
   for (let i = 1; i <= 120; i++) {
     const ordId = `O${String(i).padStart(7, '0')}`;

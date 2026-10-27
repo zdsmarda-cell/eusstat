@@ -535,11 +535,17 @@ export interface GateMonthlyFte {
   pickHours: number;
   sortHours: number;
   packHours: number;
+  replenishHours?: number;
   totalHours: number;
+  totalHoursWithReplenish?: number;
   pickFte: number;
   sortFte: number;
   packFte: number;
+  replenishFte?: number;
   totalFte: number;
+  totalFteWithReplenish?: number;
+  replenishUnits?: number;
+  replenishCycles?: number;
 }
 
 export interface GateMonthlyBreakdown {
@@ -586,6 +592,7 @@ export interface GateCountryStat {
 export interface GateSkuAbcItem {
   sku: string;
   articleCode: string;
+  category?: string;
   abcClass: 'A' | 'B' | 'C' | 'DEAD';
   annualUnits: number;
   ordersCount: number;
@@ -597,6 +604,14 @@ export interface GateSkuAbcItem {
   excessReplenishUnits: number;
   shortageUnits: number;
   shareOfVolumePct: number;
+  replenishBatchUnits?: number;
+  annualReplenishCycles?: number;
+  unitVolumeM3?: number;
+  unitWeightKg?: number;
+  boxesFor3M?: number;
+  boxFillPct?: number;
+  excessVolumeM3?: number;
+  palletsForExcess?: number;
 }
 
 export interface GateAbcClassSummary {
@@ -609,6 +624,84 @@ export interface GateAbcClassSummary {
   coveredThreeMonthUnits: number;
   excessUnits: number;
   excessSkusCount: number;
+  replenishBatchUnits?: number;
+  annualReplenishCycles?: number;
+  annualReplenishUnits?: number;
+  replenishHoursYear?: number;
+  replenishFteMonthly?: number;
+  boxesFor3M?: number;
+  boxVolumeM3?: number;
+  palletsForExcess?: number;
+  palletVolumeM3?: number;
+  monoSkuPallets?: number;
+  mixedSkuPallets?: number;
+}
+
+export interface GateVolumetricClassStat {
+  abcClass: 'A' | 'B' | 'C' | 'DEAD';
+  skusCount: number;
+  // 3M zásoba v boxech (60x40x22 cm = 0.0528 m3)
+  boxSkusCount: number;
+  boxUnits: number;
+  boxGoodsVolumeM3: number;
+  boxesNeeded: number;
+  singleUnitBoxesCount: number;
+  avgUnitsPerBox: number;
+  avgBoxFillOfUsablePct: number;
+  avgBoxFillOfGrossPct: number;
+  // Nadzásoba / Bezobraty na paletách (120x80x180 cm = 1.728 m3)
+  palletSkusCount: number;
+  palletUnits: number;
+  palletGoodsVolumeM3: number;
+  palletsNeeded: number;
+  monoSkuPalletsCount: number;
+  mixedSkuPalletsCount: number;
+  avgSkusPerPallet: number;
+  avgUnitsPerPallet: number;
+  avgPalletFillOfUsablePct: number;
+  avgPalletFillOfGrossPct: number;
+}
+
+export interface GateVolumetricSummary {
+  hasExplicitVolumeData: boolean;
+  avgUnitVolumeM3: number;
+  avgUnitWeightKg: number;
+  totalStockVolumeM3: number;
+  totalStockWeightKg: number;
+  // Parametry boxu (60x40x22 cm = 0.0528 m3)
+  boxDimensionsCm: string;
+  boxGrossVolumeM3: number;
+  boxMaxFillPct: number;
+  boxUsableVolumeM3: number;
+  totalBoxesNeeded: number;
+  totalBoxUnits: number;
+  totalBoxGoodsVolumeM3: number;
+  singleUnitBoxesCount: number;
+  avgUnitsPerBox: number;
+  avgBoxFillOfUsablePct: number;
+  avgBoxFillOfGrossPct: number;
+  // Parametry palety (120x80x180 cm = 1.728 m3)
+  palletDimensionsCm: string;
+  palletGrossVolumeM3: number;
+  palletMaxFillPct: number;
+  palletUsableVolumeM3: number;
+  totalPalletsNeeded: number;
+  excessPalletsNeeded: number;
+  deadStockPalletsNeeded: number;
+  monoSkuPalletsCount: number;
+  mixedSkuPalletsCount: number;
+  totalPalletUnits: number;
+  totalPalletGoodsVolumeM3: number;
+  avgSkusPerPallet: number;
+  avgUnitsPerPallet: number;
+  avgPalletFillOfUsablePct: number;
+  avgPalletFillOfGrossPct: number;
+  byClass: {
+    A: GateVolumetricClassStat;
+    B: GateVolumetricClassStat;
+    C: GateVolumetricClassStat;
+    DEAD: GateVolumetricClassStat;
+  };
 }
 
 export interface GateAbcSummary {
@@ -616,6 +709,9 @@ export interface GateAbcSummary {
   activeSkusCount: number;
   deadStockSkusCount: number;
   deadStockUnits: number;
+  zeroStockCatalogSkusCount?: number;
+  shortageUnitsTotal?: number;
+  shortageSkusCount?: number;
   totalStockUnits: number;
   totalAnnualIssuedUnits: number;
   threeMonthDemandUnits: number;
@@ -624,6 +720,7 @@ export interface GateAbcSummary {
   excessReplenishSkusCount: number;
   excessReplenishUnits: number;
   hasExplicitStockFile: boolean;
+  volumetry?: GateVolumetricSummary;
   classBreakdown: {
     A: GateAbcClassSummary;
     B: GateAbcClassSummary;
@@ -640,6 +737,8 @@ export interface GateSvjBenchmarkRates {
   useMedian: boolean;
   bypassSingleItemSort: boolean;
   monthlyFteHoursNorm: number;
+  palletPickSecPerUnit?: number;
+  replenishTriggerPct?: number;
   pickSecByBracket: Record<ItemBracket, number>;
   sortSecByBracket: Record<ItemBracket, number>;
   packSecByBracket: Record<ItemBracket, number>;

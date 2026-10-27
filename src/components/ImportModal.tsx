@@ -150,13 +150,13 @@ export const ImportModal: React.FC<ImportModalProps> = ({
     const mergedMap = new Map<string, File>();
     for (const f of gateFiles) mergedMap.set(f.name, f);
     for (const f of incomingArray) mergedMap.set(f.name, f);
-    const fileArray = incomingArray.length >= 2 ? incomingArray : Array.from(mergedMap.values());
+    const fileArray = incomingArray.length >= 3 ? incomingArray : Array.from(mergedMap.values());
 
     setGateFiles(fileArray);
     setIsParsing(true);
     setImportError(null);
     setGateStreamProgress({
-      phase: 'Identifikuji CSV soubory skladu Gate...',
+      phase: 'Identifikuji CSV soubory skladu Gate (Objednávky, Položky, Skladová zásoba & Volumetrie)...',
       percent: 2,
       bytesProcessed: 0,
       totalBytes: fileArray.reduce((acc, f) => acc + f.size, 0),
@@ -378,7 +378,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
             }`}
           >
             <BarChart3 className="w-4 h-4" />
-            <span>{isCs ? 'Sklad Gate (2 CSV – stovky MB)' : 'Gate (2 CSVs – 100s MB)'}</span>
+            <span>{isCs ? 'Sklad Gate (3 CSV – stovky MB)' : 'Gate (3 CSVs – 100s MB)'}</span>
           </button>
         </div>
 
@@ -580,7 +580,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
           </div>
         ) : (
           /* ========================================================
-             GATE WAREHOUSE IMPORT (2 HUGE CSV FILES: ORDERS + ORDER ITEMS + OPTIONAL STOCK)
+             GATE WAREHOUSE IMPORT (3 HUGE CSV FILES: ORDERS + ORDER ITEMS + STOCK & VOLUMETRY)
              ======================================================== */
           <div className="mt-4 space-y-4">
             <div className="p-3.5 rounded-2xl bg-emerald-950/30 border border-emerald-500/25 text-xs text-emerald-200 space-y-1.5">
@@ -588,14 +588,14 @@ export const ImportModal: React.FC<ImportModalProps> = ({
                 <BarChart3 className="w-4 h-4" />
                 <span>
                   {isCs
-                    ? 'Proudový import pro sklad Gate (2 CSV soubory – podpora stovek MB)'
-                    : 'Streaming Import for Gate Warehouse (2 CSV files – supports hundreds of MBs)'}
+                    ? 'Proudový import pro sklad Gate (3 CSV soubory – podpora stovek MB)'
+                    : 'Streaming Import for Gate Warehouse (3 CSV files – supports hundreds of MBs)'}
                 </span>
               </strong>
               <p className="text-[11px] text-emerald-200/80 leading-relaxed">
                 {isCs
-                  ? 'Vyberte najednou oba CSV soubory (případně i 3. soubor se stavem zásob): 1. Seznam objednávek (order_id, order_created_at, ship_date, packed_at, country, weight_kg, package_type, items_qty, cod_flag...) a 2. Produktový obsah objednávek (order_id, sku, article_code, qty). Soubory se čtou proudově po 6MB blocích přímo v prohlížeči bez přetížení paměti RAM.'
-                  : 'Select both CSV files at once: 1. Orders CSV (order_id, dates, country, items_qty...) and 2. Order Items CSV (order_id, sku, article_code, qty). Processed in 6MB streaming chunks.'}
+                  ? 'Vyberte najednou všechny 3 CSV soubory (nebo je přidejte postupně): 1. Seznam objednávek (order_id, order_created_at, ship_date, packed_at, country, weight_kg, package_type, items_qty, cod_flag...), 2. Produktový obsah objednávek (order_id, sku, article_code, qty) a 3. Aktuální skladová zásoba & Volumetrie (sku, article_code, category, qty_on_hand, unit_volume, unit_weight_kg). Soubory se čtou proudově po 6MB blocích přímo v prohlížeči.'
+                  : 'Select all 3 CSV files: 1. Orders CSV, 2. Order Items CSV, and 3. Stock & Volumetry CSV (sku, article_code, category, qty_on_hand, unit_volume, unit_weight_kg). Processed in 6MB streaming chunks.'}
               </p>
             </div>
 
@@ -622,11 +622,11 @@ export const ImportModal: React.FC<ImportModalProps> = ({
                       ? `Vybráno ${gateFiles.length} souborů (${(gateFiles.reduce((a, f) => a + f.size, 0) / (1024 * 1024)).toFixed(1)} MB): ${gateFiles.map(f => f.name).join(', ')}`
                       : `${gateFiles.length} files selected: ${gateFiles.map(f => f.name).join(', ')}`)
                   : (isCs
-                      ? 'Přetáhněte sem CSV soubory skladu Gate (Objednávky + Položky SKU) nebo klikněte'
-                      : 'Drop Gate CSV files (Orders + Order Items SKU) here or click to select')}
+                      ? 'Přetáhněte sem všechny 3 CSV soubory skladu Gate (Objednávky + Položky + Zásoby & Volumetrie) nebo klikněte'
+                      : 'Drop all 3 Gate CSV files (Orders + Items + Stock & Volumetry) here or click to select')}
               </p>
               <p className="text-xs text-slate-500 mt-1">
-                1. Objednávky CSV (`order_id`, `country`, `items_qty`...) + 2. Produktový obsah CSV (`order_id`, `sku`, `qty`) + volitelně 3. Zásoby CSV (`sku`, `stock_qty`)
+                1. Objednávky (`order_id`, `country`, `items_qty`...) + 2. Položky (`order_id`, `sku`, `qty`) + 3. Zásoby & Volumetrie (`sku`, `article_code`, `category`, `qty_on_hand`, `unit_volume`, `unit_weight_kg`)
               </p>
             </div>
 
@@ -651,7 +651,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
               </div>
             )}
 
-            {/* Gate 2+1 Status Slots */}
+            {/* Gate 3 Status Slots */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
               <div className={`p-3 rounded-xl border text-xs ${
                 gateParseResult && (gateParseResult.ordersFileRows || gateParseResult.report?.ordersFileRows || 0) > 0
@@ -686,31 +686,35 @@ export const ImportModal: React.FC<ImportModalProps> = ({
               </div>
 
               <div className={`p-3 rounded-xl border text-xs ${
-                gateParseResult && (gateParseResult.report?.abcAnalysis?.totalCatalogSkus || 0) > 0
+                gateParseResult && (gateParseResult.stockFileRows || gateParseResult.report?.stockFileRows || 0) > 0 && gateParseResult.report?.abcAnalysis?.hasExplicitStockFile
                   ? 'bg-emerald-950/20 border-emerald-500/30 text-emerald-300'
+                  : gateParseResult && (gateParseResult.report?.abcAnalysis?.totalCatalogSkus || 0) > 0
+                  ? 'bg-amber-950/20 border-amber-500/30 text-amber-300'
                   : 'bg-slate-950 border-slate-800 text-slate-400'
               }`}>
                 <div className="font-bold flex items-center space-x-1.5">
                   <Boxes className="w-3.5 h-3.5" />
-                  <span>3. ABC Zásoby & FTE</span>
+                  <span>3. Zásoby & Volumetrie</span>
                 </div>
                 <div className="text-[11px] mt-1 font-mono">
-                  {gateParseResult
-                    ? `✓ ${(gateParseResult.report?.monthlyBreakdown || []).length || gateParseResult.report?.monthsCount || 0} měsíců • ${(gateParseResult.report?.abcAnalysis?.deadStockSkusCount || 0).toLocaleString('cs-CZ')} SKU bez výdeje`
-                    : (isCs ? 'Volitelný CSV zásob / kalibrace' : 'Optional Stock CSV')}
+                  {gateParseResult && gateParseResult.report?.abcAnalysis?.hasExplicitStockFile
+                    ? `✓ ${(gateParseResult.stockFileRows || gateParseResult.report?.stockFileRows || 0).toLocaleString('cs-CZ')} řádků (${(gateParseResult.report?.abcAnalysis?.totalStockUnits || 0).toLocaleString('cs-CZ')} ks skladem)`
+                    : gateParseResult
+                    ? `Kalibrace 4,5M ks (lze přidat 3. CSV se zásobou)`
+                    : (isCs ? 'sku, qty_on_hand, unit_volume...' : 'Stock & Volumetry CSV')}
                 </div>
               </div>
             </div>
 
             <div className="flex items-center justify-between text-xs text-slate-400 px-1 pt-1">
-              <span>{isCs ? 'Chcete si stáhnout vzorové CSV soubory skladu Gate?' : 'Download sample Gate CSV files?'}</span>
+              <span>{isCs ? 'Chcete si stáhnout vzorové 3 CSV soubory skladu Gate?' : 'Download sample 3 Gate CSV files?'}</span>
               <button
                 type="button"
                 onClick={downloadGateSampleFiles}
                 className="text-emerald-400 hover:text-emerald-300 font-semibold flex items-center space-x-1 cursor-pointer"
               >
                 <Download className="w-3.5 h-3.5" />
-                <span>{isCs ? 'Stáhnout vzorové CSV soubory Gate' : 'Download Sample Gate CSVs'}</span>
+                <span>{isCs ? 'Stáhnout vzorové 3 CSV soubory Gate' : 'Download Sample 3 Gate CSVs'}</span>
               </button>
             </div>
           </div>
@@ -767,21 +771,28 @@ export const ImportModal: React.FC<ImportModalProps> = ({
             {targetWarehouse === 'gate' && gateParseResult && (
               <div className="text-[11px] text-slate-400 space-y-1">
                 <div className="flex items-center justify-between">
-                  <span>{isCs ? 'Průměrný počet ks na 1 objednávku:' : 'Avg units per order:'}</span>
-                  <span className="font-mono text-emerald-400 font-bold">{Number(gateParseResult.report?.avgUnitsPerOrder || 0).toFixed(2)} ks / obj.</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span>{isCs ? 'Paretovo pravidlo 80 % produkce / aktivní SKU:' : '80% Pareto SKU / Active SKUs:'}</span>
-                  <span className="font-mono text-cyan-300 font-bold">
-                    {(gateParseResult.report?.top80SkusCount || 0).toLocaleString('cs-CZ')} SKU ({Number(gateParseResult.report?.top80SkusSharePct || 0).toFixed(1)} %) z {(gateParseResult.report?.totalActiveSkus || 0).toLocaleString('cs-CZ')} aktivních SKU
+                  <span>{isCs ? 'Celková skladová zásoba (ABC + ležáky):' : 'Total stock on hand (ABC + dead stock):'}</span>
+                  <span className="font-mono text-emerald-400 font-bold">
+                    {(gateParseResult.report?.abcAnalysis?.totalStockUnits || 0).toLocaleString('cs-CZ')} ks
+                    {gateParseResult.report?.abcAnalysis?.hasExplicitStockFile
+                      ? (isCs ? ' (z 3. souboru stock.csv)' : ' (from stock.csv)')
+                      : (isCs ? ' (kalibrace 4,5M ks)' : ' (4.5M calibration)')}
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span>{isCs ? 'Nadzásoba nad 3 průměrné měsíce / ležáky bez výdeje:' : 'Excess stock (>3m) / Zero-movement dead stock:'}</span>
                   <span className="font-mono text-amber-300 font-bold">
-                    {(gateParseResult.report?.abcAnalysis?.excessReplenishSkusCount || 0).toLocaleString('cs-CZ')} SKU nadzásoba • {(gateParseResult.report?.abcAnalysis?.deadStockSkusCount || 0).toLocaleString('cs-CZ')} SKU bez výdeje
+                    {(gateParseResult.report?.abcAnalysis?.excessReplenishSkusCount || 0).toLocaleString('cs-CZ')} SKU ({(gateParseResult.report?.abcAnalysis?.excessReplenishUnits || 0).toLocaleString('cs-CZ')} ks) • {(gateParseResult.report?.abcAnalysis?.deadStockSkusCount || 0).toLocaleString('cs-CZ')} SKU bez výdeje ({(gateParseResult.report?.abcAnalysis?.deadStockUnits || 0).toLocaleString('cs-CZ')} ks)
                   </span>
                 </div>
+                {gateParseResult.report?.abcAnalysis?.volumetry && (
+                  <div className="flex items-center justify-between">
+                    <span>{isCs ? 'Volumetrie (80 % kapacity): Boxy 60×40×22 cm (3M) / Palety 120×80×180 cm:' : 'Volumetry (80% cap): Boxes (3M) / Pallets (excess + dead):'}</span>
+                    <span className="font-mono text-cyan-300 font-bold">
+                      {(gateParseResult.report.abcAnalysis.volumetry.totalBoxesNeeded || 0).toLocaleString('cs-CZ')} boxů • {(gateParseResult.report.abcAnalysis.volumetry.totalPalletsNeeded || 0).toLocaleString('cs-CZ')} palet
+                    </span>
+                  </div>
+                )}
               </div>
             )}
           </div>
