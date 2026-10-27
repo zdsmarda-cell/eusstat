@@ -372,8 +372,15 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
     const deadSkus =
       customDeadSkusCount !== null ? customDeadSkusCount : base.deadStockSkusCount;
 
+    const totalAnnualIssued = base.totalAnnualIssuedUnits || report?.totalUnits || 0;
+    // Potřeba na N průměrných měsíců (výchozí 3 měsíce) přímo z reálných měsíčních výdejů v CSV (např. 3 * 92k = 276k ks)
+    const threeMonthDemandUnits = Math.round((totalAnnualIssued / monthsCount) * coverageMonthsTarget);
+    const targetA = Math.round(((base.classBreakdown?.A?.annualUnits || 0) / monthsCount) * coverageMonthsTarget);
+    const targetB = Math.round(((base.classBreakdown?.B?.annualUnits || 0) / monthsCount) * coverageMonthsTarget);
+    const targetC = Math.max(0, threeMonthDemandUnits - targetA - targetB);
+
     const defaultDeadUnits = base.hasExplicitStockFile
-      ? base.deadStockUnits
+      ? Math.min(Math.max(0, targetTotalStock - threeMonthDemandUnits), base.deadStockUnits)
       : base.deadStockUnits >= 100_000
       ? Math.round(base.deadStockUnits * (targetTotalStock / DEFAULT_CUSTOMER_STOCK_UNITS))
       : Math.round(targetTotalStock * 0.08); // ~360 000 ks při 4,5M ks
@@ -389,44 +396,35 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
     const baseB = base.classBreakdown?.B || emptyClass;
     const baseC = base.classBreakdown?.C || emptyClass;
 
-    // Potřeba na N průměrných měsíců (výchozí 3 měsíce) přímo z reálných ročních výdejů v CSV
-    const targetA = Math.round((baseA.annualUnits / monthsCount) * coverageMonthsTarget);
-    const targetB = Math.round((baseB.annualUnits / monthsCount) * coverageMonthsTarget);
-    const targetC = Math.round((baseC.annualUnits / monthsCount) * coverageMonthsTarget);
-    const threeMonthDemandUnits = targetA + targetB + targetC;
-
-    // Pokud je nahrán reálný stock.csv a uživatel nezměnil celkovou zásobu ani cílové měsíce (3M),
-    // zachováme přesné reálné rozdělení 3M zásoby a nadzásoby z jednotlivých SKU
-    const isExactRealStockState =
-      base.hasExplicitStockFile &&
-      customTotalStockUnits === null &&
-      customDeadUnitsCount === null &&
-      coverageMonthsTarget === 3;
-
+    // Protože soubor skladové zásoby (stock.csv) je snímkem jen k 1 dni v roce a v průběhu roku
+    // se točí sezónní SKU, aproximujeme potřebnou zásobu v každé třídě A, B, C tak, aby 3měsíční
+    // zásoba v oběhu vždy přesně odpovídala reálným měsíčním výdejům (coverageMonthsTarget * Ø měsíční výdej).
     let stockA = baseA.currentStockUnits;
     let stockB = baseB.currentStockUnits;
     let stockC = baseC.currentStockUnits;
 
-    if (!isExactRealStockState) {
-      if (activeTargetStock >= threeMonthDemandUnits) {
-        const totalActiveExcess = activeTargetStock - threeMonthDemandUnits;
-        const baseExcessSum = baseA.excessUnits + baseB.excessUnits + baseC.excessUnits;
-        const shareA = baseExcessSum > 0 ? baseA.excessUnits / baseExcessSum : 0.52;
-        const shareB = baseExcessSum > 0 ? baseB.excessUnits / baseExcessSum : 0.28;
+    if (activeTargetStock >= threeMonthDemandUnits) {
+      const totalActiveExcess = activeTargetStock - threeMonthDemandUnits;
+      const rawExcA = Math.max(0, baseA.currentStockUnits - targetA);
+      const rawExcB = Math.max(0, baseB.currentStockUnits - targetB);
+      const rawExcC = Math.max(0, baseC.currentStockUnits - targetC);
+      const rawExcSum = rawExcA + rawExcB + rawExcC;
 
-        const excA = Math.round(totalActiveExcess * shareA);
-        const excB = Math.round(totalActiveExcess * shareB);
-        const excC = Math.max(0, totalActiveExcess - excA - excB);
+      const shareA = rawExcSum > 0 ? rawExcA / rawExcSum : 0.52;
+      const shareB = rawExcSum > 0 ? rawExcB / rawExcSum : 0.28;
 
-        stockA = targetA + excA;
-        stockB = targetB + excB;
-        stockC = targetC + excC;
-      } else if (threeMonthDemandUnits > 0) {
-        const ratio = activeTargetStock / threeMonthDemandUnits;
-        stockA = Math.round(targetA * ratio);
-        stockB = Math.round(targetB * ratio);
-        stockC = Math.max(0, activeTargetStock - stockA - stockB);
-      }
+      const excA = Math.round(totalActiveExcess * shareA);
+      const excB = Math.round(totalActiveExcess * shareB);
+      const excC = Math.max(0, totalActiveExcess - excA - excB);
+
+      stockA = targetA + excA;
+      stockB = targetB + excB;
+      stockC = targetC + excC;
+    } else if (threeMonthDemandUnits > 0) {
+      const ratio = activeTargetStock / threeMonthDemandUnits;
+      stockA = Math.round(targetA * ratio);
+      stockB = Math.round(targetB * ratio);
+      stockC = Math.max(0, activeTargetStock - stockA - stockB);
     }
 
     const baseActiveStockSum =
@@ -440,7 +438,9 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
       boxMaxFillPct,
       palletMaxFillPct,
       coverageMonthsTarget,
-      skuScaleFactor
+      skuScaleFactor,
+      { A: targetA, B: targetB, C: targetC },
+      { A: stockA, B: stockB, C: stockC, DEAD: deadUnits }
     );
 
     const buildClass = (
@@ -449,25 +449,22 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
       targetUnits: number,
       stockUnits: number
     ) => {
-      const coveredUnits = isExactRealStockState
-        ? baseCls.coveredThreeMonthUnits
-        : Math.min(stockUnits, targetUnits);
-      const excessUnits = isExactRealStockState
-        ? baseCls.excessUnits
-        : Math.max(0, stockUnits - coveredUnits);
-      const excessSkusCount = isExactRealStockState
-        ? baseCls.excessSkusCount
-        : excessUnits > 0
-        ? Math.min(
-            baseCls.skusCount,
-            Math.max(
-              1,
-              stockUnits > targetUnits * 1.35
-                ? Math.round(baseCls.skusCount * 0.92)
-                : baseCls.excessSkusCount || Math.round(baseCls.skusCount * 0.75)
+      const coveredUnits = Math.min(stockUnits, targetUnits);
+      const excessUnits = Math.max(0, stockUnits - coveredUnits);
+      const excessSkusCount =
+        excessUnits > 0
+          ? Math.min(
+              baseCls.skusCount,
+              Math.max(
+                1,
+                baseCls.excessUnits > 0 && Math.abs(excessUnits - baseCls.excessUnits) < baseCls.excessUnits * 0.1
+                  ? baseCls.excessSkusCount
+                  : stockUnits > targetUnits * 1.35
+                  ? Math.round(baseCls.skusCount * 0.92)
+                  : baseCls.excessSkusCount || Math.round(baseCls.skusCount * 0.75)
+              )
             )
-          )
-        : 0;
+          : 0;
 
       // 1 dávka doskladnění (z 30 % na 100 % = 70 % cílové 3M zásoby v picku)
       const replenishBatchUnits = Math.round(coveredUnits * batchFraction);
@@ -544,6 +541,12 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
 
     const coveredThreeMonthUnits =
       classA.coveredThreeMonthUnits + classB.coveredThreeMonthUnits + classC.coveredThreeMonthUnits;
+    const coveredThreeMonthSkusCount =
+      (volumetry.byClass.A.boxSkusCount || 0) +
+      (volumetry.byClass.B.boxSkusCount || 0) +
+      (volumetry.byClass.C.boxSkusCount || 0) ||
+      base.coveredThreeMonthSkusCount ||
+      base.activeSkusCount;
     const excessReplenishUnits =
       classA.excessUnits + classB.excessUnits + classC.excessUnits;
     const excessReplenishSkusCount =
@@ -576,6 +579,7 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
       totalStockUnits,
       threeMonthDemandUnits,
       coveredThreeMonthUnits,
+      coveredThreeMonthSkusCount,
       excessReplenishUnits,
       excessReplenishSkusCount,
       skuScaleFactor,
@@ -1282,12 +1286,20 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
               <p className="leading-relaxed">
                 {isCs ? (
                   <>
-                    <strong className="text-white">Jak se počítá celková skladová zásoba a nadzásoba:</strong> Vstupní CSV soubory (
-                    <code className="text-purple-300">orders.csv</code> a <code className="text-purple-300">order_items.csv</code>) obsahují pouze historii{' '}
-                    <strong>expedovaných výdejů</strong> ({report.totalUnits.toLocaleString('cs-CZ')} ks za {report.monthsCount} měs.), nikoliv fyzický stav skladu. Celková skladová zásoba je proto nastavena na zákazníkem uvedených{' '}
-                    <strong className="text-purple-300 font-mono">{dynamicAbc.totalStockUnits.toLocaleString('cs-CZ')} ks</strong> (lze libovolně upravit níže nebo nahrát <code className="text-purple-300">stock.csv</code>). Z této celkové zásoby se odečte{' '}
-                    <strong className="text-emerald-300">{coverageMonthsTarget}měsíční průměrná potřeba dle výdejů ({dynamicAbc.coveredThreeMonthUnits.toLocaleString('cs-CZ')} ks)</strong> a zbývajících{' '}
-                    <strong className="text-amber-300">{(dynamicAbc.excessReplenishUnits + dynamicAbc.deadStockUnits).toLocaleString('cs-CZ')} ks</strong> tvoří nadzásobu na dokladnění a ležáky bez pohybu.
+                    <strong className="text-white">Jak se počítá 3měsíční zásoba, nadzásoba a bezobraty:</strong> Průměrný měsíční výdej činí{' '}
+                    <strong className="text-emerald-300 font-mono">
+                      {Math.round(dynamicAbc.totalAnnualIssuedUnits / Math.max(1, report.monthsCount)).toLocaleString('cs-CZ')} ks/měs.
+                    </strong>{' '}
+                    ({dynamicAbc.totalAnnualIssuedUnits.toLocaleString('cs-CZ')} ks za {report.monthsCount} měs.). Protože soubor{' '}
+                    <code className="text-purple-300">stock.csv</code> zachycuje stav skladu k 1 dni v roce a v průběhu roku se točí i sezónní SKU, je potřebná{' '}
+                    <strong className="text-emerald-300">
+                      {coverageMonthsTarget}měsíční aktivní zásoba aproximována přímo dle reálných měsíčních výdejů ({coverageMonthsTarget} × Ø měsíční výdej ={' '}
+                      {dynamicAbc.coveredThreeMonthUnits.toLocaleString('cs-CZ')} ks)
+                    </strong>
+                    . Z celkové skladové zásoby{' '}
+                    <strong className="text-purple-300 font-mono">{dynamicAbc.totalStockUnits.toLocaleString('cs-CZ')} ks</strong> pak zbývajících{' '}
+                    <strong className="text-amber-300">{dynamicAbc.excessReplenishUnits.toLocaleString('cs-CZ')} ks</strong> tvoří nadzásobu na dokladnění a{' '}
+                    <strong className="text-rose-300">{dynamicAbc.deadStockUnits.toLocaleString('cs-CZ')} ks</strong> ležáky s nulovým výdejem za rok.
                   </>
                 ) : (
                   <>
@@ -2048,11 +2060,11 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
                   ? report.abcAnalysis.topActiveSkus
                   : report.abcAnalysis.sampleDeadSkus
                 ).slice(0, 15).map(item => {
-                  const targetUnits = item.abcClass === 'DEAD' ? 0 : Math.ceil(item.avgMonthlyUnits * coverageMonthsTarget);
+                  const targetUnits = item.abcClass === 'DEAD' ? 0 : Math.max(1, Math.round(item.avgMonthlyUnits * coverageMonthsTarget));
                   const stockUnits = item.abcClass === 'DEAD'
                     ? (dynamicAbc.hasExplicitStockFile ? item.currentStockUnits : Math.max(1, Math.round(dynamicAbc.deadStockUnits / Math.max(1, dynamicAbc.deadStockSkusCount))))
-                    : (dynamicAbc.hasExplicitStockFile && customTotalStockUnits === null ? item.currentStockUnits : Math.max(targetUnits, Math.round(item.currentStockUnits * dynamicAbc.skuScaleFactor)));
-                  const coveredUnits = Math.min(stockUnits, targetUnits);
+                    : Math.max(targetUnits, Math.round(item.currentStockUnits * (customTotalStockUnits === null ? 1 : dynamicAbc.skuScaleFactor)));
+                  const coveredUnits = item.abcClass === 'DEAD' ? 0 : targetUnits;
                   const excessUnits = Math.max(0, stockUnits - coveredUnits);
                   const unitVol = item.unitVolumeM3 || dynamicAbc.volumetry?.avgUnitVolumeM3 || 0.00385;
                   const boxUsableVol = 0.60 * 0.40 * 0.22 * (boxMaxFillPct / 100);

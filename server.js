@@ -4637,7 +4637,7 @@ function buildVolumetricSummaryFromClassData(params) {
     byClass
   };
 }
-function recomputeGateVolumetryFromSummary(abc, boxMaxFillPct = 80, palletMaxFillPct = 80, coverageMonthsTarget = 3, stockScaleFactor = 1) {
+function recomputeGateVolumetryFromSummary(abc, boxMaxFillPct = 80, palletMaxFillPct = 80, coverageMonthsTarget = 3, stockScaleFactor = 1, overrideClassTargets, overrideClassStocks) {
   const baseVol = abc.volumetry;
   const avgUnitVol = baseVol?.avgUnitVolumeM3 || 385e-5;
   const avgUnitWeight = baseVol?.avgUnitWeightKg || 0.72;
@@ -4647,7 +4647,8 @@ function recomputeGateVolumetryFromSummary(abc, boxMaxFillPct = 80, palletMaxFil
   const clampedPalPct = Math.min(100, Math.max(20, palletMaxFillPct));
   const boxUsableVolumeM3 = BOX_GROSS_VOL_M3 * (clampedBoxPct / 100);
   const palletUsableVolumeM3 = PALLET_GROSS_VOL_M3 * (clampedPalPct / 100);
-  if (baseVol && Math.abs(clampedBoxPct - baseVol.boxMaxFillPct) < 0.01 && Math.abs(clampedPalPct - baseVol.palletMaxFillPct) < 0.01 && Math.abs(coverageMonthsTarget - 3) < 0.01 && Math.abs(stockScaleFactor - 1) < 1e-3) {
+  const expectedBoxUnits = overrideClassTargets ? overrideClassTargets.A + overrideClassTargets.B + overrideClassTargets.C : abc.threeMonthDemandUnits;
+  if (baseVol && Math.abs(clampedBoxPct - baseVol.boxMaxFillPct) < 0.01 && Math.abs(clampedPalPct - baseVol.palletMaxFillPct) < 0.01 && Math.abs(coverageMonthsTarget - 3) < 0.01 && Math.abs(stockScaleFactor - 1) < 1e-3 && Math.abs(baseVol.totalBoxUnits - expectedBoxUnits) <= 10) {
     return baseVol;
   }
   const monthFactor = coverageMonthsTarget / 3;
@@ -4675,11 +4676,17 @@ function recomputeGateVolumetryFromSummary(abc, boxMaxFillPct = 80, palletMaxFil
     const cb = abc.classBreakdown[cls];
     const baseClsVol = baseVol?.byClass?.[cls];
     const skusCount = cb.skusCount;
-    const scaledStockUnits = Math.round(cb.currentStockUnits * stockScaleFactor);
-    const targetUnits = cls === "DEAD" ? 0 : Math.round(cb.threeMonthTargetUnits * monthFactor);
+    const scaledStockUnits = overrideClassStocks ? overrideClassStocks[cls] : Math.round(cb.currentStockUnits * stockScaleFactor);
+    const targetUnits = cls === "DEAD" ? 0 : overrideClassTargets ? overrideClassTargets[cls] : Math.round(cb.threeMonthTargetUnits * monthFactor);
     const coveredUnits = cls === "DEAD" ? 0 : Math.min(scaledStockUnits, targetUnits);
     const excessUnits = cls === "DEAD" ? scaledStockUnits : Math.max(0, scaledStockUnits - coveredUnits);
-    const excessSkusCount = excessUnits > 0 ? cls === "DEAD" ? skusCount : Math.max(1, Math.min(skusCount, Math.round(cb.excessSkusCount * (excessUnits / Math.max(1, cb.excessUnits))))) : 0;
+    const excessSkusCount = excessUnits > 0 ? cls === "DEAD" ? skusCount : Math.max(
+      1,
+      Math.min(
+        skusCount,
+        cb.excessUnits > 0 ? Math.round(cb.excessSkusCount * (excessUnits / Math.max(1, cb.excessUnits))) : Math.round(skusCount * 0.78)
+      )
+    ) : 0;
     adjustedClassBreakdown[cls].currentStockUnits = scaledStockUnits;
     adjustedClassBreakdown[cls].threeMonthTargetUnits = targetUnits;
     adjustedClassBreakdown[cls].coveredThreeMonthUnits = coveredUnits;
@@ -4689,10 +4696,11 @@ function recomputeGateVolumetryFromSummary(abc, boxMaxFillPct = 80, palletMaxFil
     totalStockVol += scaledStockUnits * clsUnitVol;
     totalStockW += scaledStockUnits * avgUnitWeight;
     if (coveredUnits > 0 && skusCount > 0) {
-      const boxSkus = baseClsVol?.boxSkusCount ? Math.min(skusCount, Math.max(1, Math.round(baseClsVol.boxSkusCount * Math.min(1.15, Math.sqrt(monthFactor * stockScaleFactor))))) : skusCount;
+      const isBaseBoxConsistent = baseClsVol && baseClsVol.boxUnits > 0 && Math.abs(baseClsVol.boxUnits - cb.threeMonthTargetUnits) <= Math.max(50, cb.threeMonthTargetUnits * 0.15);
+      const boxSkus = isBaseBoxConsistent && baseClsVol?.boxSkusCount ? Math.min(skusCount, Math.min(coveredUnits, Math.max(1, Math.round(baseClsVol.boxSkusCount * Math.min(1.15, Math.sqrt(monthFactor)))))) : Math.min(skusCount, Math.max(1, coveredUnits));
       const boxGoodsVol = coveredUnits * clsUnitVol;
       let boxesNeeded = 0;
-      if (baseClsVol && baseClsVol.boxesNeeded > 0 && baseVol) {
+      if (isBaseBoxConsistent && baseClsVol && baseClsVol.boxesNeeded > 0 && baseVol) {
         const oldUsable = baseVol.boxUsableVolumeM3;
         const volRatio = boxGoodsVol / Math.max(1e-3, baseClsVol.boxGoodsVolumeM3) * (oldUsable / boxUsableVolumeM3);
         const multiBoxExtra = Math.max(0, baseClsVol.boxesNeeded - baseClsVol.boxSkusCount);
@@ -4708,7 +4716,7 @@ function recomputeGateVolumetryFromSummary(abc, boxMaxFillPct = 80, palletMaxFil
         }
         boxesNeeded = Math.max(boxSkus, boxesNeeded);
       }
-      const singleUnitBoxes = baseClsVol?.singleUnitBoxesCount ? Math.round(baseClsVol.singleUnitBoxesCount / Math.max(0.5, monthFactor)) : cls === "C" ? Math.round(boxSkus * 0.28) : cls === "B" ? Math.round(boxSkus * 0.08) : Math.round(boxSkus * 0.02);
+      const singleUnitBoxes = isBaseBoxConsistent && baseClsVol?.singleUnitBoxesCount ? Math.round(baseClsVol.singleUnitBoxesCount / Math.max(0.5, monthFactor)) : cls === "C" ? Math.round(boxSkus * 0.28) : cls === "B" ? Math.round(boxSkus * 0.08) : Math.round(boxSkus * 0.02);
       boxStatsByClass[cls] = {
         boxSkusCount: boxSkus,
         boxUnits: coveredUnits,

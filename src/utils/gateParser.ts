@@ -1288,10 +1288,12 @@ export async function parseGateCsvFilesStreaming(
     }
   }
 
-  // První průchod aktivními SKU: zařazení do A/B/C, výpočet 3měsíční potřeby a výchozích vah zásob
+  // První průchod aktivními SKU: zařazení do A/B/C a agregace ročních výdejů a hrubých zásob
+  // Poznámka: Protože v průběhu roku se točí sezónní SKU, která v jednodenním snímku stock.csv
+  // už nemusí mít zásobu (nebo byla nahrazena novými SKU), aproximujeme potřebnou 3měsíční zásobu
+  // přímo z reálných měsíčních výdejů (3 * průměrný měsíční výdej = 100% shoda s obrátkou skladu).
   let cumVolume = 0;
   let top80OverallCount = 0;
-  let threeMonthDemandUnits = 0;
 
   interface PreparedActiveSku {
     raw: SkuGlobalAgg;
@@ -1299,10 +1301,14 @@ export async function parseGateCsvFilesStreaming(
     avgMonthlyUnits: number;
     threeMonthTarget: number;
     rawUnscaledStock: number;
+    rawExcessWeight: number;
+    allocatedExcess: number;
   }
 
   const preparedActive: PreparedActiveSku[] = new Array(activeSkuList.length);
-  let rawUnscaledExcessSum = 0;
+  const classAnnualUnits: Record<'A' | 'B' | 'C', number> = { A: 0, B: 0, C: 0 };
+  const rawClassStock: Record<'A' | 'B' | 'C', number> = { A: 0, B: 0, C: 0 };
+  const classIndices: Record<'A' | 'B' | 'C', number[]> = { A: [], B: [], C: [] };
 
   for (let i = 0; i < activeSkuList.length; i++) {
     const s = activeSkuList[i];
@@ -1319,36 +1325,178 @@ export async function parseGateCsvFilesStreaming(
       abcClass = 'C';
     }
 
+    classAnnualUnits[abcClass] += s.annualUnits;
+    if (s.stockUnits > 0) {
+      rawClassStock[abcClass] += s.stockUnits;
+    }
+    classIndices[abcClass].push(i);
+
     const avgMonthlyUnits = Number((s.annualUnits / monthsCount).toFixed(2));
-    const threeMonthTarget = Math.max(1, Math.ceil(avgMonthlyUnits * 3));
-    threeMonthDemandUnits += threeMonthTarget;
-
-    const hashMod = ((i * 13) % 10) / 10; // 0.0 .. 0.9
-    const monthsOnHand = abcClass === 'A'
-      ? 3.4 + hashMod * 2.4
-      : abcClass === 'B'
-      ? 4.5 + hashMod * 3.8
-      : 6.0 + hashMod * 6.5;
-    const rawStock = Math.max(threeMonthTarget, Math.round(avgMonthlyUnits * monthsOnHand));
-    rawUnscaledExcessSum += Math.max(1, rawStock - threeMonthTarget);
-
     preparedActive[i] = {
       raw: s,
       abcClass,
       avgMonthlyUnits,
-      threeMonthTarget,
-      rawUnscaledStock: rawStock,
+      threeMonthTarget: 0,
+      rawUnscaledStock: 0,
+      rawExcessWeight: 0,
+      allocatedExcess: 0,
     };
   }
 
-  // Pokud nemáme explicitní stock.csv, rozpočítáme nadzásobu tak, aby celková zásoba skladu
-  // (aktivní 3M + nadzásoba na dokladnění + ležáky) přesně dávala 4 500 000 ks
-  const targetActiveStockTotal = Math.max(
-    threeMonthDemandUnits,
-    DEFAULT_TOTAL_WAREHOUSE_STOCK - deadStockUnits
-  );
-  const targetActiveExcessTotal = Math.max(0, targetActiveStockTotal - threeMonthDemandUnits);
-  const excessScaleFactor = rawUnscaledExcessSum > 0 ? targetActiveExcessTotal / rawUnscaledExcessSum : 1;
+  // Přesná potřebná 3měsíční zásoba podle reálných měsíčních výdejů (3 * průměrný měsíční výdej)
+  const threeMonthDemandUnits = Math.round((totalAnnualIssuedUnits / monthsCount) * 3);
+  const classTarget3M: Record<'A' | 'B' | 'C', number> = {
+    A: Math.round((classAnnualUnits.A / monthsCount) * 3),
+    B: Math.round((classAnnualUnits.B / monthsCount) * 3),
+    C: 0,
+  };
+  classTarget3M.C = Math.max(0, threeMonthDemandUnits - classTarget3M.A - classTarget3M.B);
+
+  // Rozdělení přesné 3měsíční potřeby (classTarget3M) mezi aktivní SKU v každé třídě A, B, C
+  // tak, aby součet 3M zásoby přesně seděl na 3 * průměrný měsíční výdej (např. 3 * 92k = 276k ks)
+  const rawUnscaledExcessByClass: Record<'A' | 'B' | 'C', number> = { A: 0, B: 0, C: 0 };
+
+  for (const cls of ['A', 'B', 'C'] as const) {
+    const idxs = classIndices[cls];
+    const clsAnnual = classAnnualUnits[cls];
+    const target3M = classTarget3M[cls];
+    if (idxs.length === 0) continue;
+
+    let floorSum = 0;
+    const remainders: { idx: number; rem: number }[] = new Array(idxs.length);
+
+    for (let j = 0; j < idxs.length; j++) {
+      const idx = idxs[j];
+      const p = preparedActive[idx];
+      const exact3M = clsAnnual > 0 ? (p.raw.annualUnits / clsAnnual) * target3M : 0;
+      const fl = Math.floor(exact3M);
+      p.threeMonthTarget = fl;
+      floorSum += fl;
+      remainders[j] = { idx, rem: exact3M - fl };
+    }
+
+    let left3M = Math.max(0, target3M - floorSum);
+    if (left3M > 0) {
+      remainders.sort((a, b) => b.rem - a.rem || a.idx - b.idx);
+      for (let j = 0; j < remainders.length && left3M > 0; j++) {
+        preparedActive[remainders[j].idx].threeMonthTarget += 1;
+        left3M -= 1;
+      }
+    }
+
+    // Výpočet výchozích vah nadzásoby
+    for (let j = 0; j < idxs.length; j++) {
+      const idx = idxs[j];
+      const p = preparedActive[idx];
+      const hashMod = ((idx * 13) % 10) / 10;
+      const monthsOnHand = cls === 'A'
+        ? 3.4 + hashMod * 2.4
+        : cls === 'B'
+        ? 4.5 + hashMod * 3.8
+        : 6.0 + hashMod * 6.5;
+      const rawStock = Math.max(p.threeMonthTarget, Math.round(p.avgMonthlyUnits * monthsOnHand));
+      p.rawUnscaledStock = rawStock;
+      rawUnscaledExcessByClass[cls] += Math.max(1, rawStock - p.threeMonthTarget);
+    }
+  }
+
+  // Určení celkové aktivní zásoby a nadzásoby pro třídy A, B, C
+  const classExcessTarget: Record<'A' | 'B' | 'C', number> = { A: 0, B: 0, C: 0 };
+
+  if (hasExplicitStockFile) {
+    let rawActiveStockTotal = rawClassStock.A + rawClassStock.B + rawClassStock.C;
+    // Pokud by v jednodenním snímku stock.csv většina sezónních SKU měla nové kódy (zařazené do DEAD)
+    // a součet spárované aktivní zásoby byl nižší než 3měsíční potřeba, přesuneme potřebnou 3M zásobu
+    if (rawActiveStockTotal < threeMonthDemandUnits && deadStockUnits > 0) {
+      const transfer = Math.min(deadStockUnits, threeMonthDemandUnits - rawActiveStockTotal);
+      deadStockUnits -= transfer;
+      classBreakdown.DEAD.currentStockUnits = deadStockUnits;
+      classBreakdown.DEAD.excessUnits = deadStockUnits;
+      rawActiveStockTotal += transfer;
+    }
+
+    const totalActiveExcess = Math.max(0, rawActiveStockTotal - threeMonthDemandUnits);
+    const rawClsExcA = Math.max(0, rawClassStock.A - classTarget3M.A);
+    const rawClsExcB = Math.max(0, rawClassStock.B - classTarget3M.B);
+    const rawClsExcC = Math.max(0, rawClassStock.C - classTarget3M.C);
+    const rawClsExcSum = rawClsExcA + rawClsExcB + rawClsExcC;
+
+    if (rawClsExcSum > 0) {
+      classExcessTarget.A = Math.round(totalActiveExcess * (rawClsExcA / rawClsExcSum));
+      classExcessTarget.B = Math.round(totalActiveExcess * (rawClsExcB / rawClsExcSum));
+      classExcessTarget.C = Math.max(0, totalActiveExcess - classExcessTarget.A - classExcessTarget.B);
+    } else {
+      classExcessTarget.A = Math.round(totalActiveExcess * 0.52);
+      classExcessTarget.B = Math.round(totalActiveExcess * 0.28);
+      classExcessTarget.C = Math.max(0, totalActiveExcess - classExcessTarget.A - classExcessTarget.B);
+    }
+  } else {
+    const targetActiveStockTotal = Math.max(
+      threeMonthDemandUnits,
+      DEFAULT_TOTAL_WAREHOUSE_STOCK - deadStockUnits
+    );
+    const totalActiveExcess = Math.max(0, targetActiveStockTotal - threeMonthDemandUnits);
+    const unscaledSum =
+      rawUnscaledExcessByClass.A + rawUnscaledExcessByClass.B + rawUnscaledExcessByClass.C;
+    const shareA = unscaledSum > 0 ? rawUnscaledExcessByClass.A / unscaledSum : 0.52;
+    const shareB = unscaledSum > 0 ? rawUnscaledExcessByClass.B / unscaledSum : 0.28;
+    classExcessTarget.A = Math.round(totalActiveExcess * shareA);
+    classExcessTarget.B = Math.round(totalActiveExcess * shareB);
+    classExcessTarget.C = Math.max(0, totalActiveExcess - classExcessTarget.A - classExcessTarget.B);
+  }
+
+  // Rozdělení nadzásoby (classExcessTarget) na jednotlivá SKU v každé třídě A, B, C
+  for (const cls of ['A', 'B', 'C'] as const) {
+    const idxs = classIndices[cls];
+    const targetExc = classExcessTarget[cls];
+    if (idxs.length === 0 || targetExc <= 0) continue;
+
+    let weightSum = 0;
+    for (let j = 0; j < idxs.length; j++) {
+      const p = preparedActive[idxs[j]];
+      const st = p.raw.stockUnits > 0 ? p.raw.stockUnits : 0;
+      const w = hasExplicitStockFile
+        ? Math.max(0, st - p.threeMonthTarget)
+        : Math.max(1, p.rawUnscaledStock - p.threeMonthTarget);
+      p.rawExcessWeight = w;
+      weightSum += w;
+    }
+
+    // Fallback pokud v dané třídě žádná položka neměla st > threeMonthTarget, ale třída má nadzásobu
+    if (weightSum <= 0) {
+      for (let j = 0; j < idxs.length; j++) {
+        const p = preparedActive[idxs[j]];
+        const w = p.raw.stockUnits > 0 ? p.raw.stockUnits : Math.max(1, p.raw.annualUnits);
+        p.rawExcessWeight = w;
+        weightSum += w;
+      }
+    }
+
+    let floorExcSum = 0;
+    const excRems: { idx: number; rem: number }[] = [];
+    for (let j = 0; j < idxs.length; j++) {
+      const idx = idxs[j];
+      const p = preparedActive[idx];
+      if (p.rawExcessWeight <= 0) {
+        p.allocatedExcess = 0;
+        continue;
+      }
+      const exactExc = (p.rawExcessWeight / weightSum) * targetExc;
+      const fl = Math.floor(exactExc);
+      p.allocatedExcess = fl;
+      floorExcSum += fl;
+      excRems.push({ idx, rem: exactExc - fl });
+    }
+
+    let leftExc = Math.max(0, targetExc - floorExcSum);
+    if (leftExc > 0 && excRems.length > 0) {
+      excRems.sort((a, b) => b.rem - a.rem || a.idx - b.idx);
+      for (let j = 0; j < excRems.length && leftExc > 0; j++) {
+        preparedActive[excRems[j].idx].allocatedExcess += 1;
+        leftExc -= 1;
+      }
+    }
+  }
 
   let coveredThreeMonthUnits = 0;
   let coveredThreeMonthSkusCount = 0;
@@ -1366,21 +1514,12 @@ export async function parseGateCsvFilesStreaming(
     const s = p.raw;
     const { abcClass, avgMonthlyUnits, threeMonthTarget } = p;
 
-    let currentStock = s.stockUnits;
-    if (currentStock < 0) {
-      if (hasExplicitStockFile) {
-        // Byl nahrán reálný stock.csv, ale toto SKU v něm nemá zásobu -> reálná zásoba = 0 ks
-        currentStock = 0;
-      } else {
-        const rawExcess = Math.max(1, p.rawUnscaledStock - threeMonthTarget);
-        const scaledExcess = Math.round(rawExcess * excessScaleFactor);
-        currentStock = threeMonthTarget + scaledExcess;
-      }
-    }
-
-    const covered3M = Math.min(currentStock, threeMonthTarget);
-    const excess = Math.max(0, currentStock - threeMonthTarget);
-    const shortage = Math.max(0, threeMonthTarget - currentStock);
+    // Aproximovaná 3měsíční zásoba (covered3M) a nadzásoba (excess) odpovídající reálným měsíčním výdejům
+    const covered3M = threeMonthTarget;
+    const excess = p.allocatedExcess;
+    const currentStock = covered3M + excess;
+    const rawSnapshotStock = s.stockUnits >= 0 ? s.stockUnits : currentStock;
+    const shortage = hasExplicitStockFile ? Math.max(0, threeMonthTarget - rawSnapshotStock) : 0;
 
     const uVol = s.unitVolumeM3 > 0 ? s.unitVolumeM3 : avgUnitVolumeM3;
     const uWeight = s.unitWeightKg > 0 ? s.unitWeightKg : avgUnitWeightKg;
@@ -1390,8 +1529,7 @@ export async function parseGateCsvFilesStreaming(
 
     // Výpočet boxů pro 3M zásobu v pickovací zóně:
     // Pravidlo: 1 box = 60x40x22 cm (0.0528 m3), využitelných 80 % (0.04224 m3), v 1 boxu max 1 SKU (žádný mix SKU v boxu).
-    // Pokud má SKU v 3M zásobě > 0 ks (nebo počítáme-li dimenzování pro drženou 3M zásobu covered3M),
-    // každé SKU s covered3M > 0 zabere alespoň 1 celý box.
+    // Každé SKU s covered3M > 0 zabere alespoň 1 celý box.
     const boxUnitsForSku = covered3M;
     let boxesForSku = 0;
     let boxFillPctForSku = 0;
@@ -1464,15 +1602,6 @@ export async function parseGateCsvFilesStreaming(
     if (excess > 0 && excessCandidateSkus.length < 250) {
       excessCandidateSkus.push(itemObj);
     }
-  }
-
-  // Dorovnání zaokrouhlovací odchylky na přesných 4 500 000 ks, pokud nebyl nahrán stock.csv
-  if (!hasExplicitStockFile && activeSkuList.length > 0 && totalStockUnits !== DEFAULT_TOTAL_WAREHOUSE_STOCK) {
-    const diff = DEFAULT_TOTAL_WAREHOUSE_STOCK - totalStockUnits;
-    classBreakdown.C.currentStockUnits = Math.max(classBreakdown.C.coveredThreeMonthUnits, classBreakdown.C.currentStockUnits + diff);
-    classBreakdown.C.excessUnits = Math.max(0, classBreakdown.C.currentStockUnits - classBreakdown.C.coveredThreeMonthUnits);
-    excessReplenishUnits = classBreakdown.A.excessUnits + classBreakdown.B.excessUnits + classBreakdown.C.excessUnits;
-    totalStockUnits = classBreakdown.A.currentStockUnits + classBreakdown.B.currentStockUnits + classBreakdown.C.currentStockUnits + deadStockUnits;
   }
 
   const totalCatalogSkus = activeSkuList.length + explicitDeadSkus.length;
@@ -1833,7 +1962,9 @@ export function recomputeGateVolumetryFromSummary(
   boxMaxFillPct: number = 80,
   palletMaxFillPct: number = 80,
   coverageMonthsTarget: number = 3,
-  stockScaleFactor: number = 1
+  stockScaleFactor: number = 1,
+  overrideClassTargets?: { A: number; B: number; C: number },
+  overrideClassStocks?: { A: number; B: number; C: number; DEAD: number }
 ): GateVolumetricSummary {
   const baseVol = abc.volumetry;
   const avgUnitVol = baseVol?.avgUnitVolumeM3 || 0.00385;
@@ -1845,13 +1976,19 @@ export function recomputeGateVolumetryFromSummary(
   const boxUsableVolumeM3 = BOX_GROSS_VOL_M3 * (clampedBoxPct / 100);
   const palletUsableVolumeM3 = PALLET_GROSS_VOL_M3 * (clampedPalPct / 100);
 
-  // Pokud máme uložený přesný výsledek pro 80 % / 3M / scale=1, vrátíme ho nebo plynule přepočítáme
+  const expectedBoxUnits = overrideClassTargets
+    ? overrideClassTargets.A + overrideClassTargets.B + overrideClassTargets.C
+    : abc.threeMonthDemandUnits;
+
+  // Pokud máme uložený přesný výsledek pro 80 % / 3M / scale=1 A součet kusů v boxech odpovídá
+  // aproximované 3měsíční potřebě (3 * průměrný měsíční výdej), vrátíme ho přímo
   if (
     baseVol &&
     Math.abs(clampedBoxPct - baseVol.boxMaxFillPct) < 0.01 &&
     Math.abs(clampedPalPct - baseVol.palletMaxFillPct) < 0.01 &&
     Math.abs(coverageMonthsTarget - 3) < 0.01 &&
-    Math.abs(stockScaleFactor - 1) < 0.001
+    Math.abs(stockScaleFactor - 1) < 0.001 &&
+    Math.abs(baseVol.totalBoxUnits - expectedBoxUnits) <= 10
   ) {
     return baseVol;
   }
@@ -1889,12 +2026,28 @@ export function recomputeGateVolumetryFromSummary(
     const cb = abc.classBreakdown[cls];
     const baseClsVol = baseVol?.byClass?.[cls];
     const skusCount = cb.skusCount;
-    const scaledStockUnits = Math.round(cb.currentStockUnits * stockScaleFactor);
-    const targetUnits = cls === 'DEAD' ? 0 : Math.round(cb.threeMonthTargetUnits * monthFactor);
+    const scaledStockUnits = overrideClassStocks
+      ? overrideClassStocks[cls]
+      : Math.round(cb.currentStockUnits * stockScaleFactor);
+    const targetUnits = cls === 'DEAD'
+      ? 0
+      : overrideClassTargets
+      ? overrideClassTargets[cls]
+      : Math.round(cb.threeMonthTargetUnits * monthFactor);
     const coveredUnits = cls === 'DEAD' ? 0 : Math.min(scaledStockUnits, targetUnits);
     const excessUnits = cls === 'DEAD' ? scaledStockUnits : Math.max(0, scaledStockUnits - coveredUnits);
     const excessSkusCount = excessUnits > 0
-      ? (cls === 'DEAD' ? skusCount : Math.max(1, Math.min(skusCount, Math.round(cb.excessSkusCount * (excessUnits / Math.max(1, cb.excessUnits))))))
+      ? (cls === 'DEAD'
+          ? skusCount
+          : Math.max(
+              1,
+              Math.min(
+                skusCount,
+                cb.excessUnits > 0
+                  ? Math.round(cb.excessSkusCount * (excessUnits / Math.max(1, cb.excessUnits)))
+                  : Math.round(skusCount * 0.78)
+              )
+            ))
       : 0;
 
     adjustedClassBreakdown[cls].currentStockUnits = scaledStockUnits;
@@ -1913,15 +2066,20 @@ export function recomputeGateVolumetryFromSummary(
 
     // Boxy (1 SKU = min 1 box, žádný mix v boxu)
     if (coveredUnits > 0 && skusCount > 0) {
-      const boxSkus = baseClsVol?.boxSkusCount
-        ? Math.min(skusCount, Math.max(1, Math.round(baseClsVol.boxSkusCount * Math.min(1.15, Math.sqrt(monthFactor * stockScaleFactor)))))
-        : skusCount;
+      const isBaseBoxConsistent =
+        baseClsVol &&
+        baseClsVol.boxUnits > 0 &&
+        Math.abs(baseClsVol.boxUnits - cb.threeMonthTargetUnits) <= Math.max(50, cb.threeMonthTargetUnits * 0.15);
+
+      const boxSkus = isBaseBoxConsistent && baseClsVol?.boxSkusCount
+        ? Math.min(skusCount, Math.min(coveredUnits, Math.max(1, Math.round(baseClsVol.boxSkusCount * Math.min(1.15, Math.sqrt(monthFactor))))))
+        : Math.min(skusCount, Math.max(1, coveredUnits));
+
       const boxGoodsVol = coveredUnits * clsUnitVol;
 
       // Každé SKU v pickovací zóně má vlastní box(y)
       let boxesNeeded = 0;
-      if (baseClsVol && baseClsVol.boxesNeeded > 0 && baseVol) {
-        // Přesná škálovací odezva zachovávající 1-SKU-per-box strop (minimum = boxSkus)
+      if (isBaseBoxConsistent && baseClsVol && baseClsVol.boxesNeeded > 0 && baseVol) {
         const oldUsable = baseVol.boxUsableVolumeM3;
         const volRatio = (boxGoodsVol / Math.max(0.001, baseClsVol.boxGoodsVolumeM3)) * (oldUsable / boxUsableVolumeM3);
         const multiBoxExtra = Math.max(0, baseClsVol.boxesNeeded - baseClsVol.boxSkusCount);
@@ -1939,7 +2097,7 @@ export function recomputeGateVolumetryFromSummary(
         boxesNeeded = Math.max(boxSkus, boxesNeeded);
       }
 
-      const singleUnitBoxes = baseClsVol?.singleUnitBoxesCount
+      const singleUnitBoxes = isBaseBoxConsistent && baseClsVol?.singleUnitBoxesCount
         ? Math.round(baseClsVol.singleUnitBoxesCount / Math.max(0.5, monthFactor))
         : (cls === 'C' ? Math.round(boxSkus * 0.28) : cls === 'B' ? Math.round(boxSkus * 0.08) : Math.round(boxSkus * 0.02));
 
@@ -1956,7 +2114,6 @@ export function recomputeGateVolumetryFromSummary(
     if (excessUnits > 0 && excessSkusCount > 0) {
       const totalExcessVol = excessUnits * clsUnitVol;
       const avgVolPerSku = totalExcessVol / excessSkusCount;
-      // Generujeme realistické rozdělení objemů jednotlivých SKU tak, aby součet přesně seděl na totalExcessVol
       const skuVols: number[] = new Array(excessSkusCount);
       const bucketWeights = [3.2, 2.1, 1.5, 1.15, 0.90, 0.70, 0.52, 0.38, 0.28, 0.18];
       let rawSum = 0;
