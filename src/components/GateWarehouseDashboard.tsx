@@ -521,10 +521,13 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
       totalAnnualReplenishCycles,
       avgMonthlyReplenishCycles,
       totalAnnualReplenishedBoxes,
+      annualReplenishedBoxes: totalAnnualReplenishedBoxes,
       avgMonthlyReplenishedBoxes,
       excessCoveredWaves,
       totalReplenishPickHoursYear,
+      replenishPickHoursYear: totalReplenishPickHoursYear,
       totalReplenishBoxMoveHoursYear,
+      replenishBoxMoveHoursYear: totalReplenishBoxMoveHoursYear,
       totalReplenishHoursYear,
       avgMonthlyReplenishHours,
       avgMonthlyReplenishFte,
@@ -1882,8 +1885,8 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
               </div>
               <p className="text-[11px] text-slate-400">
                 {isCs
-                  ? `Každý doskladněný box (celkem ~${dynamicAbc.annualReplenishedBoxes.toLocaleString('cs-CZ')} boxů/rok, Ø ${dynamicAbc.avgMonthlyReplenishedBoxes.toLocaleString('cs-CZ')} boxů/měs.) vyžaduje po paletovém vypickování přesun a založení do regálové pozice.`
-                  : `Each replenished box (~${dynamicAbc.annualReplenishedBoxes.toLocaleString()} boxes/year) requires putaway transport to its picking slot after pallet picking.`}
+                  ? `Každý doskladněný box (celkem ~${(dynamicAbc.totalAnnualReplenishedBoxes ?? 0).toLocaleString('cs-CZ')} boxů/rok, Ø ${(dynamicAbc.avgMonthlyReplenishedBoxes ?? 0).toLocaleString('cs-CZ')} boxů/měs.) vyžaduje po paletovém vypickování přesun a založení do regálové pozice.`
+                  : `Each replenished box (~${(dynamicAbc.totalAnnualReplenishedBoxes ?? 0).toLocaleString()} boxes/year) requires putaway transport to its picking slot after pallet picking.`}
               </p>
             </div>
 
@@ -1943,15 +1946,15 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
                   : `1. REFILL BATCH (${replenishTriggerPct}% → 100%)`}
               </div>
               <div className="text-xl font-bold text-white font-mono tabular-nums">
-                {dynamicAbc.totalReplenishBatchUnits.toLocaleString('cs-CZ')}{' '}
+                {(dynamicAbc.totalReplenishBatchUnits ?? 0).toLocaleString('cs-CZ')}{' '}
                 <span className="text-xs font-normal text-slate-400">
                   ks ({dynamicAbc.batchFractionPct} % z {coverageMonthsTarget}M)
                 </span>
               </div>
               <div className="text-[11px] text-slate-400 font-mono tabular-nums">
                 {isCs
-                  ? `Ø ${dynamicAbc.avgUnitsPerReplenishTask.toLocaleString('cs-CZ')} ks / 1 doskladnění SKU (= ${dynamicAbc.batchMonthsEquivalent} měs. odbytu)`
-                  : `Avg ${dynamicAbc.avgUnitsPerReplenishTask.toLocaleString()} pcs per SKU refill (${dynamicAbc.batchMonthsEquivalent}M demand)`}
+                  ? `Ø ${(dynamicAbc.avgUnitsPerReplenishTask ?? 0).toLocaleString('cs-CZ')} ks / 1 doskladnění SKU (= ${dynamicAbc.batchMonthsEquivalent} měs. odbytu)`
+                  : `Avg ${(dynamicAbc.avgUnitsPerReplenishTask ?? 0).toLocaleString()} pcs per SKU refill (${dynamicAbc.batchMonthsEquivalent}M demand)`}
               </div>
             </div>
 
@@ -1961,15 +1964,15 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
                 {isCs ? '2. CYKLY & PŘESUNUTÉ BOXY' : '2. CYCLES & MOVED BOXES'}
               </div>
               <div className="text-xl font-bold text-teal-300 font-mono tabular-nums">
-                {dynamicAbc.annualReplenishedBoxes.toLocaleString('cs-CZ')}{' '}
+                {(dynamicAbc.totalAnnualReplenishedBoxes ?? 0).toLocaleString('cs-CZ')}{' '}
                 <span className="text-xs font-normal text-slate-400">
                   {isCs ? 'boxů / rok' : 'boxes / year'}
                 </span>
               </div>
               <div className="text-[11px] text-slate-400 font-mono tabular-nums">
                 {isCs
-                  ? `Ø ${dynamicAbc.avgMonthlyReplenishedBoxes.toLocaleString('cs-CZ')} boxů/měs. (${dynamicAbc.totalAnnualReplenishCycles.toLocaleString('cs-CZ')} úkolů/rok, ${dynamicAbc.cyclesPerSkuPerYear}×/SKU)`
-                  : `Avg ${dynamicAbc.avgMonthlyReplenishedBoxes.toLocaleString()} boxes/mo (${dynamicAbc.totalAnnualReplenishCycles.toLocaleString()} tasks/yr)`}
+                  ? `Ø ${(dynamicAbc.avgMonthlyReplenishedBoxes ?? 0).toLocaleString('cs-CZ')} boxů/měs. (${(dynamicAbc.totalAnnualReplenishCycles ?? 0).toLocaleString('cs-CZ')} úkolů/rok, ${dynamicAbc.cyclesPerSkuPerYear}×/SKU)`
+                  : `Avg ${(dynamicAbc.avgMonthlyReplenishedBoxes ?? 0).toLocaleString()} boxes/mo (${(dynamicAbc.totalAnnualReplenishCycles ?? 0).toLocaleString()} tasks/yr)`}
               </div>
             </div>
 
@@ -1979,13 +1982,13 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
                 {isCs ? '3. ČAS DOSKLADNĚNÍ (PICK + PŘESUN)' : '3. REPLENISHMENT TIME (PICK + MOVE)'}
               </div>
               <div className="text-xl font-bold text-purple-300 font-mono tabular-nums">
-                {dynamicAbc.totalReplenishHoursYear.toLocaleString('cs-CZ')}{' '}
+                {(dynamicAbc.totalReplenishHoursYear ?? 0).toLocaleString('cs-CZ')}{' '}
                 <span className="text-xs font-normal text-slate-400">{isCs ? 'hod / rok' : 'h / year'}</span>
               </div>
               <div className="text-[11px] text-slate-400 font-mono tabular-nums">
                 {isCs
-                  ? `Palet. pick: ${dynamicAbc.replenishPickHoursYear.toLocaleString('cs-CZ')} h + Přesun boxů (${boxMoveSecPerBox}s): ${dynamicAbc.replenishBoxMoveHoursYear.toLocaleString('cs-CZ')} h`
-                  : `Pallet pick: ${dynamicAbc.replenishPickHoursYear.toLocaleString()} h + Box move (${boxMoveSecPerBox}s): ${dynamicAbc.replenishBoxMoveHoursYear.toLocaleString()} h`}
+                  ? `Palet. pick: ${(dynamicAbc.totalReplenishPickHoursYear ?? 0).toLocaleString('cs-CZ')} h + Přesun boxů (${boxMoveSecPerBox}s): ${(dynamicAbc.totalReplenishBoxMoveHoursYear ?? 0).toLocaleString('cs-CZ')} h`
+                  : `Pallet pick: ${(dynamicAbc.totalReplenishPickHoursYear ?? 0).toLocaleString()} h + Box move (${boxMoveSecPerBox}s): ${(dynamicAbc.totalReplenishBoxMoveHoursYear ?? 0).toLocaleString()} h`}
               </div>
             </div>
 
@@ -2000,8 +2003,8 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
               </div>
               <div className="text-[11px] text-slate-400 font-mono tabular-nums">
                 {isCs
-                  ? `Ø ${dynamicAbc.avgMonthlyReplenishHours.toLocaleString('cs-CZ')} h/měs. při fondu ${monthlyFteHours} h/FTE (vč. přesunu boxů)`
-                  : `Avg ${dynamicAbc.avgMonthlyReplenishHours.toLocaleString()} h/mo at ${monthlyFteHours} h/FTE norm`}
+                  ? `Ø ${(dynamicAbc.avgMonthlyReplenishHours ?? 0).toLocaleString('cs-CZ')} h/měs. při fondu ${monthlyFteHours} h/FTE (vč. přesunu boxů)`
+                  : `Avg ${(dynamicAbc.avgMonthlyReplenishHours ?? 0).toLocaleString()} h/mo at ${monthlyFteHours} h/FTE norm`}
               </div>
             </div>
           </div>
@@ -2193,10 +2196,10 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
               </thead>
               <tbody className="divide-y divide-slate-800/60 font-mono tabular-nums">
                 {(activeSkuTableTab === 'excess'
-                  ? report.abcAnalysis.topExcessSkus
+                  ? report.abcAnalysis?.topExcessSkus || []
                   : activeSkuTableTab === 'active'
-                  ? report.abcAnalysis.topActiveSkus
-                  : report.abcAnalysis.sampleDeadSkus
+                  ? report.abcAnalysis?.topActiveSkus || []
+                  : report.abcAnalysis?.sampleDeadSkus || []
                 ).slice(0, 15).map(item => {
                   const targetUnits = item.abcClass === 'DEAD' ? 0 : Math.max(1, Math.round(item.avgMonthlyUnits * coverageMonthsTarget));
                   const stockUnits = item.abcClass === 'DEAD'
