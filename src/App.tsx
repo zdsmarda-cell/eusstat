@@ -168,10 +168,11 @@ function Dashboard() {
   const fetchData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [statusRes, allSummaryRes, movementsRes] = await Promise.all([
+      const [statusRes, allSummaryRes, movementsRes, gateSummaryRes] = await Promise.all([
         authFetch(apiUrl('/api/db/status')),
         authFetch(apiUrl('/api/analytics/summary?warehouse=all')),
         authFetch(apiUrl('/api/movements?limit=200&warehouse=all')),
+        authFetch(apiUrl('/api/gate/summary')).catch(() => null),
       ]);
 
       let statusData: DbStatus = { connected: false, type: 'memory' };
@@ -195,6 +196,17 @@ function Dashboard() {
             if (sumData.ruseSummary) newAnalytics.ruse = sumData.ruseSummary;
             if (sumData.svjSummary) newAnalytics.svj = sumData.svjSummary;
             if (sumData.gateReport) setGateReport(sumData.gateReport);
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      if (gateSummaryRes && gateSummaryRes.ok) {
+        try {
+          const gData = await gateSummaryRes.json();
+          if (gData.success && gData.gateReport) {
+            setGateReport(gData.gateReport);
           }
         } catch {
           // ignore

@@ -28,10 +28,11 @@ import { computeMonthlyFteFromBrackets, getDefaultSvjBenchmarkRates } from '../u
 import { useLanguage } from '../context/LanguageContext.js';
 
 interface GateWarehouseDashboardProps {
-  report: GateAnalyticsReport;
+  report: GateAnalyticsReport | null;
   svjBracketStats?: BracketStat[];
   onOpenImport: () => void;
   onLoadSampleGate: () => void;
+  isLoading?: boolean;
 }
 
 export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
@@ -39,6 +40,7 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
   svjBracketStats,
   onOpenImport,
   onLoadSampleGate,
+  isLoading,
 }) => {
   const { lang } = useLanguage();
   const isCs = lang === 'cs';
@@ -76,7 +78,10 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
 
   // Aktuální SVJ normočasy (sekundy na 1 ks podle velikosti objednávky 1..6+)
   const activeSvjRates: GateSvjBenchmarkRates = useMemo(() => {
-    const base = svjBracketStats && svjBracketStats.length > 0 ? liveSvjRates : (report.svjBenchmark || liveSvjRates);
+    const base =
+      svjBracketStats && svjBracketStats.length > 0
+        ? liveSvjRates
+        : (report?.svjBenchmark || liveSvjRates);
     const pickSecByBracket: Record<ItemBracket, number> = { ...base.pickSecByBracket };
     const sortSecByBracket: Record<ItemBracket, number> = { ...base.sortSecByBracket };
     const packSecByBracket: Record<ItemBracket, number> = { ...base.packSecByBracket };
@@ -137,15 +142,15 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
       sortSecByBracket,
       packSecByBracket,
     };
-  }, [svjBracketStats, liveSvjRates, report.svjBenchmark, useMedianSvj, bypassSingleSort, monthlyFteHours, customRateOverrides]);
+  }, [svjBracketStats, liveSvjRates, report?.svjBenchmark, useMedianSvj, bypassSingleSort, monthlyFteHours, customRateOverrides]);
 
   // Dynamický přepočet měsíčních FTE podle zvolených SVJ časů a fondu pracovní doby
   const enrichedMonths = useMemo(() => {
-    return (report.monthlyBreakdown || []).map(m => ({
+    return (report?.monthlyBreakdown || []).map(m => ({
       ...m,
       fte: computeMonthlyFteFromBrackets(m.brackets, activeSvjRates),
     }));
-  }, [report.monthlyBreakdown, activeSvjRates]);
+  }, [report?.monthlyBreakdown, activeSvjRates]);
 
   // Souhrn FTE za celý rok / průměrný měsíc / špičkový měsíc
   const fteSummary = useMemo(() => {
@@ -195,7 +200,45 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
 
   // Dynamický přepočet ABC analýzy při změně počtu cílových měsíců zásoby (default 3 měsíce) nebo koeficientu zásoby
   const dynamicAbc = useMemo(() => {
-    const base = report.abcAnalysis;
+    const emptyClass = {
+      skusCount: 0,
+      skuSharePct: 0,
+      annualUnits: 0,
+      unitSharePct: 0,
+      threeMonthTargetUnits: 0,
+      currentStockUnits: 0,
+      coveredThreeMonthUnits: 0,
+      excessUnits: 0,
+      excessSkusCount: 0,
+    };
+    const base = report?.abcAnalysis;
+    if (!base) {
+      return {
+        stockSource: 'estimated_from_velocity' as const,
+        totalCatalogSkus: 0,
+        activeSkusCount: 0,
+        deadStockSkusCount: 0,
+        deadStockUnits: 0,
+        totalAnnualIssuedUnits: 0,
+        avgMonthlyIssuedUnits: 0,
+        threeMonthDemandUnits: 0,
+        totalStockUnits: 0,
+        coveredThreeMonthUnits: 0,
+        coveredThreeMonthSkusCount: 0,
+        excessReplenishUnits: 0,
+        excessReplenishSkusCount: 0,
+        classBreakdown: {
+          A: emptyClass,
+          B: emptyClass,
+          C: emptyClass,
+          DEAD: emptyClass,
+        },
+        topActiveSkus: [],
+        topExcessSkus: [],
+        sampleDeadSkus: [],
+      };
+    }
+
     const monthRatio = coverageMonthsTarget / 3;
     const sMult = stockMultiplier;
 
@@ -203,7 +246,7 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
     const deadUnits = customDeadUnitsCount !== null ? customDeadUnitsCount : Math.round(base.deadStockUnits * sMult);
 
     const adjustClass = (clsKey: 'A' | 'B' | 'C') => {
-      const c = base.classBreakdown[clsKey];
+      const c = base.classBreakdown?.[clsKey] || emptyClass;
       const targetUnits = Math.round(c.threeMonthTargetUnits * monthRatio);
       const stockUnits = Math.round(c.currentStockUnits * sMult);
       const coveredUnits = Math.min(stockUnits, targetUnits);
@@ -228,7 +271,7 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
     const totalCatSkus = base.activeSkusCount + deadSkus;
 
     const classDEAD = {
-      ...base.classBreakdown.DEAD,
+      ...(base.classBreakdown?.DEAD || emptyClass),
       skusCount: deadSkus,
       skuSharePct: totalCatSkus > 0 ? Number(((deadSkus / totalCatSkus) * 100).toFixed(1)) : 0,
       currentStockUnits: deadUnits,
@@ -259,20 +302,21 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
         DEAD: classDEAD,
       },
     };
-  }, [report.abcAnalysis, coverageMonthsTarget, stockMultiplier, customDeadSkusCount, customDeadUnitsCount]);
+  }, [report?.abcAnalysis, coverageMonthsTarget, stockMultiplier, customDeadSkusCount, customDeadUnitsCount]);
 
   // Filtrované země podle zvoleného měsíce nebo celého roku
   const displayedCountries = useMemo(() => {
+    const baseCountries = report?.countries || [];
     if (selectedCountryMonth === 'all') {
-      return report.countries || [];
+      return baseCountries;
     }
     const foundMonth = enrichedMonths.find(m => m.month === selectedCountryMonth);
-    if (!foundMonth) return report.countries || [];
+    if (!foundMonth) return baseCountries;
 
     const totOrd = Math.max(1, foundMonth.totalOrders);
     const totUnits = Math.max(1, foundMonth.totalUnits);
 
-    return (report.countries || [])
+    return baseCountries
       .map(c => {
         const mStat = foundMonth.countryBreakdown?.[c.country] || { orders: 0, units: 0 };
         return {
@@ -286,7 +330,7 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
       })
       .filter(c => c.orders > 0)
       .sort((a, b) => b.orders - a.orders);
-  }, [report.countries, selectedCountryMonth, enrichedMonths]);
+  }, [report?.countries, selectedCountryMonth, enrichedMonths]);
 
   // Celoroční součty pro patičku měsíční tabulky
   const annualBracketTotals = useMemo(() => {
@@ -305,8 +349,8 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
         sums[k].units += m.brackets[k]?.units || 0;
       }
     }
-    const totO = Math.max(1, report.totalOrders);
-    const totU = Math.max(1, report.totalUnits);
+    const totO = Math.max(1, report?.totalOrders || 0);
+    const totU = Math.max(1, report?.totalUnits || 0);
     return {
       '1': { ...sums['1'], orderSharePct: Number(((sums['1'].orders / totO) * 100).toFixed(1)), unitSharePct: Number(((sums['1'].units / totU) * 100).toFixed(1)) },
       '2': { ...sums['2'], orderSharePct: Number(((sums['2'].orders / totO) * 100).toFixed(1)), unitSharePct: Number(((sums['2'].units / totU) * 100).toFixed(1)) },
@@ -316,7 +360,94 @@ export const GateWarehouseDashboard: React.FC<GateWarehouseDashboardProps> = ({
       '5': { ...sums['5'], orderSharePct: Number(((sums['5'].orders / totO) * 100).toFixed(1)), unitSharePct: Number(((sums['5'].units / totU) * 100).toFixed(1)) },
       '6+': { ...sums['6+'], orderSharePct: Number(((sums['6+'].orders / totO) * 100).toFixed(1)), unitSharePct: Number(((sums['6+'].units / totU) * 100).toFixed(1)) },
     };
-  }, [enrichedMonths, report.totalOrders, report.totalUnits]);
+  }, [enrichedMonths, report?.totalOrders, report?.totalUnits]);
+
+  // Pokud ještě nejsou naimportována data skladu Gate, zobrazíme přehlednou úvodní obrazovku
+  if (!report || report.totalOrders === 0) {
+    return (
+      <div className="bg-slate-900/80 border border-slate-800 rounded-3xl p-8 sm:p-12 max-w-4xl mx-auto space-y-6 shadow-2xl">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-4 border-b border-slate-800 pb-6">
+          <div className="w-14 h-14 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center justify-center shrink-0">
+            <Boxes className="w-7 h-7" />
+          </div>
+          <div>
+            <h2 className="text-xl font-bold text-white">
+              {isCs
+                ? 'Sklad Gate — Celoroční datová analýza, ABC zásoby & přepočet FTE podle SVJ'
+                : 'Gate Warehouse — Annual Volume, ABC Inventory & SVJ-Benchmarked FTE Analysis'}
+            </h2>
+            <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+              {isCs
+                ? 'Pro sklad Gate zatím nejsou nahrány žádné soubory. Nahrajte velkoobjemové CSV soubory (zpracovávané proudově po částech přímo v prohlížeči bez pádu paměti) nebo si jedním kliknutím vygenerujte 12měsíční vzorová data.'
+                : 'No data uploaded for Gate warehouse yet. Upload large CSV files (stream-parsed in chunks without memory spikes) or generate a 12-month sample dataset.'}
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+          <div className="bg-slate-950/70 border border-slate-800/80 rounded-2xl p-4 space-y-2">
+            <div className="font-bold text-emerald-400 flex items-center gap-2">
+              <UploadCloud className="w-4 h-4" />
+              <span>{isCs ? 'Struktura vstupních CSV souborů (stovky MB)' : 'Input CSV Files Structure'}</span>
+            </div>
+            <ul className="space-y-1.5 text-slate-300">
+              <li>
+                <span className="font-semibold text-white">1. Soubor objednávek:</span>{' '}
+                <code className="text-[11px] text-emerald-300 bg-slate-900 px-1.5 py-0.5 rounded">
+                  order_id, order_created_at, ship_date, packed_at, country, items_qty...
+                </code>
+              </li>
+              <li>
+                <span className="font-semibold text-white">2. Soubor obsahu objednávek:</span>{' '}
+                <code className="text-[11px] text-emerald-300 bg-slate-900 px-1.5 py-0.5 rounded">
+                  order_id, sku, article_code, qty
+                </code>
+              </li>
+              <li>
+                <span className="font-semibold text-slate-400">3. Volitelný stav zásob (pro přesnou ABC):</span>{' '}
+                <code className="text-[11px] text-slate-400 bg-slate-900 px-1.5 py-0.5 rounded">
+                  sku, stock_qty
+                </code>
+              </li>
+            </ul>
+          </div>
+
+          <div className="bg-slate-950/70 border border-slate-800/80 rounded-2xl p-4 space-y-2">
+            <div className="font-bold text-cyan-400 flex items-center gap-2">
+              <BarChart3 className="w-4 h-4" />
+              <span>{isCs ? 'Co analýza skladu Gate vyhodnocuje' : 'What Gate Analytics Evaluates'}</span>
+            </div>
+            <ul className="space-y-1.5 text-slate-300">
+              <li>• {isCs ? 'Měsíční % rozložení 1, 2, 3, 4, 5 a více kusových zásilek' : 'Monthly % breakdown of 1, 2, 3, 4, 5+ item orders'}</li>
+              <li>• {isCs ? 'Poměrové zastoupení cílových zemí + 80 % Pareto SKU a Ø ks/obj.' : 'Destination country share + 80% Pareto SKUs & avg pcs/order'}</li>
+              <li>• {isCs ? 'ABC analýza: zásoba na 3 průměrné měsíce vs. nadzásoba a 0 výdej za rok' : 'ABC analysis: 3-month stock vs. excess buffer & zero-movement SKUs'}</li>
+              <li>• {isCs ? 'Přepočet výkonu v měsících na pracovníky (FTE) dle časů Picking, Sorting, Packing z SVJ' : 'Monthly FTE workforce calculation using SVJ Picking, Sorting & Packing times'}</li>
+            </ul>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center justify-center sm:justify-start gap-3 pt-2">
+          <button
+            onClick={onOpenImport}
+            disabled={isLoading}
+            className="flex items-center space-x-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs sm:text-sm font-bold rounded-xl shadow-lg shadow-emerald-500/20 transition-all cursor-pointer"
+          >
+            <UploadCloud className="w-4 h-4" />
+            <span>{isCs ? 'Nahrát CSV soubory skladu Gate' : 'Upload Gate CSV Files'}</span>
+          </button>
+
+          <button
+            onClick={onLoadSampleGate}
+            disabled={isLoading}
+            className="flex items-center space-x-2 px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs sm:text-sm font-semibold rounded-xl border border-slate-700 transition-all cursor-pointer"
+          >
+            <Boxes className="w-4 h-4 text-emerald-400" />
+            <span>{isCs ? 'Načíst 12měsíční vzorová data Gate' : 'Load 12-Month Sample Gate Data'}</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
