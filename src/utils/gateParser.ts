@@ -171,33 +171,39 @@ export function computeMonthlyFteFromBrackets(
  */
 function parseGateMonth(raw: string): string | null {
   if (!raw) return null;
-  const s = raw.trim();
+  const s = raw.replace(/^\uFEFF/, '').trim().replace(/^["']+|["']+$/g, '').trim();
   if (!s || s.startsWith('#')) return null;
 
-  // ISO YYYY-MM-DD
-  if (/^\d{4}-\d{2}/.test(s)) {
-    return s.substring(0, 7);
-  }
-
-  // DD.MM.YYYY nebo D.M.YYYY
-  const dotMatch = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})/);
-  if (dotMatch) {
-    const m = dotMatch[2].padStart(2, '0');
-    const y = dotMatch[3];
-    const mNum = parseInt(m, 10);
+  // ISO YYYY-MM-DD or YYYY/MM/DD
+  const isoMatch = s.match(/^(\d{4})[-/](\d{1,2})/);
+  if (isoMatch) {
+    const y = isoMatch[1];
+    const mNum = parseInt(isoMatch[2], 10);
     if (mNum >= 1 && mNum <= 12) {
-      return `${y}-${m}`;
+      return `${y}-${String(mNum).padStart(2, '0')}`;
     }
   }
 
-  // DD/MM/YYYY
+  // DD.MM.YYYY, D.M.YYYY, DD-MM-YYYY
+  const dotMatch = s.match(/^(\d{1,2})\s*[.-]\s*(\d{1,2})\s*[.-]\s*(\d{4})/);
+  if (dotMatch) {
+    const mNum = parseInt(dotMatch[2], 10);
+    const y = dotMatch[3];
+    if (mNum >= 1 && mNum <= 12) {
+      return `${y}-${String(mNum).padStart(2, '0')}`;
+    }
+  }
+
+  // DD/MM/YYYY or MM/DD/YYYY
   const slashMatch = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
   if (slashMatch) {
     const p1 = parseInt(slashMatch[1], 10);
     const p2 = parseInt(slashMatch[2], 10);
     const y = slashMatch[3];
-    const m = (p2 <= 12 ? p2 : p1).toString().padStart(2, '0');
-    return `${y}-${m}`;
+    const mNum = p2 <= 12 ? p2 : p1;
+    if (mNum >= 1 && mNum <= 12) {
+      return `${y}-${String(mNum).padStart(2, '0')}`;
+    }
   }
 
   return null;
@@ -357,22 +363,40 @@ async function streamFileLines(
   }
 }
 
-export interface GateParseProgress {
-  phase: 'orders' | 'items' | 'stock' | 'aggregating';
+export interface GateStreamParseProgress {
+  phase: string;
   percent: number;
-  messageCs: string;
-  messageEn: string;
+  bytesProcessed: number;
+  totalBytes: number;
+  messageCs?: string;
+  messageEn?: string;
+}
+
+export type GateParseProgress = GateStreamParseProgress;
+
+export interface GateParseResult {
+  report: GateAnalyticsReport;
+  sampleRecords: MovementRecord[];
+  sampleMovements: MovementRecord[];
+  ordersFileRows: number;
+  itemsFileRows: number;
+  stockFileRows: number;
+  errors: string[];
 }
 
 export async function parseGateCsvFilesStreaming(
   files: File[],
   svjBracketStats?: BracketStat[],
-  onProgress?: (prog: GateParseProgress) => void
-): Promise<{
-  report: GateAnalyticsReport;
-  sampleMovements: MovementRecord[];
-}> {
+  onProgress?: (prog: GateStreamParseProgress) => void
+): Promise<GateParseResult> {
+  const errors: string[] = [];
   const { ordersFile, itemsFile, stockFile } = await classifyGateFiles(files);
+  const totalBytesAll =
+    (ordersFile?.size || 0) + (itemsFile?.size || 0) + (stockFile?.size || 0);
+
+  let ordersFileRows = 0;
+  let itemsFileRows = 0;
+  let stockFileRows = 0;
 
   // Kompaktní číselník měsíců (index 1..60 -> 'YYYY-MM')
   const monthIdxToStr: string[] = ['unknown'];
@@ -392,7 +416,6 @@ export async function parseGateCsvFilesStreaming(
   const orderMonthPages: Uint8Array[] = [];
   const orderItemsCountPages: Uint16Array[] = [];
   const orderStringMonthMap = new Map<string, number>();
-  const orderStringQtyMap = new Map<string, number>();
 
   const setOrderMonthAndQty = (orderId: string, mIdx: number, itemsQty: number) => {
     const numId = extractNumericOrderId(orderId);
@@ -497,7 +520,9 @@ export async function parseGateCsvFilesStreaming(
       (line, lineIdx) => {
         if (lineIdx === 0) {
           delimiter = detectDelimiter(line);
-          const cols = splitCsvLineFast(line, delimiter).map(c => c.trim().toLowerCase().replace(/^"|"$/g, ''));
+          const cols = splitCsvLineFast(line, delimiter).map(c =>
+            c.replace(/^\uFEFF/, '').trim().toLowerCase().replace(/^"|"$/g, '')
+          );
           cols.forEach((col, i) => {
             if (col === 'order_id' || col === 'id') idxOrderId = i;
             else if (col.includes('order_created')) idxCreated = i;
@@ -519,6 +544,8 @@ export async function parseGateCsvFilesStreaming(
         const orderId = (cols[idxOrderId] || '').trim().replace(/^"|"$/g, '');
         if (!orderId) return;
 
+        ordersFileRows += 1;
+
         // Zjistíme měsíc (prioritně packed_at / ship_date / order_created_at)
         const ym =
           parseGateMonth(cols[idxPackedAt] || '') ||
@@ -529,7 +556,7 @@ export async function parseGateCsvFilesStreaming(
         const countryRaw = (cols[idxCountry] || 'SK').trim().toUpperCase().replace(/^"|"$/g, '');
         const country = countryRaw.length >= 2 && countryRaw.length <= 3 ? countryRaw : 'SK';
 
-        const rawQty = parseInt((cols[idxItemsQty] || '0').trim(), 10);
+        const rawQty = parseInt((cols[idxItemsQty] || '0').trim().replace(/^"|"$/g, ''), 10);
         const itemsQty = !isNaN(rawQty) && rawQty > 0 ? rawQty : 0;
 
         const mIdx = getMonthIdx(ym);
@@ -537,8 +564,8 @@ export async function parseGateCsvFilesStreaming(
 
         const delivMethod = (cols[idxDeliveryMethod] || '').trim().toUpperCase();
         const pkgType = (cols[idxPackageType] || '').trim().toUpperCase();
-        const codFlag = (cols[idxCod] || '0').trim();
-        const rawWeight = parseFloat((cols[idxWeight] || '').replace(',', '.'));
+        const codFlag = (cols[idxCod] || '0').trim().replace(/^"|"$/g, '');
+        const rawWeight = parseFloat((cols[idxWeight] || '').replace(',', '.').replace(/^"|"$/g, ''));
 
         // Agregace země
         let cAgg = countryAggMap.get(country);
@@ -633,10 +660,13 @@ export async function parseGateCsvFilesStreaming(
       (bytesRead, totalBytes) => {
         if (onProgress) {
           const pct = Math.min(45, Math.round((bytesRead / Math.max(1, totalBytes)) * 45));
+          const msgCs = `Zpracovávám soubor objednávek (${(bytesRead / (1024 * 1024)).toFixed(1)} / ${(totalBytes / (1024 * 1024)).toFixed(1)} MB)...`;
           onProgress({
-            phase: 'orders',
+            phase: msgCs,
             percent: pct,
-            messageCs: `Zpracovávám soubor objednávek (${(bytesRead / (1024 * 1024)).toFixed(1)} / ${(totalBytes / (1024 * 1024)).toFixed(1)} MB)...`,
+            bytesProcessed: bytesRead,
+            totalBytes: totalBytesAll || totalBytes,
+            messageCs: msgCs,
             messageEn: `Streaming orders file (${(bytesRead / (1024 * 1024)).toFixed(1)} / ${(totalBytes / (1024 * 1024)).toFixed(1)} MB)...`,
           });
         }
@@ -666,6 +696,7 @@ export async function parseGateCsvFilesStreaming(
 
   const sortedAvailableMonths = Array.from(monthAggMap.keys()).sort();
   const defaultFallbackMonth = sortedAvailableMonths[Math.floor(sortedAvailableMonths.length / 2)] || '2025-09';
+  const ordersBytes = ordersFile?.size || 0;
 
   if (itemsFile) {
     let delimiter = ',';
@@ -679,7 +710,9 @@ export async function parseGateCsvFilesStreaming(
       (line, lineIdx) => {
         if (lineIdx === 0) {
           delimiter = detectDelimiter(line);
-          const cols = splitCsvLineFast(line, delimiter).map(c => c.trim().toLowerCase().replace(/^"|"$/g, ''));
+          const cols = splitCsvLineFast(line, delimiter).map(c =>
+            c.replace(/^\uFEFF/, '').trim().toLowerCase().replace(/^"|"$/g, '')
+          );
           // Hledáme pouze v prvních 6 sloupcích, abychom ignorovali kontingenční tabulky napravo
           for (let i = 0; i < Math.min(cols.length, 6); i++) {
             const col = cols[i];
@@ -698,8 +731,10 @@ export async function parseGateCsvFilesStreaming(
         const sku = (cols[idxSku] || '').trim().replace(/^"|"$/g, '');
         if (!sku) return;
 
+        itemsFileRows += 1;
+
         const articleCode = (cols[idxArticle] || sku.split('/')[0] || sku).trim().replace(/^"|"$/g, '');
-        const rawQty = parseInt((cols[idxQty] || '0').trim(), 10);
+        const rawQty = parseInt((cols[idxQty] || '0').trim().replace(/^"|"$/g, ''), 10);
         const qty = !isNaN(rawQty) && rawQty >= 0 ? rawQty : 1;
 
         globalArticleSet.add(articleCode);
@@ -754,10 +789,13 @@ export async function parseGateCsvFilesStreaming(
       (bytesRead, totalBytes) => {
         if (onProgress) {
           const pct = 45 + Math.min(45, Math.round((bytesRead / Math.max(1, totalBytes)) * 45));
+          const msgCs = `Zpracovávám položky objednávek (${(bytesRead / (1024 * 1024)).toFixed(1)} / ${(totalBytes / (1024 * 1024)).toFixed(1)} MB)...`;
           onProgress({
-            phase: 'items',
+            phase: msgCs,
             percent: pct,
-            messageCs: `Zpracovávám položky objednávek (${(bytesRead / (1024 * 1024)).toFixed(1)} / ${(totalBytes / (1024 * 1024)).toFixed(1)} MB)...`,
+            bytesProcessed: ordersBytes + bytesRead,
+            totalBytes: totalBytesAll || (ordersBytes + totalBytes),
+            messageCs: msgCs,
             messageEn: `Streaming order items (${(bytesRead / (1024 * 1024)).toFixed(1)} / ${(totalBytes / (1024 * 1024)).toFixed(1)} MB)...`,
           });
         }
@@ -800,7 +838,9 @@ export async function parseGateCsvFilesStreaming(
     await streamFileLines(stockFile, (line, lineIdx) => {
       if (lineIdx === 0) {
         delimiter = detectDelimiter(line);
-        const cols = splitCsvLineFast(line, delimiter).map(c => c.trim().toLowerCase().replace(/^"|"$/g, ''));
+        const cols = splitCsvLineFast(line, delimiter).map(c =>
+          c.replace(/^\uFEFF/, '').trim().toLowerCase().replace(/^"|"$/g, '')
+        );
         cols.forEach((col, i) => {
           if (col === 'sku' || col.includes('ean')) idxSku = i;
           else if (col.includes('article')) idxArticle = i;
@@ -813,8 +853,9 @@ export async function parseGateCsvFilesStreaming(
       if (cols.length < 2) return;
       const sku = (cols[idxSku] || '').trim().replace(/^"|"$/g, '');
       if (!sku) return;
+      stockFileRows += 1;
       const articleCode = idxArticle >= 0 ? (cols[idxArticle] || '').trim() : (sku.split('/')[0] || sku);
-      const stockQty = Math.max(0, parseInt((cols[idxStock] || '0').trim(), 10) || 0);
+      const stockQty = Math.max(0, parseInt((cols[idxStock] || '0').trim().replace(/^"|"$/g, ''), 10) || 0);
 
       let sAgg = skuGlobalMap.get(sku);
       if (!sAgg) {
@@ -834,10 +875,13 @@ export async function parseGateCsvFilesStreaming(
   }
 
   if (onProgress) {
+    const msgCs = 'Počítám měsíční rozpady, 80/20 Pareto, ABC analýzu zásob a FTE model...';
     onProgress({
-      phase: 'aggregating',
-      percent: 94,
-      messageCs: 'Počítám měsíční rozpady, 80/20 Pareto, ABC analýzu zásob a FTE model...',
+      phase: msgCs,
+      percent: 96,
+      bytesProcessed: totalBytesAll,
+      totalBytes: totalBytesAll,
+      messageCs: msgCs,
       messageEn: 'Computing monthly breakdowns, 80/20 Pareto, ABC inventory & FTE model...',
     });
   }
@@ -1133,6 +1177,12 @@ export async function parseGateCsvFilesStreaming(
     sampleDeadSkus,
   };
 
+  if (grandTotalOrders === 0 && ordersFileRows === 0 && itemsFileRows === 0) {
+    errors.push(
+      'V nahraných souborech nebyly nalezeny žádné platné objednávky ani položky (očekávány sloupce order_id, country, items_qty nebo order_id, sku, qty).'
+    );
+  }
+
   const report: GateAnalyticsReport = {
     warehouse: 'gate',
     totalOrders: grandTotalOrders,
@@ -1145,6 +1195,9 @@ export async function parseGateCsvFilesStreaming(
     monthsCount,
     dateFrom: sortedMonths[0] ? `${sortedMonths[0]}-01` : '2025-01-01',
     dateTo: sortedMonths[sortedMonths.length - 1] ? `${sortedMonths[sortedMonths.length - 1]}-31` : '2025-12-31',
+    ordersFileRows,
+    itemsFileRows,
+    stockFileRows,
     monthlyBreakdown,
     countries,
     abcAnalysis,
@@ -1152,17 +1205,22 @@ export async function parseGateCsvFilesStreaming(
     updatedAt: new Date().toISOString(),
   };
 
-  return { report, sampleMovements };
+  return {
+    report,
+    sampleRecords: sampleMovements,
+    sampleMovements,
+    ordersFileRows,
+    itemsFileRows,
+    stockFileRows,
+    errors,
+  };
 }
 
 /**
  * Generátor kompletního celoročního vzorového datasetu pro sklad Gate (12 měsíců loňského roku)
  * Věrně odpovídá struktuře ze screenshotů (SK, CZ, HU, RO, PL, HR, kódy 525-0054/89, 825-0181/89 atd.)
  */
-export function generateSampleGateReport(svjBracketStats?: BracketStat[]): {
-  report: GateAnalyticsReport;
-  sampleMovements: MovementRecord[];
-} {
+export function generateSampleGateReport(svjBracketStats?: BracketStat[]): GateAnalyticsReport {
   const svjBenchmark = getDefaultSvjBenchmarkRates(svjBracketStats);
   const year = 2025;
   const seasonalMultipliers = [0.78, 0.74, 0.88, 0.94, 0.98, 0.92, 0.85, 0.90, 1.08, 1.22, 1.48, 1.36];
@@ -1455,61 +1513,37 @@ export function generateSampleGateReport(svjBracketStats?: BracketStat[]): {
     sampleDeadSkus,
   };
 
-  const sampleMovements: MovementRecord[] = Array.from({ length: 60 }, (_, idx) => {
-    const m = (idx % 12) + 1;
-    const ym = `${year}-${String(m).padStart(2, '0')}`;
-    const qty = (idx % 6) + 1;
-    const br: ItemBracket = qty === 1 ? '1' : qty === 2 ? '2' : qty === 3 ? '3' : qty === 4 ? '4' : qty === 5 ? '5' : '6+';
-    const country = countryWeights[idx % countryWeights.length].code;
-    return {
-      warehouse: 'gate',
-      sberny_box: `GATE-${country}`,
-      obsah_objednavek: `O${String(100001 + idx).padStart(7, '0')}`,
-      pocet_produktu: qty,
-      ean_produktu: topActiveSkus[idx % topActiveSkus.length].sku,
-      pocet_ks: qty,
-      zacatek_pickovani: `${ym}-15T08:00:00.000Z`,
-      konec_pickovani: `${ym}-15T08:01:00.000Z`,
-      zacatek_baleni: `${ym}-15T09:00:00.000Z`,
-      konec_baleni: `${ym}-15T09:01:00.000Z`,
-      pick_duration_s: 0,
-      pack_duration_s: 0,
-      pick_per_item_s: 0,
-      pack_per_item_s: 0,
-      total_per_item_s: 0,
-      bracket: br,
-    };
-  });
-
   return {
-    report: {
-      warehouse: 'gate',
-      totalOrders: grandTotalOrders,
-      totalUnits: grandTotalUnits,
-      avgUnitsPerOrder: Number((grandTotalUnits / grandTotalOrders).toFixed(2)),
-      totalActiveSkus,
-      totalActiveArticles: Math.round(totalActiveSkus * 0.34),
-      top80SkusCount: skusA,
-      top80SkusSharePct: Number(((skusA / totalActiveSkus) * 100).toFixed(1)),
-      monthsCount: 12,
-      dateFrom: '2025-01-01',
-      dateTo: '2025-12-31',
-      monthlyBreakdown,
-      countries,
-      abcAnalysis,
-      svjBenchmark,
-      updatedAt: new Date().toISOString(),
-    },
-    sampleMovements,
+    warehouse: 'gate',
+    totalOrders: grandTotalOrders,
+    totalUnits: grandTotalUnits,
+    avgUnitsPerOrder: Number((grandTotalUnits / grandTotalOrders).toFixed(2)),
+    totalActiveSkus,
+    totalActiveArticles: Math.round(totalActiveSkus * 0.34),
+    top80SkusCount: skusA,
+    top80SkusSharePct: Number(((skusA / totalActiveSkus) * 100).toFixed(1)),
+    monthsCount: 12,
+    dateFrom: '2025-01-01',
+    dateTo: '2025-12-31',
+    ordersFileRows: grandTotalOrders,
+    itemsFileRows: grandTotalUnits,
+    stockFileRows: totalCatalogSkus,
+    monthlyBreakdown,
+    countries,
+    abcAnalysis,
+    svjBenchmark,
+    updatedAt: new Date().toISOString(),
   };
 }
 
-export function generateSampleGateCsvFiles(): { ordersCsv: string; itemsCsv: string } {
+export function generateSampleGateCsvFiles(): { ordersCsv: string; itemsCsv: string; stockCsv: string } {
   const ordersHeader = 'order_id;order_created_at;order_received_at;ship_date;packed_at;carrier_first_scan_at;delivery_date;delivered_at;country;postal_code;carrier;delivery_method;weight_kg;package_type;items_qty;cod_flag;delivery_status';
   const itemsHeader = 'order_id;sku;article_code;qty';
+  const stockHeader = 'sku;article_code;stock_qty';
 
   const ordersLines: string[] = [ordersHeader];
   const itemsLines: string[] = [itemsHeader];
+  const stockLines: string[] = [stockHeader];
 
   const countries = ['SK', 'CZ', 'HU', 'RO', 'PL', 'HR'];
   const skus = [
@@ -1521,6 +1555,12 @@ export function generateSampleGateCsvFiles(): { ordersCsv: string; itemsCsv: str
     ['825-0321/89', '825-0321'],
     ['825-0497/41', '825-0497'],
   ];
+
+  skus.forEach(([sku, art], idx) => {
+    stockLines.push(`${sku};${art};${120 + idx * 45}`);
+  });
+  stockLines.push('DEAD-324-0210/01;324-0210;65');
+  stockLines.push('DEAD-324-0233/02;324-0233;40');
 
   for (let i = 1; i <= 120; i++) {
     const ordId = `O${String(i).padStart(7, '0')}`;
@@ -1551,5 +1591,6 @@ export function generateSampleGateCsvFiles(): { ordersCsv: string; itemsCsv: str
   return {
     ordersCsv: ordersLines.join('\n'),
     itemsCsv: itemsLines.join('\n'),
+    stockCsv: stockLines.join('\n'),
   };
 }

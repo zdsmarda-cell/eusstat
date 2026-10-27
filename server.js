@@ -4691,51 +4691,26 @@ function generateSampleGateReport(svjBracketStats) {
     topActiveSkus,
     sampleDeadSkus
   };
-  const sampleMovements = Array.from({ length: 60 }, (_, idx) => {
-    const m = idx % 12 + 1;
-    const ym = `${year}-${String(m).padStart(2, "0")}`;
-    const qty = idx % 6 + 1;
-    const br = qty === 1 ? "1" : qty === 2 ? "2" : qty === 3 ? "3" : qty === 4 ? "4" : qty === 5 ? "5" : "6+";
-    const country = countryWeights[idx % countryWeights.length].code;
-    return {
-      warehouse: "gate",
-      sberny_box: `GATE-${country}`,
-      obsah_objednavek: `O${String(100001 + idx).padStart(7, "0")}`,
-      pocet_produktu: qty,
-      ean_produktu: topActiveSkus[idx % topActiveSkus.length].sku,
-      pocet_ks: qty,
-      zacatek_pickovani: `${ym}-15T08:00:00.000Z`,
-      konec_pickovani: `${ym}-15T08:01:00.000Z`,
-      zacatek_baleni: `${ym}-15T09:00:00.000Z`,
-      konec_baleni: `${ym}-15T09:01:00.000Z`,
-      pick_duration_s: 0,
-      pack_duration_s: 0,
-      pick_per_item_s: 0,
-      pack_per_item_s: 0,
-      total_per_item_s: 0,
-      bracket: br
-    };
-  });
   return {
-    report: {
-      warehouse: "gate",
-      totalOrders: grandTotalOrders,
-      totalUnits: grandTotalUnits,
-      avgUnitsPerOrder: Number((grandTotalUnits / grandTotalOrders).toFixed(2)),
-      totalActiveSkus,
-      totalActiveArticles: Math.round(totalActiveSkus * 0.34),
-      top80SkusCount: skusA,
-      top80SkusSharePct: Number((skusA / totalActiveSkus * 100).toFixed(1)),
-      monthsCount: 12,
-      dateFrom: "2025-01-01",
-      dateTo: "2025-12-31",
-      monthlyBreakdown,
-      countries,
-      abcAnalysis,
-      svjBenchmark,
-      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
-    },
-    sampleMovements
+    warehouse: "gate",
+    totalOrders: grandTotalOrders,
+    totalUnits: grandTotalUnits,
+    avgUnitsPerOrder: Number((grandTotalUnits / grandTotalOrders).toFixed(2)),
+    totalActiveSkus,
+    totalActiveArticles: Math.round(totalActiveSkus * 0.34),
+    top80SkusCount: skusA,
+    top80SkusSharePct: Number((skusA / totalActiveSkus * 100).toFixed(1)),
+    monthsCount: 12,
+    dateFrom: "2025-01-01",
+    dateTo: "2025-12-31",
+    ordersFileRows: grandTotalOrders,
+    itemsFileRows: grandTotalUnits,
+    stockFileRows: totalCatalogSkus,
+    monthlyBreakdown,
+    countries,
+    abcAnalysis,
+    svjBenchmark,
+    updatedAt: (/* @__PURE__ */ new Date()).toISOString()
   };
 }
 

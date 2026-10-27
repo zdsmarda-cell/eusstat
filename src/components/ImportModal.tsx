@@ -102,8 +102,8 @@ export const ImportModal: React.FC<ImportModalProps> = ({
 
     try {
       const res = await parseFileContent(selectedFile);
-      const tagged = res.records.map(r => ({ ...r, warehouse: targetWarehouse }));
-      setParseResult({ ...res, records: tagged });
+      const tagged = (res.records || []).map(r => ({ ...r, warehouse: targetWarehouse }));
+      setParseResult({ ...res, records: tagged, errors: res.errors || [] });
     } catch (err: any) {
       setImportError(err.message || 'Chyba při čtení souboru.');
       setParseResult(null);
@@ -112,10 +112,15 @@ export const ImportModal: React.FC<ImportModalProps> = ({
     }
   };
 
-  // SVJ 3-file handler
+  // SVJ 3-file handler (supports selecting all 3 at once or adding one by one)
   const handleSvjFilesChange = async (incomingFiles: FileList | File[]) => {
-    const fileArray = Array.from(incomingFiles);
-    if (fileArray.length === 0) return;
+    const incomingArray = Array.from(incomingFiles || []);
+    if (incomingArray.length === 0) return;
+
+    const mergedMap = new Map<string, File>();
+    for (const f of svjFiles) mergedMap.set(f.name, f);
+    for (const f of incomingArray) mergedMap.set(f.name, f);
+    const fileArray = incomingArray.length >= 3 ? incomingArray : Array.from(mergedMap.values());
 
     setSvjFiles(fileArray);
     setIsParsing(true);
@@ -124,8 +129,10 @@ export const ImportModal: React.FC<ImportModalProps> = ({
     try {
       const res = await parseSvjTriFilesFromRawFiles(fileArray);
       setSvjParseResult(res);
-      if (res.errors.length > 0 && res.records.length === 0) {
-        setImportError(res.errors.join(' '));
+      const errs = res?.errors || [];
+      const recs = res?.records || [];
+      if (errs.length > 0 && recs.length === 0) {
+        setImportError(errs.join(' '));
       }
     } catch (err: any) {
       setImportError(err.message || 'Chyba při zpracování SVJ souborů.');
@@ -135,10 +142,15 @@ export const ImportModal: React.FC<ImportModalProps> = ({
     }
   };
 
-  // Gate 2-3 CSV files streaming handler (hundreds of MBs)
+  // Gate 2-3 CSV files streaming handler (supports selecting together or adding one by one)
   const handleGateFilesChange = async (incomingFiles: FileList | File[]) => {
-    const fileArray = Array.from(incomingFiles);
-    if (fileArray.length === 0) return;
+    const incomingArray = Array.from(incomingFiles || []);
+    if (incomingArray.length === 0) return;
+
+    const mergedMap = new Map<string, File>();
+    for (const f of gateFiles) mergedMap.set(f.name, f);
+    for (const f of incomingArray) mergedMap.set(f.name, f);
+    const fileArray = incomingArray.length >= 2 ? incomingArray : Array.from(mergedMap.values());
 
     setGateFiles(fileArray);
     setIsParsing(true);
@@ -157,8 +169,9 @@ export const ImportModal: React.FC<ImportModalProps> = ({
         (prog) => setGateStreamProgress({ ...prog })
       );
       setGateParseResult(res);
-      if (res.errors.length > 0 && res.report.totalOrders === 0) {
-        setImportError(res.errors.join(' '));
+      const errs = res?.errors || [];
+      if (errs.length > 0 && (res?.report?.totalOrders || 0) === 0) {
+        setImportError(errs.join(' '));
       }
     } catch (err: any) {
       setImportError(err.message || 'Chyba při proudovém zpracování CSV souborů Gate.');
@@ -178,8 +191,8 @@ export const ImportModal: React.FC<ImportModalProps> = ({
     setImportError(null);
     try {
       const res = parseClipboardText(clipboardText);
-      const tagged = res.records.map(r => ({ ...r, warehouse: targetWarehouse }));
-      setParseResult({ ...res, records: tagged });
+      const tagged = (res.records || []).map(r => ({ ...r, warehouse: targetWarehouse }));
+      setParseResult({ ...res, records: tagged, errors: res.errors || [] });
     } catch (err: any) {
       setImportError(err.message || 'Chyba při zpracování textu.');
       setParseResult(null);
@@ -203,14 +216,14 @@ export const ImportModal: React.FC<ImportModalProps> = ({
 
   const handleSubmitImport = async () => {
     if (targetWarehouse === 'gate') {
-      if (!gateParseResult || gateParseResult.report.totalOrders === 0) return;
+      if (!gateParseResult || (gateParseResult.report?.totalOrders || 0) === 0) return;
       setIsImporting(true);
       setImportError(null);
       try {
         if (onGateImportComplete) {
           await onGateImportComplete(
             gateParseResult.report,
-            gateParseResult.sampleRecords,
+            gateParseResult.sampleRecords || gateParseResult.sampleMovements || [],
             replaceExisting
           );
         }
@@ -224,8 +237,8 @@ export const ImportModal: React.FC<ImportModalProps> = ({
     }
 
     const recordsToImport = targetWarehouse === 'svj'
-      ? (svjParseResult ? svjParseResult.records : [])
-      : (parseResult ? parseResult.records : []);
+      ? (svjParseResult?.records || [])
+      : (parseResult?.records || []);
 
     if (recordsToImport.length === 0) return;
 
@@ -641,7 +654,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
             {/* Gate 2+1 Status Slots */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
               <div className={`p-3 rounded-xl border text-xs ${
-                gateParseResult && gateParseResult.report.ordersFileRows > 0
+                gateParseResult && (gateParseResult.ordersFileRows || gateParseResult.report?.ordersFileRows || 0) > 0
                   ? 'bg-emerald-950/20 border-emerald-500/30 text-emerald-300'
                   : 'bg-slate-950 border-slate-800 text-slate-400'
               }`}>
@@ -650,14 +663,14 @@ export const ImportModal: React.FC<ImportModalProps> = ({
                   <span>1. Objednávky & Země</span>
                 </div>
                 <div className="text-[11px] mt-1 font-mono">
-                  {gateParseResult && gateParseResult.report.ordersFileRows > 0
-                    ? `✓ ${gateParseResult.report.totalOrders.toLocaleString('cs-CZ')} obj. (${gateParseResult.report.countryStats.length} zemí)`
+                  {gateParseResult && (gateParseResult.ordersFileRows || gateParseResult.report?.ordersFileRows || 0) > 0
+                    ? `✓ ${(gateParseResult.report?.totalOrders || 0).toLocaleString('cs-CZ')} obj. (${(gateParseResult.report?.countries || []).length} zemí)`
                     : (isCs ? 'order_id, country, items_qty...' : 'Waiting for Orders CSV...')}
                 </div>
               </div>
 
               <div className={`p-3 rounded-xl border text-xs ${
-                gateParseResult && gateParseResult.report.itemsFileRows > 0
+                gateParseResult && (gateParseResult.itemsFileRows || gateParseResult.report?.itemsFileRows || 0) > 0
                   ? 'bg-emerald-950/20 border-emerald-500/30 text-emerald-300'
                   : 'bg-slate-950 border-slate-800 text-slate-400'
               }`}>
@@ -666,14 +679,14 @@ export const ImportModal: React.FC<ImportModalProps> = ({
                   <span>2. Produktový obsah (SKU)</span>
                 </div>
                 <div className="text-[11px] mt-1 font-mono">
-                  {gateParseResult && gateParseResult.report.itemsFileRows > 0
-                    ? `✓ ${gateParseResult.report.itemsFileRows.toLocaleString('cs-CZ')} řádků (${gateParseResult.report.totalActiveSkus.toLocaleString('cs-CZ')} SKU)`
+                  {gateParseResult && (gateParseResult.itemsFileRows || gateParseResult.report?.itemsFileRows || 0) > 0
+                    ? `✓ ${(gateParseResult.itemsFileRows || gateParseResult.report?.itemsFileRows || 0).toLocaleString('cs-CZ')} řádků (${(gateParseResult.report?.totalActiveSkus || 0).toLocaleString('cs-CZ')} SKU)`
                     : (isCs ? 'order_id, sku, article_code, qty' : 'Waiting for Items CSV...')}
                 </div>
               </div>
 
               <div className={`p-3 rounded-xl border text-xs ${
-                gateParseResult && gateParseResult.report.totalCatalogSkus > 0
+                gateParseResult && (gateParseResult.report?.abcAnalysis?.totalCatalogSkus || 0) > 0
                   ? 'bg-emerald-950/20 border-emerald-500/30 text-emerald-300'
                   : 'bg-slate-950 border-slate-800 text-slate-400'
               }`}>
@@ -683,7 +696,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
                 </div>
                 <div className="text-[11px] mt-1 font-mono">
                   {gateParseResult
-                    ? `✓ ${gateParseResult.report.months.length} měsíců • ${gateParseResult.report.zeroMovementSkus.toLocaleString('cs-CZ')} SKU bez výdeje`
+                    ? `✓ ${(gateParseResult.report?.monthlyBreakdown || []).length || gateParseResult.report?.monthsCount || 0} měsíců • ${(gateParseResult.report?.abcAnalysis?.deadStockSkusCount || 0).toLocaleString('cs-CZ')} SKU bez výdeje`
                     : (isCs ? 'Volitelný CSV zásob / kalibrace' : 'Optional Stock CSV')}
                 </div>
               </div>
@@ -720,10 +733,10 @@ export const ImportModal: React.FC<ImportModalProps> = ({
               <span>{isCs ? 'Přehled připravených dat k importu:' : 'Prepared import data:'}</span>
               <span className="text-emerald-400 font-mono">
                 {targetWarehouse === 'svj'
-                  ? `${svjParseResult?.records.length.toLocaleString('cs-CZ')} objednávek (vše připraveno k importu)`
+                  ? `${(svjParseResult?.records || []).length.toLocaleString('cs-CZ')} objednávek (vše připraveno k importu)`
                   : targetWarehouse === 'gate'
-                  ? `${gateParseResult?.report.totalOrders.toLocaleString('cs-CZ')} objednávek • ${gateParseResult?.report.totalUnits.toLocaleString('cs-CZ')} ks (${gateParseResult?.report.months.length} měsíců)`
-                  : `${parseResult?.records.length.toLocaleString('cs-CZ')} zakázek`}
+                  ? `${(gateParseResult?.report?.totalOrders || 0).toLocaleString('cs-CZ')} objednávek • ${(gateParseResult?.report?.totalUnits || 0).toLocaleString('cs-CZ')} ks (${(gateParseResult?.report?.monthlyBreakdown || []).length || gateParseResult?.report?.monthsCount || 0} měsíců)`
+                  : `${(parseResult?.records || []).length.toLocaleString('cs-CZ')} zakázek`}
               </span>
             </div>
 
@@ -731,12 +744,12 @@ export const ImportModal: React.FC<ImportModalProps> = ({
               <div className="text-[11px] text-slate-400 space-y-1">
                 <div className="flex items-center justify-between">
                   <span>{isCs ? 'Celkem vypickováno v boxech (k importu do DB):' : 'Total picked in boxes (to DB import):'}</span>
-                  <span className="font-mono text-emerald-400 font-bold">{svjParseResult.uniqueOrdersPicked.toLocaleString('cs-CZ')} obj.</span>
+                  <span className="font-mono text-emerald-400 font-bold">{(svjParseResult.uniqueOrdersPicked || 0).toLocaleString('cs-CZ')} obj.</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span>{isCs ? 'Z toho prošlo procesem sortingu:' : 'Processed via sorting:'}</span>
                   <span className="font-mono text-purple-300">
-                    {svjParseResult.uniqueOrdersSorted.toLocaleString('cs-CZ')} obj.
+                    {(svjParseResult.uniqueOrdersSorted || 0).toLocaleString('cs-CZ')} obj.
                     {svjParseResult.totalUnitsSorted !== undefined && (
                       <span className="text-purple-400 font-semibold ml-1.5">
                         ({svjParseResult.totalUnitsSorted.toLocaleString('cs-CZ')} ks)
@@ -746,7 +759,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
                 </div>
                 <div className="flex items-center justify-between">
                   <span>{isCs ? 'Z toho ověřené ruční balení (vstup pro packing KPI):' : 'Manual packing (input for packing KPI):'}</span>
-                  <span className="font-mono text-indigo-300 font-bold">{svjParseResult.uniqueOrdersPacked.toLocaleString('cs-CZ')} obj.</span>
+                  <span className="font-mono text-indigo-300 font-bold">{(svjParseResult.uniqueOrdersPacked || 0).toLocaleString('cs-CZ')} obj.</span>
                 </div>
               </div>
             )}
@@ -755,18 +768,18 @@ export const ImportModal: React.FC<ImportModalProps> = ({
               <div className="text-[11px] text-slate-400 space-y-1">
                 <div className="flex items-center justify-between">
                   <span>{isCs ? 'Průměrný počet ks na 1 objednávku:' : 'Avg units per order:'}</span>
-                  <span className="font-mono text-emerald-400 font-bold">{gateParseResult.report.avgUnitsPerOrder.toFixed(2)} ks / obj.</span>
+                  <span className="font-mono text-emerald-400 font-bold">{Number(gateParseResult.report?.avgUnitsPerOrder || 0).toFixed(2)} ks / obj.</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span>{isCs ? 'Paretovo pravidlo 80 % produkce / aktivní SKU:' : '80% Pareto SKU / Active SKUs:'}</span>
                   <span className="font-mono text-cyan-300 font-bold">
-                    {gateParseResult.report.skusFor80PctTotal.toLocaleString('cs-CZ')} SKU ({gateParseResult.report.skusFor80PctShare.toFixed(1)} %) z {gateParseResult.report.totalActiveSkus.toLocaleString('cs-CZ')} aktivních SKU
+                    {(gateParseResult.report?.top80SkusCount || 0).toLocaleString('cs-CZ')} SKU ({Number(gateParseResult.report?.top80SkusSharePct || 0).toFixed(1)} %) z {(gateParseResult.report?.totalActiveSkus || 0).toLocaleString('cs-CZ')} aktivních SKU
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span>{isCs ? 'Nadzásoba nad 3 průměrné měsíce / ležáky bez výdeje:' : 'Excess stock (>3m) / Zero-movement dead stock:'}</span>
                   <span className="font-mono text-amber-300 font-bold">
-                    {gateParseResult.report.abcSummary.excessReplenishmentSkus.toLocaleString('cs-CZ')} SKU nadzásoba • {gateParseResult.report.abcSummary.deadStockSkus.toLocaleString('cs-CZ')} SKU bez výdeje
+                    {(gateParseResult.report?.abcAnalysis?.excessReplenishSkusCount || 0).toLocaleString('cs-CZ')} SKU nadzásoba • {(gateParseResult.report?.abcAnalysis?.deadStockSkusCount || 0).toLocaleString('cs-CZ')} SKU bez výdeje
                   </span>
                 </div>
               </div>
@@ -805,10 +818,10 @@ export const ImportModal: React.FC<ImportModalProps> = ({
                 isImporting ||
                 isParsing ||
                 (targetWarehouse === 'svj'
-                  ? !svjParseResult || svjParseResult.records.length === 0
+                  ? !svjParseResult || (svjParseResult.records || []).length === 0
                   : targetWarehouse === 'gate'
-                  ? !gateParseResult || gateParseResult.report.totalOrders === 0
-                  : !parseResult || parseResult.records.length === 0)
+                  ? !gateParseResult || (gateParseResult.report?.totalOrders || 0) === 0
+                  : !parseResult || (parseResult.records || []).length === 0)
               }
               className="px-5 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white rounded-xl text-xs font-bold shadow-lg shadow-indigo-500/20 disabled:opacity-40 transition-all flex items-center space-x-2 cursor-pointer"
             >

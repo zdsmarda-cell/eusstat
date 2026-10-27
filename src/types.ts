@@ -657,6 +657,9 @@ export interface GateAnalyticsReport {
   monthsCount: number;
   dateFrom: string;
   dateTo: string;
+  ordersFileRows?: number;
+  itemsFileRows?: number;
+  stockFileRows?: number;
   monthlyBreakdown: GateMonthlyBreakdown[];
   countries: GateCountryStat[];
   abcAnalysis: GateAbcSummary;
