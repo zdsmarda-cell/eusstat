@@ -22,8 +22,11 @@ import {
 import { PeriodExecutiveSummary } from './components/PeriodExecutiveSummary.js';
 import { WarehouseComparisonSummary } from './components/WarehouseComparisonSummary.js';
 import { SvjSortingSection } from './components/SvjSortingSection.js';
+import { GateWarehouseDashboard } from './components/GateWarehouseDashboard.js';
+import { generateSampleGateReport } from './utils/gateParser.js';
 import { downloadHtmlReport } from './utils/htmlReportGenerator.js';
 import { apiUrl, authFetch } from './config/api.js';
+import { GateAnalyticsReport } from './types.js';
 import {
   AlertCircle,
   CheckCircle2,
@@ -37,15 +40,18 @@ import {
   Scale,
   PlusCircle,
   ChevronDown,
+  BarChart3,
 } from 'lucide-react';
 
-export type WarehouseTab = 'ruse' | 'svj' | 'summary';
+export type WarehouseTab = 'ruse' | 'svj' | 'gate' | 'summary';
 
 interface CachedAnalyticsSummary {
-  warehouse: 'ruse' | 'svj' | 'all';
+  warehouse: 'ruse' | 'svj' | 'gate' | 'all';
   recordCount: number;
   ruseCount: number;
   svjCount: number;
+  gateCount?: number;
+  gateReport?: GateAnalyticsReport | null;
   bracketStats: any[];
   dailyStats: any[];
   dailyReport?: any;
@@ -66,10 +72,11 @@ function Dashboard() {
   const isCs = lang === 'cs';
 
   const [records, setRecords] = useState<MovementRecord[]>([]);
+  const [gateReport, setGateReport] = useState<GateAnalyticsReport | null>(null);
   const [activeTab, setActiveTab] = useState<WarehouseTab>(() => {
     try {
       const saved = localStorage.getItem('active_warehouse_tab') as WarehouseTab;
-      if (saved === 'ruse' || saved === 'svj' || saved === 'summary') {
+      if (saved === 'ruse' || saved === 'svj' || saved === 'gate' || saved === 'summary') {
         return saved;
       }
     } catch {
@@ -110,11 +117,23 @@ function Dashboard() {
 
   // Fetch summary analytics from server / DB helper table cache with active filters
   const fetchAnalyticsSummary = useCallback(async (
-    warehouse: 'ruse' | 'svj' | 'all' = 'all',
+    warehouse: 'ruse' | 'svj' | 'gate' | 'all' = 'all',
     forceRefresh: boolean = false,
     customFilter?: FilterState
   ) => {
     try {
+      if (warehouse === 'gate') {
+        const res = await authFetch(apiUrl('/api/gate/summary'));
+        if (res.ok) {
+          const data = await res.json();
+          if (data.success && data.gateReport) {
+            setGateReport(data.gateReport);
+            return data;
+          }
+        }
+        return null;
+      }
+
       const activeF = customFilter || filter;
       const params = new URLSearchParams({
         warehouse,
@@ -133,6 +152,9 @@ function Dashboard() {
         const data = await res.json();
         if (data.success) {
           setServerAnalytics(prev => ({ ...prev, [warehouse]: data }));
+          if (data.gateReport) {
+            setGateReport(data.gateReport);
+          }
           return data;
         }
       }
@@ -172,6 +194,7 @@ function Dashboard() {
             newAnalytics.all = sumData;
             if (sumData.ruseSummary) newAnalytics.ruse = sumData.ruseSummary;
             if (sumData.svjSummary) newAnalytics.svj = sumData.svjSummary;
+            if (sumData.gateReport) setGateReport(sumData.gateReport);
           }
         } catch {
           // ignore
@@ -447,11 +470,55 @@ function Dashboard() {
     }
   };
 
-  // Seed sample data for Ruse, SVJ, or both
-  const handleLoadSampleData = async (target: 'ruse' | 'svj' | 'both' = 'both') => {
+  // Seed sample data for Ruse, SVJ, Gate, or both
+  const handleLoadSampleData = async (target: 'ruse' | 'svj' | 'gate' | 'both' = 'both') => {
     setIsLoading(true);
     setIsSampleMenuOpen(false);
     try {
+      if (target === 'gate') {
+        const svjBrackets = serverAnalytics.svj?.bracketStats || serverAnalytics.all?.svjSummary?.bracketStats;
+        try {
+          const res = await authFetch(apiUrl('/api/movements/seed-gate'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ svjBracketStats: svjBrackets }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.gateReport) {
+              setGateReport(data.gateReport);
+            }
+            await fetchData();
+            setActiveTab('gate');
+            try {
+              localStorage.setItem('active_warehouse_tab', 'gate');
+            } catch {
+              // ignore
+            }
+            showToast(
+              data.message ||
+                (isCs
+                  ? 'Vygenerována 12měsíční datová analytika skladu Gate!'
+                  : '12-month Gate warehouse analytics generated!'),
+              'success'
+            );
+            return;
+          }
+        } catch {
+          // Fallback to client-side sample generation
+        }
+        const localGate = generateSampleGateReport(svjBrackets);
+        setGateReport(localGate);
+        setActiveTab('gate');
+        showToast(
+          isCs
+            ? `Vygenerována 12měsíční datová analytika skladu Gate (${localGate.totalOrders.toLocaleString('cs-CZ')} objednávek)!`
+            : `12-month Gate warehouse analytics generated!`,
+          'success'
+        );
+        return;
+      }
+
       if (target === 'both') {
         const [ruseRes, svjRes] = await Promise.all([
           authFetch(apiUrl('/api/movements/seed-sample'), {
@@ -498,6 +565,46 @@ function Dashboard() {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  // Gate import handler (stores aggregated GateAnalyticsReport + sample records on server)
+  const handleGateImportComplete = async (
+    report: GateAnalyticsReport,
+    sampleRecords: MovementRecord[],
+    replaceExisting: boolean = true
+  ) => {
+    setGateReport(report);
+    try {
+      const res = await authFetch(apiUrl('/api/gate/import'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          report,
+          sampleRecords,
+          replaceExisting,
+        }),
+      });
+      if (!res.ok) {
+        const txt = await res.text();
+        console.warn('Varování při ukládání Gate reportu na server:', txt);
+      }
+    } catch (e) {
+      console.warn('Lokální režim Gate reportu:', e);
+    }
+
+    setActiveTab('gate');
+    try {
+      localStorage.setItem('active_warehouse_tab', 'gate');
+    } catch {
+      // ignore
+    }
+    await fetchData();
+    showToast(
+      isCs
+        ? `Úspěšně zpracováno a uloženo ${report.totalOrders.toLocaleString('cs-CZ')} objednávek (${report.totalUnits.toLocaleString('cs-CZ')} ks) pro sklad Gate!`
+        : `Successfully processed and saved ${report.totalOrders.toLocaleString()} orders for Gate warehouse!`,
+      'success'
+    );
   };
 
   // Import handler with warehouse scope preservation
@@ -728,7 +835,36 @@ function Dashboard() {
               </span>
             </button>
 
-            {/* Tab 3: Srovnání skladů (Summary) */}
+            {/* Tab 3: Sklad Gate (Datová analytika 12M, Země, ABC zásoby & FTE dle SVJ) */}
+            <button
+              onClick={() => handleTabChange('gate')}
+              className={`flex items-center space-x-2.5 px-4 py-2.5 rounded-2xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
+                activeTab === 'gate'
+                  ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-500/25 ring-2 ring-emerald-400/40'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+              }`}
+            >
+              <BarChart3 className={`w-4 h-4 ${activeTab === 'gate' ? 'text-emerald-200' : 'text-emerald-400'}`} />
+              <span>{isCs ? 'Sklad Gate' : 'Gate Warehouse'}</span>
+              <span
+                className={`px-2 py-0.5 rounded-full text-[11px] font-mono font-bold ${
+                  activeTab === 'gate' ? 'bg-emerald-700/80 text-emerald-100' : 'bg-slate-800 text-slate-400'
+                }`}
+              >
+                {(gateReport?.totalOrders ?? serverAnalytics.all?.gateCount ?? 0).toLocaleString('cs-CZ')}
+              </span>
+              <span
+                className={`hidden lg:inline-block px-1.5 py-0.5 rounded text-[10px] uppercase font-bold border ${
+                  activeTab === 'gate'
+                    ? 'bg-emerald-700/60 text-emerald-100 border-emerald-400/50'
+                    : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                }`}
+              >
+                {isCs ? 'ABC & FTE' : 'ABC & FTE'}
+              </span>
+            </button>
+
+            {/* Tab 4: Srovnání skladů (Summary) */}
             <button
               onClick={() => handleTabChange('summary')}
               className={`flex items-center space-x-2.5 px-4 py-2.5 rounded-2xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
@@ -764,7 +900,14 @@ function Dashboard() {
               </button>
 
               {isSampleMenuOpen && (
-                <div className="absolute right-0 top-full mt-1.5 w-60 bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl p-1.5 z-40 animate-in fade-in zoom-in-95 duration-150">
+                <div className="absolute right-0 top-full mt-1.5 w-64 bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl p-1.5 z-40 animate-in fade-in zoom-in-95 duration-150">
+                  <button
+                    onClick={() => handleLoadSampleData('gate')}
+                    className="w-full text-left px-3 py-2 text-xs font-medium text-emerald-300 hover:bg-slate-800 rounded-xl transition-colors flex items-center justify-between cursor-pointer"
+                  >
+                    <span>{isCs ? 'Sklad Gate (12 měsíců + ABC)' : 'Gate Warehouse (12 months)'}</span>
+                    <span className="text-[10px] text-emerald-400 font-mono">12 měs.</span>
+                  </button>
                   <button
                     onClick={() => handleLoadSampleData('both')}
                     className="w-full text-left px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800 rounded-xl transition-colors flex items-center justify-between cursor-pointer"
@@ -801,16 +944,18 @@ function Dashboard() {
           </div>
         </div>
 
-        {/* Global Filter Bar */}
-        <FilterBar
-          filter={filter}
-          onChange={handleFilterChange}
-          onReset={() => handleFilterChange(initialFilter)}
-          onExportHtml={handleExportHtml}
-          totalFilteredCount={activeWarehouseFilteredCount}
-          totalAllCount={activeWarehouseTotalAllCount}
-          isFiltering={isFiltering}
-        />
+        {/* Global Filter Bar (pro sklady Ruse, SVJ a Summary) */}
+        {activeTab !== 'gate' && (
+          <FilterBar
+            filter={filter}
+            onChange={handleFilterChange}
+            onReset={() => handleFilterChange(initialFilter)}
+            onExportHtml={handleExportHtml}
+            totalFilteredCount={activeWarehouseFilteredCount}
+            totalAllCount={activeWarehouseTotalAllCount}
+            isFiltering={isFiltering}
+          />
+        )}
 
         {/* PROMINENT LOADING SPINNER ("kolečko") - Shown on initial load & tab switching */}
         {isLoading || isTabSwitching ? (
@@ -830,6 +975,17 @@ function Dashboard() {
               </p>
             </div>
           </div>
+        ) : activeTab === 'gate' ? (
+          /* ========================================================
+             GATE WAREHOUSE DASHBOARD (12M Order Structure, Countries, ABC Stock & FTE)
+             ======================================================== */
+          <GateWarehouseDashboard
+            report={gateReport || serverAnalytics.all?.gateReport || null}
+            svjBracketStats={serverAnalytics.svj?.bracketStats || serverAnalytics.all?.svjSummary?.bracketStats}
+            onOpenImport={() => setIsImportModalOpen(true)}
+            onLoadSampleGate={() => handleLoadSampleData('gate')}
+            isLoading={isLoading}
+          />
         ) : activeTab === 'summary' ? (
           /* ========================================================
              CROSS-WAREHOUSE SUMMARY TAB (Ruse vs SVJ KPI Comparison)
@@ -1025,7 +1181,7 @@ function Dashboard() {
 
       {/* Footer */}
       <footer className="border-t border-slate-900 bg-slate-950 py-6 text-center text-xs text-slate-500">
-        <p>Warehouse Pick & Pack Performance Analytics • {isCs ? 'Optimalizováno pro sklady Ruse & SVJ s MariaDB' : 'Optimized for Ruse & SVJ warehouses with MariaDB'}</p>
+        <p>Warehouse Pick & Pack Performance Analytics • {isCs ? 'Optimalizováno pro sklady Ruse, SVJ & Gate s MariaDB' : 'Optimized for Ruse, SVJ & Gate warehouses with MariaDB'}</p>
       </footer>
 
       {/* Modals */}
@@ -1033,6 +1189,8 @@ function Dashboard() {
         isOpen={isImportModalOpen}
         onClose={() => setIsImportModalOpen(false)}
         onImportComplete={handleImportComplete}
+        onGateImportComplete={handleGateImportComplete}
+        svjBracketStats={serverAnalytics.svj?.bracketStats || serverAnalytics.all?.svjSummary?.bracketStats}
         dbStatus={dbStatus}
         initialWarehouse={activeTab === 'summary' ? 'ruse' : activeTab}
       />

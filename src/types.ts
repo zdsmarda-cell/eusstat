@@ -21,7 +21,7 @@ export interface DbStatus {
   lastError?: string;
 }
 
-export type WarehouseId = 'ruse' | 'svj';
+export type WarehouseId = 'ruse' | 'svj' | 'gate';
 
 export interface MovementRecord {
   id?: string | number;
@@ -519,4 +519,149 @@ export interface SvjSortingBypassReport {
   grandTotalNetHours: number;
   grandLeadTimeSavedMin: number;
 }
+
+// =========================================================================
+// SKLAD GATE — DATOVÁ ANALÝZA OBJEDNÁVEK, ZEMÍ, ABC ZÁSOB A FTE DLE SVJ
+// =========================================================================
+
+export interface GateBracketBucket {
+  orders: number;
+  units: number;
+  orderSharePct: number;
+  unitSharePct: number;
+}
+
+export interface GateMonthlyFte {
+  pickHours: number;
+  sortHours: number;
+  packHours: number;
+  totalHours: number;
+  pickFte: number;
+  sortFte: number;
+  packFte: number;
+  totalFte: number;
+}
+
+export interface GateMonthlyBreakdown {
+  month: string; // YYYY-MM
+  monthLabelCs: string;
+  monthLabelEn: string;
+  totalOrders: number;
+  totalUnits: number;
+  avgUnitsPerOrder: number;
+  activeSkusCount: number;
+  activeArticlesCount: number;
+  top80SkusCount: number;
+  top80SkusSharePct: number;
+  top80Units: number;
+  remaining20SkusCount: number;
+  brackets: {
+    '1': GateBracketBucket;
+    '2': GateBracketBucket;
+    '3': GateBracketBucket;
+    '4': GateBracketBucket;
+    '5+': GateBracketBucket;
+    '5': GateBracketBucket;
+    '6+': GateBracketBucket;
+  };
+  countryBreakdown: Record<string, { orders: number; units: number }>;
+  fte: GateMonthlyFte;
+}
+
+export interface GateCountryStat {
+  country: string;
+  countryNameCs: string;
+  countryNameEn: string;
+  orders: number;
+  orderSharePct: number;
+  units: number;
+  unitSharePct: number;
+  avgUnitsPerOrder: number;
+  avgWeightKg: number;
+  codSharePct: number;
+  pudoSharePct: number;
+  bagSharePct: number;
+}
+
+export interface GateSkuAbcItem {
+  sku: string;
+  articleCode: string;
+  abcClass: 'A' | 'B' | 'C' | 'DEAD';
+  annualUnits: number;
+  ordersCount: number;
+  activeMonths: number;
+  avgMonthlyUnits: number;
+  threeMonthTargetUnits: number;
+  currentStockUnits: number;
+  coveredThreeMonthUnits: number;
+  excessReplenishUnits: number;
+  shortageUnits: number;
+  shareOfVolumePct: number;
+}
+
+export interface GateAbcClassSummary {
+  skusCount: number;
+  skuSharePct: number;
+  annualUnits: number;
+  unitSharePct: number;
+  threeMonthTargetUnits: number;
+  currentStockUnits: number;
+  coveredThreeMonthUnits: number;
+  excessUnits: number;
+  excessSkusCount: number;
+}
+
+export interface GateAbcSummary {
+  totalCatalogSkus: number;
+  activeSkusCount: number;
+  deadStockSkusCount: number;
+  deadStockUnits: number;
+  totalStockUnits: number;
+  totalAnnualIssuedUnits: number;
+  threeMonthDemandUnits: number;
+  coveredThreeMonthUnits: number;
+  coveredThreeMonthSkusCount: number;
+  excessReplenishSkusCount: number;
+  excessReplenishUnits: number;
+  hasExplicitStockFile: boolean;
+  classBreakdown: {
+    A: GateAbcClassSummary;
+    B: GateAbcClassSummary;
+    C: GateAbcClassSummary;
+    DEAD: GateAbcClassSummary;
+  };
+  topExcessSkus: GateSkuAbcItem[];
+  topActiveSkus: GateSkuAbcItem[];
+  sampleDeadSkus: GateSkuAbcItem[];
+}
+
+export interface GateSvjBenchmarkRates {
+  source: 'svj_db' | 'svj_default';
+  useMedian: boolean;
+  bypassSingleItemSort: boolean;
+  monthlyFteHoursNorm: number;
+  pickSecByBracket: Record<ItemBracket, number>;
+  sortSecByBracket: Record<ItemBracket, number>;
+  packSecByBracket: Record<ItemBracket, number>;
+}
+
+export interface GateAnalyticsReport {
+  warehouse: 'gate';
+  totalOrders: number;
+  totalUnits: number;
+  avgUnitsPerOrder: number;
+  totalActiveSkus: number;
+  totalActiveArticles: number;
+  top80SkusCount: number;
+  top80SkusSharePct: number;
+  monthsCount: number;
+  dateFrom: string;
+  dateTo: string;
+  monthlyBreakdown: GateMonthlyBreakdown[];
+  countries: GateCountryStat[];
+  abcAnalysis: GateAbcSummary;
+  svjBenchmark: GateSvjBenchmarkRates;
+  updatedAt: string;
+}
+
 

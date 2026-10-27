@@ -13,7 +13,7 @@ interface HeaderProps {
   onExportHtml?: () => void;
   isLoading: boolean;
   totalRecordsCount: number;
-  activeTab?: 'ruse' | 'svj' | 'summary';
+  activeTab?: 'ruse' | 'svj' | 'gate' | 'summary';
 }
 
 export const Header: React.FC<HeaderProps> = ({

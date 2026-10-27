@@ -561,7 +561,7 @@ function normalizeDbRow(row) {
   const packPerItem = row.pack_per_item_s !== null && row.pack_per_item_s !== void 0 ? Number(row.pack_per_item_s) || 0 : packDur > 0 ? Number((packDur / units).toFixed(2)) : 0;
   const totalPerItem = Number((pickPerItem + sortPerItem + packPerItem).toFixed(2));
   const rawWh = row.warehouse ? String(row.warehouse).trim().toLowerCase() : "ruse";
-  const warehouse = rawWh === "svj" ? "svj" : "ruse";
+  const warehouse = rawWh === "svj" ? "svj" : rawWh === "gate" ? "gate" : "ruse";
   let bracket = String(row.bracket || "").trim();
   if (!["1", "2", "3", "4", "5", "6+"].includes(bracket)) {
     bracket = units >= 6 ? "6+" : String(units);
@@ -821,7 +821,15 @@ async function saveCachedStats(cacheKey, warehouse, recordCount, stats) {
   }
 }
 async function clearStatsCache(warehouse) {
-  statsMemoryCache.clear();
+  if (warehouse && warehouse !== "all") {
+    for (const k of Array.from(statsMemoryCache.keys())) {
+      if (k.startsWith(`summary_${warehouse}`) || k.startsWith("summary_all")) {
+        statsMemoryCache.delete(k);
+      }
+    }
+  } else {
+    statsMemoryCache.clear();
+  }
   const p = await getPool();
   if (p) {
     try {
@@ -4265,6 +4273,472 @@ function generateSampleSvjData(daysBack = 14, totalBoxesCount = 40) {
   return records;
 }
 
+// src/utils/gateParser.ts
+var COUNTRY_NAMES = {
+  SK: { cs: "Slovensko (SK)", en: "Slovakia (SK)" },
+  CZ: { cs: "\u010Cesk\xE1 republika (CZ)", en: "Czechia (CZ)" },
+  HU: { cs: "Ma\u010Farsko (HU)", en: "Hungary (HU)" },
+  RO: { cs: "Rumunsko (RO)", en: "Romania (RO)" },
+  PL: { cs: "Polsko (PL)", en: "Poland (PL)" },
+  HR: { cs: "Chorvatsko (HR)", en: "Croatia (HR)" },
+  SI: { cs: "Slovinsko (SI)", en: "Slovenia (SI)" },
+  BG: { cs: "Bulharsko (BG)", en: "Bulgaria (BG)" },
+  AT: { cs: "Rakousko (AT)", en: "Austria (AT)" },
+  DE: { cs: "N\u011Bmecko (DE)", en: "Germany (DE)" },
+  IT: { cs: "It\xE1lie (IT)", en: "Italy (IT)" },
+  GR: { cs: "\u0158ecko (GR)", en: "Greece (GR)" }
+};
+var MONTH_NAMES_CS = [
+  "Leden",
+  "\xDAnor",
+  "B\u0159ezen",
+  "Duben",
+  "Kv\u011Bten",
+  "\u010Cerven",
+  "\u010Cervenec",
+  "Srpen",
+  "Z\xE1\u0159\xED",
+  "\u0158\xEDjen",
+  "Listopad",
+  "Prosinec"
+];
+var MONTH_NAMES_EN = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December"
+];
+function getMonthLabels(ym) {
+  const parts = ym.split("-");
+  if (parts.length !== 2) return { cs: ym, en: ym };
+  const year = parts[0];
+  const mIdx = parseInt(parts[1], 10) - 1;
+  if (isNaN(mIdx) || mIdx < 0 || mIdx > 11) return { cs: ym, en: ym };
+  return {
+    cs: `${MONTH_NAMES_CS[mIdx]} ${year}`,
+    en: `${MONTH_NAMES_EN[mIdx]} ${year}`
+  };
+}
+function getDefaultSvjBenchmarkRates(svjBracketStats) {
+  const defaultPick = {
+    "1": 31.5,
+    "2": 27.8,
+    "3": 25.4,
+    "4": 23.6,
+    "5": 22.1,
+    "6+": 19.8
+  };
+  const defaultSort = {
+    "1": 0,
+    // 1-kusové v SVJ standardně míjí sorting
+    "2": 13.6,
+    "3": 13.4,
+    "4": 13.2,
+    "5": 13,
+    "6+": 12.6
+  };
+  const defaultPack = {
+    "1": 16.5,
+    "2": 15.2,
+    "3": 14.4,
+    "4": 13.8,
+    "5": 13.2,
+    "6+": 12.5
+  };
+  if (svjBracketStats && svjBracketStats.length > 0) {
+    const allStat = svjBracketStats.find((b) => b.bracket === "all");
+    const fallbackSort = allStat?.medianSortPerItemSec || allStat?.avgSortPerItemSec || 13.5;
+    for (const b of ["1", "2", "3", "4", "5", "6+"]) {
+      const found = svjBracketStats.find((s) => s.bracket === b);
+      if (found && found.shipmentCount > 0) {
+        if (found.medianPickPerItemSec > 0) defaultPick[b] = found.medianPickPerItemSec;
+        else if (found.avgPickPerItemSec > 0) defaultPick[b] = found.avgPickPerItemSec;
+        if (b === "1") {
+          defaultSort[b] = 0;
+        } else if (found.medianSortPerItemSec && found.medianSortPerItemSec > 0) {
+          defaultSort[b] = found.medianSortPerItemSec;
+        } else if (found.avgSortPerItemSec && found.avgSortPerItemSec > 0) {
+          defaultSort[b] = found.avgSortPerItemSec;
+        } else {
+          defaultSort[b] = fallbackSort;
+        }
+        if (found.medianPackPerItemSec > 0) defaultPack[b] = found.medianPackPerItemSec;
+        else if (found.avgPackPerItemSec > 0) defaultPack[b] = found.avgPackPerItemSec;
+      }
+    }
+    return {
+      source: "svj_db",
+      useMedian: true,
+      bypassSingleItemSort: true,
+      monthlyFteHoursNorm: 160,
+      pickSecByBracket: defaultPick,
+      sortSecByBracket: defaultSort,
+      packSecByBracket: defaultPack
+    };
+  }
+  return {
+    source: "svj_default",
+    useMedian: true,
+    bypassSingleItemSort: true,
+    monthlyFteHoursNorm: 160,
+    pickSecByBracket: defaultPick,
+    sortSecByBracket: defaultSort,
+    packSecByBracket: defaultPack
+  };
+}
+function computeMonthlyFteFromBrackets(brackets, rates) {
+  const normHours = Math.max(40, rates.monthlyFteHoursNorm || 160);
+  let pickSec = 0;
+  let sortSec = 0;
+  let packSec = 0;
+  for (const b of ["1", "2", "3", "4", "5", "6+"]) {
+    const units = brackets[b]?.units || 0;
+    if (units <= 0) continue;
+    const pRate = rates.pickSecByBracket[b] ?? 25;
+    const sRate = b === "1" && rates.bypassSingleItemSort ? 0 : rates.sortSecByBracket[b] ?? 13.5;
+    const pkRate = rates.packSecByBracket[b] ?? 15;
+    pickSec += units * pRate;
+    sortSec += units * sRate;
+    packSec += units * pkRate;
+  }
+  const pickHours = Number((pickSec / 3600).toFixed(1));
+  const sortHours = Number((sortSec / 3600).toFixed(1));
+  const packHours = Number((packSec / 3600).toFixed(1));
+  const totalHours = Number((pickHours + sortHours + packHours).toFixed(1));
+  const pickFte = Number((pickHours / normHours).toFixed(2));
+  const sortFte = Number((sortHours / normHours).toFixed(2));
+  const packFte = Number((packHours / normHours).toFixed(2));
+  const totalFte = Number((pickFte + sortFte + packFte).toFixed(2));
+  return {
+    pickHours,
+    sortHours,
+    packHours,
+    totalHours,
+    pickFte,
+    sortFte,
+    packFte,
+    totalFte
+  };
+}
+function generateSampleGateReport(svjBracketStats) {
+  const svjBenchmark = getDefaultSvjBenchmarkRates(svjBracketStats);
+  const year = 2025;
+  const seasonalMultipliers = [0.78, 0.74, 0.88, 0.94, 0.98, 0.92, 0.85, 0.9, 1.08, 1.22, 1.48, 1.36];
+  const baseMonthlyOrders = 42500;
+  const countryWeights = [
+    { code: "SK", share: 0.34, avgUnits: 3.15, weightKg: 1.28, codPct: 48.5, pudoPct: 68.2, bagPct: 76.4 },
+    { code: "CZ", share: 0.28, avgUnits: 2.95, weightKg: 1.22, codPct: 32, pudoPct: 74.5, bagPct: 78 },
+    { code: "RO", share: 0.14, avgUnits: 3.65, weightKg: 1.54, codPct: 64, pudoPct: 44, bagPct: 71.2 },
+    { code: "HU", share: 0.11, avgUnits: 3.25, weightKg: 1.35, codPct: 54.2, pudoPct: 58, bagPct: 74 },
+    { code: "PL", share: 0.07, avgUnits: 2.85, weightKg: 1.18, codPct: 29.5, pudoPct: 81, bagPct: 79.5 },
+    { code: "HR", share: 0.04, avgUnits: 3.4, weightKg: 1.42, codPct: 58, pudoPct: 49, bagPct: 72.5 },
+    { code: "SI", share: 0.02, avgUnits: 3.1, weightKg: 1.3, codPct: 38, pudoPct: 52, bagPct: 75 }
+  ];
+  const monthlyBreakdown = [];
+  let grandTotalOrders = 0;
+  let grandTotalUnits = 0;
+  const countryTotals = /* @__PURE__ */ new Map();
+  for (let m = 0; m < 12; m++) {
+    const ym = `${year}-${String(m + 1).padStart(2, "0")}`;
+    const labels = getMonthLabels(ym);
+    const mult = seasonalMultipliers[m];
+    const totOrd = Math.round(baseMonthlyOrders * mult);
+    const p1 = Number((28.5 - (mult - 1) * 4.5 + (m % 3 - 1) * 0.6).toFixed(1));
+    const p2 = Number((24 - (mult - 1) * 1.5).toFixed(1));
+    const p3 = Number((17.5 + (mult - 1) * 1).toFixed(1));
+    const p4 = Number((12.2 + (mult - 1) * 1.5).toFixed(1));
+    const p5Plus = Number((100 - (p1 + p2 + p3 + p4)).toFixed(1));
+    const ord1 = Math.round(totOrd * (p1 / 100));
+    const ord2 = Math.round(totOrd * (p2 / 100));
+    const ord3 = Math.round(totOrd * (p3 / 100));
+    const ord4 = Math.round(totOrd * (p4 / 100));
+    const ord5Plus = Math.max(0, totOrd - (ord1 + ord2 + ord3 + ord4));
+    const ord5 = Math.round(ord5Plus * 0.38);
+    const ord6Plus = Math.max(0, ord5Plus - ord5);
+    const u1 = ord1 * 1;
+    const u2 = ord2 * 2;
+    const u3 = ord3 * 3;
+    const u4 = ord4 * 4;
+    const u5 = ord5 * 5;
+    const u6Plus = Math.round(ord6Plus * 7.8);
+    const u5Plus = u5 + u6Plus;
+    const totUnits = u1 + u2 + u3 + u4 + u5Plus;
+    grandTotalOrders += totOrd;
+    grandTotalUnits += totUnits;
+    const activeSkusCount = Math.round(8400 + mult * 2800);
+    const activeArticlesCount = Math.round(activeSkusCount * 0.34);
+    const top80SkusSharePct = Number((18.4 + m % 4 * 0.7).toFixed(1));
+    const top80SkusCount = Math.round(activeSkusCount * (top80SkusSharePct / 100));
+    const bracketsObj = {
+      "1": { orders: ord1, units: u1, orderSharePct: Number((ord1 / totOrd * 100).toFixed(1)), unitSharePct: Number((u1 / totUnits * 100).toFixed(1)) },
+      "2": { orders: ord2, units: u2, orderSharePct: Number((ord2 / totOrd * 100).toFixed(1)), unitSharePct: Number((u2 / totUnits * 100).toFixed(1)) },
+      "3": { orders: ord3, units: u3, orderSharePct: Number((ord3 / totOrd * 100).toFixed(1)), unitSharePct: Number((u3 / totUnits * 100).toFixed(1)) },
+      "4": { orders: ord4, units: u4, orderSharePct: Number((ord4 / totOrd * 100).toFixed(1)), unitSharePct: Number((u4 / totUnits * 100).toFixed(1)) },
+      "5+": { orders: ord5Plus, units: u5Plus, orderSharePct: Number((ord5Plus / totOrd * 100).toFixed(1)), unitSharePct: Number((u5Plus / totUnits * 100).toFixed(1)) },
+      "5": { orders: ord5, units: u5, orderSharePct: Number((ord5 / totOrd * 100).toFixed(1)), unitSharePct: Number((u5 / totUnits * 100).toFixed(1)) },
+      "6+": { orders: ord6Plus, units: u6Plus, orderSharePct: Number((ord6Plus / totOrd * 100).toFixed(1)), unitSharePct: Number((u6Plus / totUnits * 100).toFixed(1)) }
+    };
+    const countryBreakdown = {};
+    for (const cw of countryWeights) {
+      const cOrd = Math.round(totOrd * cw.share);
+      const cUnits = Math.round(totUnits * cw.share);
+      countryBreakdown[cw.code] = { orders: cOrd, units: cUnits };
+      const prev = countryTotals.get(cw.code) || { orders: 0, units: 0 };
+      prev.orders += cOrd;
+      prev.units += cUnits;
+      countryTotals.set(cw.code, prev);
+    }
+    const fte = computeMonthlyFteFromBrackets(bracketsObj, svjBenchmark);
+    monthlyBreakdown.push({
+      month: ym,
+      monthLabelCs: labels.cs,
+      monthLabelEn: labels.en,
+      totalOrders: totOrd,
+      totalUnits: totUnits,
+      avgUnitsPerOrder: Number((totUnits / totOrd).toFixed(2)),
+      activeSkusCount,
+      activeArticlesCount,
+      top80SkusCount,
+      top80SkusSharePct,
+      top80Units: Math.round(totUnits * 0.8),
+      remaining20SkusCount: activeSkusCount - top80SkusCount,
+      brackets: bracketsObj,
+      countryBreakdown,
+      fte
+    });
+  }
+  const countries = countryWeights.map((cw) => {
+    const tot = countryTotals.get(cw.code) || { orders: 0, units: 0 };
+    const names = COUNTRY_NAMES[cw.code] || { cs: cw.code, en: cw.code };
+    return {
+      country: cw.code,
+      countryNameCs: names.cs,
+      countryNameEn: names.en,
+      orders: tot.orders,
+      orderSharePct: Number((tot.orders / grandTotalOrders * 100).toFixed(1)),
+      units: tot.units,
+      unitSharePct: Number((tot.units / grandTotalUnits * 100).toFixed(1)),
+      avgUnitsPerOrder: Number((tot.units / Math.max(1, tot.orders)).toFixed(2)),
+      avgWeightKg: cw.weightKg,
+      codSharePct: cw.codPct,
+      pudoSharePct: cw.pudoPct,
+      bagSharePct: cw.bagPct
+    };
+  });
+  const totalActiveSkus = 18450;
+  const deadStockSkusCount = 2640;
+  const totalCatalogSkus = totalActiveSkus + deadStockSkusCount;
+  const skusA = Math.round(totalActiveSkus * 0.192);
+  const skusB = Math.round(totalActiveSkus * 0.285);
+  const skusC = totalActiveSkus - skusA - skusB;
+  const unitsA = Math.round(grandTotalUnits * 0.8);
+  const unitsB = Math.round(grandTotalUnits * 0.15);
+  const unitsC = grandTotalUnits - unitsA - unitsB;
+  const target3MA = Math.round(unitsA / 12 * 3);
+  const target3MB = Math.round(unitsB / 12 * 3);
+  const target3MC = Math.round(unitsC / 12 * 3);
+  const stockA = Math.round(target3MA * 1.28);
+  const stockB = Math.round(target3MB * 1.46);
+  const stockC = Math.round(target3MC * 1.82);
+  const deadStockUnits = 38420;
+  const excessA = stockA - target3MA;
+  const excessB = stockB - target3MB;
+  const excessC = stockC - target3MC;
+  const excessSkusA = Math.round(skusA * 0.62);
+  const excessSkusB = Math.round(skusB * 0.74);
+  const excessSkusC = Math.round(skusC * 0.81);
+  const samplePrefixes = ["525-0054", "525-0067", "825-0181", "825-0309", "825-0321", "825-0497", "625-0112", "725-0440", "925-0215", "425-0890"];
+  const sampleSizes = ["81", "89", "48", "55", "41", "92", "01", "14"];
+  const topActiveSkus = Array.from({ length: 25 }, (_, i) => {
+    const art = samplePrefixes[i % samplePrefixes.length];
+    const sz = sampleSizes[i % sampleSizes.length];
+    const sku = `${art}/${sz}`;
+    const annualUnits = Math.round(4800 - i * 145);
+    const avgMonthly = Number((annualUnits / 12).toFixed(1));
+    const target3M = Math.ceil(avgMonthly * 3);
+    const currentStock = Math.round(target3M * (1.25 + i % 5 * 0.18));
+    const excess = Math.max(0, currentStock - target3M);
+    return {
+      sku,
+      articleCode: art,
+      abcClass: "A",
+      annualUnits,
+      ordersCount: Math.round(annualUnits * 0.84),
+      activeMonths: 12,
+      avgMonthlyUnits: avgMonthly,
+      threeMonthTargetUnits: target3M,
+      currentStockUnits: currentStock,
+      coveredThreeMonthUnits: target3M,
+      excessReplenishUnits: excess,
+      shortageUnits: 0,
+      shareOfVolumePct: Number((annualUnits / grandTotalUnits * 100).toFixed(3))
+    };
+  });
+  const topExcessSkus = Array.from({ length: 25 }, (_, i) => {
+    const art = `${500 + i * 37 % 450}-0${110 + i * 19}`;
+    const sz = sampleSizes[(i + 2) % sampleSizes.length];
+    const sku = `${art}/${sz}`;
+    const cls = i < 8 ? "A" : i < 17 ? "B" : "C";
+    const annualUnits = cls === "A" ? 2400 - i * 80 : cls === "B" ? 680 - i * 18 : 180 - i * 4;
+    const avgMonthly = Number((annualUnits / 12).toFixed(1));
+    const target3M = Math.ceil(avgMonthly * 3);
+    const excess = Math.round(1450 - i * 42);
+    const currentStock = target3M + excess;
+    return {
+      sku,
+      articleCode: art,
+      abcClass: cls,
+      annualUnits,
+      ordersCount: Math.round(annualUnits * 0.88),
+      activeMonths: cls === "C" ? 7 : 12,
+      avgMonthlyUnits: avgMonthly,
+      threeMonthTargetUnits: target3M,
+      currentStockUnits: currentStock,
+      coveredThreeMonthUnits: target3M,
+      excessReplenishUnits: excess,
+      shortageUnits: 0,
+      shareOfVolumePct: Number((annualUnits / grandTotalUnits * 100).toFixed(3))
+    };
+  });
+  const sampleDeadSkus = Array.from({ length: 20 }, (_, i) => {
+    const art = `324-0${210 + i * 23}`;
+    const sz = sampleSizes[(i + 4) % sampleSizes.length];
+    const st = Math.round(180 - i * 7);
+    return {
+      sku: `${art}/${sz}`,
+      articleCode: art,
+      abcClass: "DEAD",
+      annualUnits: 0,
+      ordersCount: 0,
+      activeMonths: 0,
+      avgMonthlyUnits: 0,
+      threeMonthTargetUnits: 0,
+      currentStockUnits: st,
+      coveredThreeMonthUnits: 0,
+      excessReplenishUnits: st,
+      shortageUnits: 0,
+      shareOfVolumePct: 0
+    };
+  });
+  const abcAnalysis = {
+    totalCatalogSkus,
+    activeSkusCount: totalActiveSkus,
+    deadStockSkusCount,
+    deadStockUnits,
+    totalStockUnits: stockA + stockB + stockC + deadStockUnits,
+    totalAnnualIssuedUnits: grandTotalUnits,
+    threeMonthDemandUnits: target3MA + target3MB + target3MC,
+    coveredThreeMonthUnits: target3MA + target3MB + target3MC,
+    coveredThreeMonthSkusCount: totalActiveSkus,
+    excessReplenishSkusCount: excessSkusA + excessSkusB + excessSkusC,
+    excessReplenishUnits: excessA + excessB + excessC,
+    hasExplicitStockFile: false,
+    classBreakdown: {
+      A: {
+        skusCount: skusA,
+        skuSharePct: Number((skusA / totalCatalogSkus * 100).toFixed(1)),
+        annualUnits: unitsA,
+        unitSharePct: 80,
+        threeMonthTargetUnits: target3MA,
+        currentStockUnits: stockA,
+        coveredThreeMonthUnits: target3MA,
+        excessUnits: excessA,
+        excessSkusCount: excessSkusA
+      },
+      B: {
+        skusCount: skusB,
+        skuSharePct: Number((skusB / totalCatalogSkus * 100).toFixed(1)),
+        annualUnits: unitsB,
+        unitSharePct: 15,
+        threeMonthTargetUnits: target3MB,
+        currentStockUnits: stockB,
+        coveredThreeMonthUnits: target3MB,
+        excessUnits: excessB,
+        excessSkusCount: excessSkusB
+      },
+      C: {
+        skusCount: skusC,
+        skuSharePct: Number((skusC / totalCatalogSkus * 100).toFixed(1)),
+        annualUnits: unitsC,
+        unitSharePct: 5,
+        threeMonthTargetUnits: target3MC,
+        currentStockUnits: stockC,
+        coveredThreeMonthUnits: target3MC,
+        excessUnits: excessC,
+        excessSkusCount: excessSkusC
+      },
+      DEAD: {
+        skusCount: deadStockSkusCount,
+        skuSharePct: Number((deadStockSkusCount / totalCatalogSkus * 100).toFixed(1)),
+        annualUnits: 0,
+        unitSharePct: 0,
+        threeMonthTargetUnits: 0,
+        currentStockUnits: deadStockUnits,
+        coveredThreeMonthUnits: 0,
+        excessUnits: deadStockUnits,
+        excessSkusCount: deadStockSkusCount
+      }
+    },
+    topExcessSkus,
+    topActiveSkus,
+    sampleDeadSkus
+  };
+  const sampleMovements = Array.from({ length: 60 }, (_, idx) => {
+    const m = idx % 12 + 1;
+    const ym = `${year}-${String(m).padStart(2, "0")}`;
+    const qty = idx % 6 + 1;
+    const br = qty === 1 ? "1" : qty === 2 ? "2" : qty === 3 ? "3" : qty === 4 ? "4" : qty === 5 ? "5" : "6+";
+    const country = countryWeights[idx % countryWeights.length].code;
+    return {
+      warehouse: "gate",
+      sberny_box: `GATE-${country}`,
+      obsah_objednavek: `O${String(100001 + idx).padStart(7, "0")}`,
+      pocet_produktu: qty,
+      ean_produktu: topActiveSkus[idx % topActiveSkus.length].sku,
+      pocet_ks: qty,
+      zacatek_pickovani: `${ym}-15T08:00:00.000Z`,
+      konec_pickovani: `${ym}-15T08:01:00.000Z`,
+      zacatek_baleni: `${ym}-15T09:00:00.000Z`,
+      konec_baleni: `${ym}-15T09:01:00.000Z`,
+      pick_duration_s: 0,
+      pack_duration_s: 0,
+      pick_per_item_s: 0,
+      pack_per_item_s: 0,
+      total_per_item_s: 0,
+      bracket: br
+    };
+  });
+  return {
+    report: {
+      warehouse: "gate",
+      totalOrders: grandTotalOrders,
+      totalUnits: grandTotalUnits,
+      avgUnitsPerOrder: Number((grandTotalUnits / grandTotalOrders).toFixed(2)),
+      totalActiveSkus,
+      totalActiveArticles: Math.round(totalActiveSkus * 0.34),
+      top80SkusCount: skusA,
+      top80SkusSharePct: Number((skusA / totalActiveSkus * 100).toFixed(1)),
+      monthsCount: 12,
+      dateFrom: "2025-01-01",
+      dateTo: "2025-12-31",
+      monthlyBreakdown,
+      countries,
+      abcAnalysis,
+      svjBenchmark,
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    },
+    sampleMovements
+  };
+}
+
 // server.ts
 var __filename = fileURLToPath(import.meta.url);
 var __dirname = path3.dirname(__filename);
@@ -4416,6 +4890,29 @@ app.get("/api/analytics/summary", async (req, res) => {
   try {
     const warehouse = req.query.warehouse || "all";
     const forceRefresh = req.query.forceRefresh === "true";
+    if (warehouse === "gate") {
+      const gateCached2 = await getCachedStats("summary_gate");
+      if (gateCached2) {
+        return res.json({
+          success: true,
+          source: "cache",
+          warehouse: "gate",
+          recordCount: gateCached2.totalOrders || gateCached2.recordCount || 0,
+          gateCount: gateCached2.totalOrders || gateCached2.recordCount || 0,
+          gateReport: gateCached2.gateReport || gateCached2,
+          updatedAt: gateCached2.updatedAt || (/* @__PURE__ */ new Date()).toISOString()
+        });
+      }
+      return res.json({
+        success: true,
+        source: "computed",
+        warehouse: "gate",
+        recordCount: 0,
+        gateCount: 0,
+        gateReport: null,
+        updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+      });
+    }
     const excludeOutliers = req.query.excludeOutliers === "true";
     const datePreset = req.query.datePreset || "all";
     const dateFrom = req.query.dateFrom || "";
@@ -4435,12 +4932,19 @@ app.get("/api/analytics/summary", async (req, res) => {
     const filterSuffix = `_outliers${excludeOutliers ? 1 : 0}_br${bracket}_preset${datePreset}_from${dateFrom}_to${dateTo}_box${encodeURIComponent(box)}_q${encodeURIComponent(query)}`;
     const cacheKey = `summary_${warehouse}${filterSuffix}`;
     if (!forceRefresh) {
-      const cached = await getCachedStats(cacheKey);
+      const [cached, gateCached2] = await Promise.all([
+        getCachedStats(cacheKey),
+        warehouse === "all" ? getCachedStats("summary_gate") : Promise.resolve(null)
+      ]);
       if (cached) {
+        const gateRep2 = gateCached2 ? gateCached2.gateReport || gateCached2 : cached.gateReport || null;
+        const gateCnt2 = gateRep2?.totalOrders || cached.gateCount || 0;
         return res.json({
           success: true,
           source: "cache",
-          ...cached
+          ...cached,
+          gateCount: gateCnt2,
+          gateReport: gateRep2
         });
       }
     }
@@ -4460,8 +4964,13 @@ app.get("/api/analytics/summary", async (req, res) => {
         inFlightSummaryMap.set(filterSuffix, job);
       }
       try {
-        const { allPayload, ruseSummary: ruseSummary2, svjSummary: svjSummary2 } = await job;
-        const targetPayload = warehouse === "ruse" ? ruseSummary2 : warehouse === "svj" ? svjSummary2 : allPayload;
+        const [{ allPayload, ruseSummary: ruseSummary2, svjSummary: svjSummary2 }, gateCached2] = await Promise.all([
+          job,
+          warehouse === "all" ? getCachedStats("summary_gate") : Promise.resolve(null)
+        ]);
+        const gateRep2 = gateCached2 ? gateCached2.gateReport || gateCached2 : null;
+        const gateCnt2 = gateRep2?.totalOrders || 0;
+        const targetPayload = warehouse === "ruse" ? ruseSummary2 : warehouse === "svj" ? svjSummary2 : { ...allPayload, gateCount: gateCnt2, gateReport: gateRep2 };
         return res.json({
           success: true,
           source: "computed",
@@ -4527,12 +5036,17 @@ app.get("/api/analytics/summary", async (req, res) => {
         saveCachedStats(`summary_svj${filterSuffix}`, "svj", svjRecords.length, svjSummary)
       ]);
     }
+    const gateCached = await getCachedStats("summary_gate");
+    const gateRep = gateCached ? gateCached.gateReport || gateCached : null;
+    const gateCnt = gateRep?.totalOrders || 0;
     const payload = {
       warehouse,
       filters: filterObj,
       recordCount: activeRecords.length,
       ruseCount: ruseRecords.length,
       svjCount: svjRecords.length,
+      gateCount: gateCnt,
+      gateReport: gateRep,
       bracketStats,
       dailyStats,
       dailyReport,
@@ -4555,6 +5069,82 @@ app.get("/api/analytics/summary", async (req, res) => {
   } catch (err) {
     console.error("Chyba p\u0159i v\xFDpo\u010Dtu / na\u010D\xEDt\xE1n\xED analytick\xE9ho souhrnu z DB:", err);
     res.status(500).json({ error: err?.message || "Chyba p\u0159i v\xFDpo\u010Dtu statistick\xE9ho souhrnu z datab\xE1ze" });
+  }
+});
+app.get("/api/gate/summary", async (_req, res) => {
+  try {
+    const cached = await getCachedStats("summary_gate");
+    if (cached) {
+      const report = cached.gateReport || cached;
+      return res.json({
+        success: true,
+        source: "cache",
+        recordCount: report.totalOrders || 0,
+        gateReport: report
+      });
+    }
+    return res.json({
+      success: true,
+      source: "empty",
+      recordCount: 0,
+      gateReport: null
+    });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Chyba p\u0159i na\u010D\xEDt\xE1n\xED analytiky skladu Gate" });
+  }
+});
+app.post("/api/gate/import", async (req, res) => {
+  try {
+    const { report, sampleRecords, replaceExisting } = req.body;
+    if (!report || typeof report !== "object" || !report.totalOrders) {
+      return res.status(400).json({ error: "Chyb\xED platn\xFD analytick\xFD report skladu Gate." });
+    }
+    if (replaceExisting !== false) {
+      await clearMovements("gate");
+    }
+    if (Array.isArray(sampleRecords) && sampleRecords.length > 0) {
+      await insertMovements(sampleRecords.slice(0, 500));
+    }
+    const gatePayload = {
+      warehouse: "gate",
+      recordCount: Number(report.totalOrders) || 1,
+      gateCount: Number(report.totalOrders) || 1,
+      gateReport: report,
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    await saveCachedStats("summary_gate", "gate", Number(report.totalOrders) || 1, gatePayload);
+    return res.json({
+      success: true,
+      importedOrders: report.totalOrders,
+      importedUnits: report.totalUnits,
+      message: `Analytika skladu Gate (${Number(report.totalOrders).toLocaleString("cs-CZ")} objedn\xE1vek, ${Number(report.totalUnits).toLocaleString("cs-CZ")} ks) byla ulo\u017Eena do datab\xE1ze.`
+    });
+  } catch (err) {
+    console.error("Chyba p\u0159i ukl\xE1d\xE1n\xED dat skladu Gate:", err);
+    res.status(500).json({ error: err?.message || "Chyba p\u0159i ukl\xE1d\xE1n\xED analytiky skladu Gate" });
+  }
+});
+app.post("/api/movements/seed-gate", async (req, res) => {
+  try {
+    const svjBracketStats = Array.isArray(req.body?.svjBracketStats) ? req.body.svjBracketStats : void 0;
+    const report = generateSampleGateReport(svjBracketStats);
+    const gatePayload = {
+      warehouse: "gate",
+      recordCount: report.totalOrders,
+      gateCount: report.totalOrders,
+      gateReport: report,
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    await saveCachedStats("summary_gate", "gate", report.totalOrders, gatePayload);
+    return res.json({
+      success: true,
+      importedOrders: report.totalOrders,
+      importedUnits: report.totalUnits,
+      gateReport: report,
+      message: `Vygenerov\xE1na 12m\u011Bs\xED\u010Dn\xED datov\xE1 analytika skladu Gate (${report.totalOrders.toLocaleString("cs-CZ")} objedn\xE1vek, ${report.totalUnits.toLocaleString("cs-CZ")} ks).`
+    });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Chyba p\u0159i generov\xE1n\xED uk\xE1zkov\xFDch dat skladu Gate" });
   }
 });
 app.get("/api/movements", async (req, res) => {

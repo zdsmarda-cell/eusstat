@@ -42,6 +42,7 @@ import {
 } from './src/server/auth.js';
 import { generateSampleWarehouseData } from './src/server/sampleData.js';
 import { generateSampleSvjData } from './src/server/sampleDataSvj.js';
+import { generateSampleGateReport } from './src/utils/gateParser.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -238,8 +239,34 @@ const inFlightSummaryMap = new Map<string, Promise<{ allPayload: any; ruseSummar
 // =========================================================================
 app.get('/api/analytics/summary', async (req, res) => {
   try {
-    const warehouse = ((req.query.warehouse as string) || 'all') as 'ruse' | 'svj' | 'all';
+    const warehouse = ((req.query.warehouse as string) || 'all') as 'ruse' | 'svj' | 'gate' | 'all';
     const forceRefresh = req.query.forceRefresh === 'true';
+
+    // Sklad Gate používá specializovanou 12měsíční datovou a ABC analytiku uloženou v summary_gate
+    if (warehouse === 'gate') {
+      const gateCached = await getCachedStats('summary_gate');
+      if (gateCached) {
+        return res.json({
+          success: true,
+          source: 'cache',
+          warehouse: 'gate',
+          recordCount: gateCached.totalOrders || gateCached.recordCount || 0,
+          gateCount: gateCached.totalOrders || gateCached.recordCount || 0,
+          gateReport: gateCached.gateReport || gateCached,
+          updatedAt: gateCached.updatedAt || new Date().toISOString(),
+        });
+      }
+      return res.json({
+        success: true,
+        source: 'computed',
+        warehouse: 'gate',
+        recordCount: 0,
+        gateCount: 0,
+        gateReport: null,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+
     const excludeOutliers = req.query.excludeOutliers === 'true';
     const datePreset = (req.query.datePreset as string) || 'all';
     const dateFrom = (req.query.dateFrom as string) || '';
@@ -262,12 +289,19 @@ app.get('/api/analytics/summary', async (req, res) => {
     const cacheKey = `summary_${warehouse}${filterSuffix}`;
 
     if (!forceRefresh) {
-      const cached = await getCachedStats(cacheKey);
+      const [cached, gateCached] = await Promise.all([
+        getCachedStats(cacheKey),
+        warehouse === 'all' ? getCachedStats('summary_gate') : Promise.resolve(null),
+      ]);
       if (cached) {
+        const gateRep = gateCached ? (gateCached.gateReport || gateCached) : (cached.gateReport || null);
+        const gateCnt = gateRep?.totalOrders || cached.gateCount || 0;
         return res.json({
           success: true,
           source: 'cache',
           ...cached,
+          gateCount: gateCnt,
+          gateReport: gateRep,
         });
       }
     }
@@ -290,12 +324,17 @@ app.get('/api/analytics/summary', async (req, res) => {
       }
 
       try {
-        const { allPayload, ruseSummary, svjSummary } = await job;
+        const [{ allPayload, ruseSummary, svjSummary }, gateCached] = await Promise.all([
+          job,
+          warehouse === 'all' ? getCachedStats('summary_gate') : Promise.resolve(null),
+        ]);
+        const gateRep = gateCached ? (gateCached.gateReport || gateCached) : null;
+        const gateCnt = gateRep?.totalOrders || 0;
         const targetPayload = warehouse === 'ruse'
           ? ruseSummary
           : warehouse === 'svj'
           ? svjSummary
-          : allPayload;
+          : { ...allPayload, gateCount: gateCnt, gateReport: gateRep };
 
         return res.json({
           success: true,
@@ -375,12 +414,18 @@ app.get('/api/analytics/summary', async (req, res) => {
       ]);
     }
 
+    const gateCached = await getCachedStats('summary_gate');
+    const gateRep = gateCached ? (gateCached.gateReport || gateCached) : null;
+    const gateCnt = gateRep?.totalOrders || 0;
+
     const payload = {
       warehouse,
       filters: filterObj,
       recordCount: activeRecords.length,
       ruseCount: ruseRecords.length,
       svjCount: svjRecords.length,
+      gateCount: gateCnt,
+      gateReport: gateRep,
       bracketStats,
       dailyStats,
       dailyReport,
@@ -405,6 +450,96 @@ app.get('/api/analytics/summary', async (req, res) => {
   } catch (err: any) {
     console.error('Chyba při výpočtu / načítání analytického souhrnu z DB:', err);
     res.status(500).json({ error: err?.message || 'Chyba při výpočtu statistického souhrnu z databáze' });
+  }
+});
+
+// =========================================================================
+// GATE WAREHOUSE ENDPOINTS (12-month Order Structure, Country, ABC & FTE)
+// =========================================================================
+app.get('/api/gate/summary', async (_req, res) => {
+  try {
+    const cached = await getCachedStats('summary_gate');
+    if (cached) {
+      const report = cached.gateReport || cached;
+      return res.json({
+        success: true,
+        source: 'cache',
+        recordCount: report.totalOrders || 0,
+        gateReport: report,
+      });
+    }
+    return res.json({
+      success: true,
+      source: 'empty',
+      recordCount: 0,
+      gateReport: null,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Chyba při načítání analytiky skladu Gate' });
+  }
+});
+
+app.post('/api/gate/import', async (req, res) => {
+  try {
+    const { report, sampleRecords, replaceExisting } = req.body;
+    if (!report || typeof report !== 'object' || !report.totalOrders) {
+      return res.status(400).json({ error: 'Chybí platný analytický report skladu Gate.' });
+    }
+
+    if (replaceExisting !== false) {
+      await clearMovements('gate');
+    }
+
+    if (Array.isArray(sampleRecords) && sampleRecords.length > 0) {
+      await insertMovements(sampleRecords.slice(0, 500));
+    }
+
+    const gatePayload = {
+      warehouse: 'gate',
+      recordCount: Number(report.totalOrders) || 1,
+      gateCount: Number(report.totalOrders) || 1,
+      gateReport: report,
+      updatedAt: new Date().toISOString(),
+    };
+
+    await saveCachedStats('summary_gate', 'gate', Number(report.totalOrders) || 1, gatePayload);
+
+    return res.json({
+      success: true,
+      importedOrders: report.totalOrders,
+      importedUnits: report.totalUnits,
+      message: `Analytika skladu Gate (${Number(report.totalOrders).toLocaleString('cs-CZ')} objednávek, ${Number(report.totalUnits).toLocaleString('cs-CZ')} ks) byla uložena do databáze.`,
+    });
+  } catch (err: any) {
+    console.error('Chyba při ukládání dat skladu Gate:', err);
+    res.status(500).json({ error: err?.message || 'Chyba při ukládání analytiky skladu Gate' });
+  }
+});
+
+app.post('/api/movements/seed-gate', async (req, res) => {
+  try {
+    const svjBracketStats = Array.isArray(req.body?.svjBracketStats) ? req.body.svjBracketStats : undefined;
+    const report = generateSampleGateReport(svjBracketStats);
+
+    const gatePayload = {
+      warehouse: 'gate',
+      recordCount: report.totalOrders,
+      gateCount: report.totalOrders,
+      gateReport: report,
+      updatedAt: new Date().toISOString(),
+    };
+
+    await saveCachedStats('summary_gate', 'gate', report.totalOrders, gatePayload);
+
+    return res.json({
+      success: true,
+      importedOrders: report.totalOrders,
+      importedUnits: report.totalUnits,
+      gateReport: report,
+      message: `Vygenerována 12měsíční datová analytika skladu Gate (${report.totalOrders.toLocaleString('cs-CZ')} objednávek, ${report.totalUnits.toLocaleString('cs-CZ')} ks).`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Chyba při generování ukázkových dat skladu Gate' });
   }
 });
 

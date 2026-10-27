@@ -671,7 +671,7 @@ function normalizeDbRow(row: any): MovementRecord {
   const totalPerItem = Number((pickPerItem + sortPerItem + packPerItem).toFixed(2));
 
   const rawWh = row.warehouse ? String(row.warehouse).trim().toLowerCase() : 'ruse';
-  const warehouse = (rawWh === 'svj' ? 'svj' : 'ruse') as 'ruse' | 'svj';
+  const warehouse = (rawWh === 'svj' ? 'svj' : rawWh === 'gate' ? 'gate' : 'ruse') as 'ruse' | 'svj' | 'gate';
 
   let bracket = String(row.bracket || '').trim();
   if (!['1', '2', '3', '4', '5', '6+'].includes(bracket)) {
@@ -987,8 +987,16 @@ export async function saveCachedStats(
 }
 
 export async function clearStatsCache(warehouse?: string): Promise<void> {
-  // 1. Vyčistit paměťovou mezipaměť pro konzistentní výsledky
-  statsMemoryCache.clear();
+  // 1. Vyčistit paměťovou mezipaměť pro daný sklad
+  if (warehouse && warehouse !== 'all') {
+    for (const k of Array.from(statsMemoryCache.keys())) {
+      if (k.startsWith(`summary_${warehouse}`) || k.startsWith('summary_all')) {
+        statsMemoryCache.delete(k);
+      }
+    }
+  } else {
+    statsMemoryCache.clear();
+  }
 
   // 2. Vyčistit MariaDB tabulku mezipaměti
   const p = await getPool();
